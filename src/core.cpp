@@ -87,15 +87,17 @@ QString plistString(const QString &path, const char *key) {
 }
 
 namespace LauncherCore {
+bool looksLikeMacVolume(const QString &root) {
+    return QDir(root + "/System/Library").exists() &&
+           (QDir(root + "/Applications").exists() || QDir(root + "/System/Applications").exists());
+}
 QStringList mountedMacVolumes() {
     QStringList result;
     for (const QStorageInfo &storage : QStorageInfo::mountedVolumes()) {
         if (!storage.isValid() || !storage.isReady()) continue;
         QString root = storage.rootPath();
         if (root == "/" || root.isEmpty()) continue;
-        bool macLayout = QDir(root + "/System/Library").exists() &&
-                         (QDir(root + "/Applications").exists() || QDir(root + "/System/Applications").exists());
-        if (macLayout) result << root;
+        if (looksLikeMacVolume(root)) result << root;
     }
     result.removeDuplicates(); result.sort();
     return result;
@@ -169,6 +171,22 @@ bool saveCatalog(const QString &prefix, const QJsonObject &catalog, QString *err
     if (!file.open(QIODevice::WriteOnly)) return fail(error, file.errorString());
     file.write(QJsonDocument(catalog).toJson());
     if (!file.commit()) return fail(error, file.errorString());
+    return true;
+}
+bool stageBrewfile(const QString &prefix, const QString &source, QString *guestPath, QString *error) {
+    if (!QFileInfo(prefix).isDir()) return fail(error, "Prefix does not exist");
+    QFile input(source);
+    if (!input.open(QIODevice::ReadOnly)) return fail(error, input.errorString());
+    QByteArray data = input.readAll();
+    if (QRegularExpression(R"((?m)^\s*mas(?:\s|\())").match(QString::fromUtf8(data)).hasMatch())
+        return fail(error, "MAS entries need a separate Apple ID workflow");
+    QString directory = prefix + "/.darling-launcher";
+    if (QFileInfo(directory).isSymLink() || !QDir().mkpath(directory))
+        return fail(error, "Cannot create a safe Brewfile staging directory");
+    QSaveFile target(directory + "/Brewfile");
+    if (!target.open(QIODevice::WriteOnly) || target.write(data) != data.size() || !target.commit())
+        return fail(error, "Cannot stage Brewfile");
+    if (guestPath) *guestPath = "/.darling-launcher/Brewfile";
     return true;
 }
 QString issueDraft(const AppEntry &app, const QJsonArray &chain, const QString &output,

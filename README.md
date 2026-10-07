@@ -13,6 +13,8 @@ ctest --test-dir build --output-on-failure
 ./build/darling-launcher
 ```
 
+The core tests use synthetic app bundles, libraries, and Brewfiles. The offscreen GUI test uses a fake host Darling command to exercise import, loader diagnosis, library import, retry, and catalog recording without touching a real prefix or Apple payload.
+
 Choose a mounted macOS volume and a separate prefix. **Detect mounted macOS volumes** lists currently mounted APFS/HFS volumes with a macOS directory layout; it never mounts a partition. **Create prefix** asks Darling to initialize the selected directory. **Scan volume** lists top-level `.app` bundles from `Applications` and `System/Applications`; select any set to copy into the prefix. Imports reject source escapes, unsafe symlinks, and existing targets. Bundle metadata is read with libplist; executable bytes are copied privately and never inspected.
 
 **Launch selected** uses `DPREFIX=<selected prefix> <selected darling> exec <guest executable>`. Each launch has a separate host `QProcess`, and the progress/output area shows its activity and exit status. If dyld reports `Symbol not found`, `Referenced from`, and `Expected in`, the GUI offers to copy the named system library or framework from the selected mounted volume and retry. Each accepted import is added to a private chain at `<prefix>/.darling-launcher/catalog.json`. The proposed issue is saved locally under that directory for review. Nothing is submitted automatically.

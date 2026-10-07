@@ -13,6 +13,13 @@ private slots:
         QCOMPARE(result.expectedIn, "/System/Library/Frameworks/Example.framework/Versions/A/Example");
         QVERIFY(!LauncherCore::diagnose("unrelated crash").valid());
     }
+    void mountLayout() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        QVERIFY(!LauncherCore::looksLikeMacVolume(temporary.path()));
+        QVERIFY(QDir().mkpath(temporary.path() + "/System/Library"));
+        QVERIFY(QDir().mkpath(temporary.path() + "/System/Applications"));
+        QVERIFY(LauncherCore::looksLikeMacVolume(temporary.path()));
+    }
     void libraryImportAndConfinement() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString volume = temporary.path() + "/volume", prefix = temporary.path() + "/prefix";
@@ -32,6 +39,30 @@ private slots:
         QVERIFY(QFile::link(temporary.path(), prefix + "/Library"));
         QVERIFY(!LauncherCore::importLibrary(volume, prefix,
             "/Library/Frameworks/Good.framework/Good", &error));
+        QVERIFY(QFile::remove(prefix + "/Library"));
+        QVERIFY2(LauncherCore::importLibrary(volume, prefix,
+            "/Library/Frameworks/Good.framework/Good", &error), qPrintable(error));
+        QVERIFY(QFileInfo::exists(prefix + "/Library/Frameworks/Good.framework/Good"));
+    }
+    void catalogBrewfileAndIssue() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        QString prefix = temporary.path() + "/prefix"; QVERIFY(QDir().mkpath(prefix));
+        QJsonObject catalog{{"apps", QJsonArray{QJsonObject{{"name", "Test"}}}}}; QString error;
+        QVERIFY2(LauncherCore::saveCatalog(prefix, catalog, &error), qPrintable(error));
+        QCOMPARE(LauncherCore::loadCatalog(prefix), catalog);
+        QString source = temporary.path() + "/Brewfile"; QFile file(source); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("brew \"wget\"\n"); file.close();
+        QString guest;
+        QVERIFY2(LauncherCore::stageBrewfile(prefix, source, &guest, &error), qPrintable(error));
+        QCOMPARE(guest, "/.darling-launcher/Brewfile");
+        QFile staged(prefix + guest); QVERIFY(staged.open(QIODevice::ReadOnly)); QCOMPARE(staged.readAll(), QByteArray("brew \"wget\"\n")); staged.close();
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate)); file.write("mas(\"App\", id: 123)\n"); file.close();
+        QVERIFY(!LauncherCore::stageBrewfile(prefix, source, &guest, &error));
+        AppEntry entry{"Test", "Applications/Test.app", "Test", "System/Applications/Test.app"};
+        QString issue = LauncherCore::issueDraft(entry, QJsonArray{QJsonObject{{"symbol", "_Example"}, {"library", "/usr/lib/libExample.dylib"}, {"action", "imported"}}},
+            "Symbol not found: _Example", "/mnt/mac", prefix, "/usr/bin/darling");
+        QVERIFY(issue.contains("/mnt/mac/System/Applications/Test.app"));
+        QVERIFY(issue.contains("_Example expected in /usr/lib/libExample.dylib"));
+        QVERIFY(issue.contains("No binary implementation was inspected"));
     }
     void appDiscoveryAndImport() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());

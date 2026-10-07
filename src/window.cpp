@@ -17,7 +17,6 @@
 #include <QProgressBar>
 #include <QProcessEnvironment>
 #include <QPushButton>
-#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSettings>
 #include <QStatusBar>
@@ -48,6 +47,7 @@ Window::Window() {
     locationRow("Mounted macOS volume", volume, false);
     locationRow("Darling prefix", prefix, false);
     locationRow("Darling executable", darling, true);
+    volume->setObjectName("volumeField"); prefix->setObjectName("prefixField"); darling->setObjectName("darlingField");
     layout->addLayout(form);
     QSettings settings("cristim", "darling-launcher");
     volume->setText(settings.value("volume").toString());
@@ -59,7 +59,7 @@ Window::Window() {
             settings.setValue("volume", volume->text()); settings.setValue("prefix", prefix->text()); settings.setValue("darling", darling->text());
         });
     auto *toolbar = new QHBoxLayout;
-    auto add = [&](const QString &title, auto callback) { auto *button = new QPushButton(title); toolbar->addWidget(button); connect(button, &QPushButton::clicked, this, callback); };
+    auto add = [&](const QString &title, auto callback) { auto *button = new QPushButton(title); button->setObjectName(title); toolbar->addWidget(button); connect(button, &QPushButton::clicked, this, callback); };
     add("Create prefix", [this] {
         QString path = prefix->text();
         QString mounted = QFileInfo(volume->text()).canonicalFilePath();
@@ -120,26 +120,17 @@ Window::Window() {
     });
     add("Install Brewfile", [this] {
         QString source = QFileDialog::getOpenFileName(this, "Select Brewfile"); if (source.isEmpty()) return;
-        QFile file(source);
-        if (!file.open(QIODevice::ReadOnly)) { QMessageBox::warning(this, "Brewfile", file.errorString()); return; }
-        QByteArray data = file.readAll();
-        if (QRegularExpression(R"((?m)^\s*mas(?:\s|\())").match(QString::fromUtf8(data)).hasMatch()) {
-            QMessageBox::warning(this, "Brewfile", "MAS entries need a separate Apple ID workflow; this Brewfile was not run."); return;
-        }
         QString p = prefix->text();
         QString brew = p + "/opt/homebrew/bin/brew";
         if (!QFileInfo(brew).isFile() || QFileInfo(brew).isSymLink()) { QMessageBox::warning(this, "Brewfile", "Native guest Homebrew is not installed in this prefix."); return; }
-        QString staged = p + "/.darling-launcher/Brewfile";
-        QDir().mkpath(QFileInfo(staged).absolutePath()); QSaveFile target(staged);
-        if (!target.open(QIODevice::WriteOnly) || target.write(data) != data.size() || !target.commit()) {
-            QMessageBox::warning(this, "Brewfile", "Could not stage the Brewfile in the prefix."); return;
-        }
-        runCommand("Brewfile", {"exec", "/opt/homebrew/bin/brew", "bundle", "--file", "/.darling-launcher/Brewfile"});
+        QString guestPath, error;
+        if (!LauncherCore::stageBrewfile(p, source, &guestPath, &error)) { QMessageBox::warning(this, "Brewfile", error); return; }
+        runCommand("Brewfile", {"exec", "/opt/homebrew/bin/brew", "bundle", "--file", guestPath});
     });
     layout->addLayout(toolbar);
     auto *split = new QSplitter(Qt::Horizontal);
-    available = new QListWidget; available->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    apps = new QTableWidget(0, 3); apps->setHorizontalHeaderLabels({"Imported app", "Bundle", "Status"});
+    available = new QListWidget; available->setObjectName("availableApps"); available->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    apps = new QTableWidget(0, 3); apps->setObjectName("importedApps"); apps->setHorizontalHeaderLabels({"Imported app", "Bundle", "Status"});
     apps->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch); apps->setSelectionBehavior(QAbstractItemView::SelectRows);
     split->addWidget(available); split->addWidget(apps); split->setStretchFactor(1, 2);
     layout->addWidget(split);
