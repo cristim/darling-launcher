@@ -35,29 +35,3 @@ signals:
 private:
     QProcess process;
 };
-
-struct ApfsVolume { int index; QString name; bool encrypted = false; };
-namespace LauncherMount {
-QList<ApfsVolume> parseVolumes(const QString &output);
-}
-class MountBatch : public QObject {
-    Q_OBJECT
-public:
-    explicit MountBatch(QObject *parent = nullptr);
-    ~MountBatch() override;
-    void start(const QList<MacPartition> &partitions, const QString &root, const QString &pkexec,
-               const QString &mountTool, const QString &fuseTool, const QString &volumeTool);
-signals:
-    void output(const QString &text);
-    void completed(const QStringList &mounts, bool cancelled);
-private:
-    QProcess process;
-    QList<MacPartition> partitions;
-    QList<ApfsVolume> volumes;
-    QString root, pkexec, mountTool, fuseTool, volumeTool, currentTarget, transcript;
-    QStringList owned;
-    int partitionIndex = -1;
-    bool enumerating = false;
-    void nextPartition();
-    void nextVolume();
-};

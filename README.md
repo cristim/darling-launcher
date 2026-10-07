@@ -107,8 +107,8 @@ This does not install over the system runtime or change other checkouts.
 **Settings → Mount macOS source… → Mount all detected volumes read-only** scans
 APFS/HFS partitions detected by `lsblk`. For APFS it uses `apfsutil` metadata to
 obtain actual volume indices, then mounts each unencrypted volume with APFS FUSE.
-It does not guess indices or unlock FileVault. All mount commands use `pkexec`
-and `ro,nodev,nosuid,noexec`; cancelling or denying authorization stops the batch.
+It does not guess indices or unlock FileVault. The complete batch uses one `pkexec` authorization request and
+`ro,nodev,nosuid,noexec`; cancelling or denying authorization stops the batch.
 Mount helpers and the batch mount root are configurable. Installed helpers or
 helpers built in discovered Darling folders are detected automatically.
 
@@ -123,3 +123,26 @@ For an explicitly requested desktop batch mount, start the launcher with
 Launch it from your desktop session so `pkexec` can reach that session's existing
 polkit agent; setting display variables alone does not create a login-session
 association. Ordinary startup never mounts partitions automatically.
+
+### One authorization for the whole mount batch
+
+The GUI uses `tools/mount-macos.py`, which requests authorization exactly once,
+then enumerates and mounts every detected unencrypted APFS/HFS volume in that
+privileged helper. Python runs in isolated mode. The helper accepts only detected
+block devices, obtains APFS volume indices from filesystem metadata, requires
+empty directories without symlink ancestors, and verifies read-only mount flags.
+Progress and discovered application sources are emitted as JSON lines. Individual
+driver failures are reported and the remaining detected volumes are attempted;
+there is no authorization retry or alternate privilege mechanism.
+
+You can run the same script from your desktop terminal:
+
+```sh
+python3 tools/mount-macos.py --mount-root "$XDG_RUNTIME_DIR/darling-launcher/macos" \
+  --apfs-fuse /absolute/path/to/apfs-fuse --apfsutil /absolute/path/to/apfsutil
+```
+
+The script uses the calling user's identity supplied by `pkexec` for file access
+ownership. It never writes filesystem data to the macOS device or unlocks encrypted
+volumes. Mounts remain present until explicitly unmounted. Apple payloads and
+filesystem metadata are private local data and are not uploaded.

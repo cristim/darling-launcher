@@ -17,7 +17,11 @@
 #include <QStandardPaths>
 #include <QStorageInfo>
 #include <QSettings>
+#include <QSharedPointer>
 #include <QDebug>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <QTextEdit>
 #include <QVBoxLayout>
 #include <sys/stat.h>
@@ -65,24 +69,50 @@ MountDialog::MountDialog(QWidget *parent) : QDialog(parent) {
     auto *all = new QPushButton("Mount all detected volumes read-only"); all->setObjectName("mountAllVolumes"); actions->addWidget(all);
     connect(all, &QPushButton::clicked, this, [=] {
         if (detected.isEmpty()) { output->append("No macOS partitions detected. Refresh first."); return; }
-        auto *batch = new MountBatch(this); all->setEnabled(false); mountButton->setEnabled(false);
-        connect(batch, &MountBatch::output, output, &QTextEdit::append);
-        connect(batch, &MountBatch::output, this, [](const QString &message) { qInfo().noquote() << message; });
-        connect(batch, &MountBatch::completed, this, [=](const QStringList &mounts, bool cancelled) {
-            batchMounts += mounts; all->setEnabled(true); mountButton->setEnabled(true);
-            for (const auto &path : mounts) if (ownedMountChoices->findText(path) < 0) ownedMountChoices->addItem(path, QStorageInfo(path).device());
-            if (!mounts.isEmpty()) { ownedMount = mounts.first(); ownedDevice = QStorageInfo(ownedMount).device(); ownedMountChoices->setCurrentText(ownedMount); unmountButton->setEnabled(true); }
-            output->append(cancelled ? "Stopped after authorization was cancelled or denied." : "Finished scanning detected volumes.");
+        const QString python = QStandardPaths::findExecutable("python3");
+        const QString script = QStringLiteral(LAUNCHER_MOUNT_SCRIPT);
+        if (python.isEmpty() || !QFileInfo(script).isFile()) { output->append("Python or the single-authorization mount script is unavailable."); return; }
+        auto *batch = new QProcess(this); batch->setProcessChannelMode(QProcess::MergedChannels);
+        all->setEnabled(false); mountButton->setEnabled(false);
+        output->append("Waiting for one authorization request for the entire read-only batch…");
+        auto buffer = QSharedPointer<QByteArray>::create();
+        auto mounts = QSharedPointer<QStringList>::create();
+        auto consume = [=] {
+            *buffer += batch->readAllStandardOutput();
+            int newline;
+            while ((newline = buffer->indexOf('\n')) >= 0) {
+                QByteArray line = buffer->left(newline); buffer->remove(0, newline + 1);
+                qInfo().noquote() << QString::fromUtf8(line);
+                auto event = QJsonDocument::fromJson(line).object();
+                QString type = event.value("event").toString();
+                if (type == "mounted") {
+                    QString path = event.value("path").toString(); QStorageInfo storage(path); storage.refresh();
+                    if (storage.rootPath() == path && storage.isReadOnly() && storage.device() == event.value("device").toString().toUtf8()) {
+                        *mounts << path;
+                        if (ownedMountChoices->findText(path) < 0) ownedMountChoices->addItem(path, storage.device());
+                    }
+                    output->append("Mounted read-only: " + path);
+                } else if (type == "skip") output->append(event.value("device").toString() + ": " + event.value("reason").toString());
+                else if (!event.value("message").toString().isEmpty()) output->append(event.value("message").toString());
+                else if (event.isEmpty()) output->append(QString::fromUtf8(line));
+            }
+        };
+        connect(batch, &QProcess::readyReadStandardOutput, this, consume);
+        connect(batch, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) {
+            consume();
+            batchMounts += *mounts; all->setEnabled(true); mountButton->setEnabled(true);
+            if (!mounts->isEmpty()) { ownedMount = mounts->first(); ownedDevice = QStorageInfo(ownedMount).device(); ownedMountChoices->setCurrentText(ownedMount); unmountButton->setEnabled(true); }
+            output->append(exit != QProcess::NormalExit ? "Mount helper crashed." : LauncherMount::exitDescription(code));
             auto sources = LauncherCore::mountedMacVolumes();
-            qInfo().noquote() << "Detected macOS application sources:" << sources.join(", ");
             if (sources.size() == 1) emit sourceMounted(sources.first());
-            else if (sources.size() > 1) {
-                partitions->clear(); partitions->addItem("Multiple sources found; use Detect mounted macOS volumes in Settings", -1);
-                for (const auto &source : sources) output->append("macOS applications source: " + source);
-            } else output->append("No mounted volume with macOS applications was found.");
+            else if (sources.size() > 1) for (const auto &source : sources) output->append("macOS applications source (select in Settings): " + source);
+            else output->append("No mounted macOS applications source found.");
             batch->deleteLater();
         });
-        batch->start(detected, batchRoot->text(), QStandardPaths::findExecutable("pkexec"), QStandardPaths::findExecutable("mount"), fusePath->text(), utilityPath->text());
+        connect(batch, &QProcess::errorOccurred, this, [=](QProcess::ProcessError error) {
+            if (error == QProcess::FailedToStart) { output->append(batch->errorString()); all->setEnabled(true); mountButton->setEnabled(true); batch->deleteLater(); }
+        });
+        batch->start(python, {"-I", script, "--mount-root", batchRoot->text(), "--apfs-fuse", fusePath->text(), "--apfsutil", utilityPath->text()});
     });
     layout->addLayout(actions);
     output = new QTextEdit; output->setReadOnly(true); output->setObjectName("mountOutput"); layout->addWidget(output);
