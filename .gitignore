@@ -1,0 +1,8 @@
+/build*/
+/.darling-launcher-private/
+*.app/
+*.dylib
+*.framework/
+*.log
+*.core
+core
