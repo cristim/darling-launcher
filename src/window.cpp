@@ -91,15 +91,19 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     volume->setPlaceholderText("Select a mounted source with apps or libraries");
     auto *runtimeChoices = new QComboBox; runtimeChoices->setObjectName("detectedRuntimes");
     runtimeChoices->addItem("Select a detected runtime…");
-    const auto detectedRuntimes = LauncherDiscovery::runtimes(LauncherDiscovery::roots(), QStandardPaths::findExecutable("darling"));
-    for (const auto &runtime : detectedRuntimes) runtimeChoices->addItem(runtime.launcher + " — " + runtime.installRoot);
     form->addRow("Detected runtimes", runtimeChoices);
-    connect(runtimeChoices, &QComboBox::activated, this, [this, detectedRuntimes](int index) {
+    connect(runtimeChoices, &QComboBox::activated, this, [this, runtimeChoices](int index) {
         if (index <= 0) return;
-        const auto runtime = detectedRuntimes.at(index - 1);
-        darling->setText(runtime.launcher); runtimeRoot->setText(runtime.installRoot);
+        darling->setText(runtimeChoices->itemData(index).toString()); runtimeRoot->setText(runtimeChoices->itemData(index, Qt::UserRole + 1).toString());
     });
-    auto detectPaths = [this, detectedRuntimes] {
+    auto detectPaths = [this, runtimeChoices] {
+        const auto detectedRuntimes = LauncherDiscovery::runtimes(LauncherDiscovery::roots(), QStandardPaths::findExecutable("darling"));
+        QSignalBlocker blocker(runtimeChoices); runtimeChoices->clear();
+        runtimeChoices->addItem(detectedRuntimes.isEmpty() ? "No usable runtime found — build or select one" : "Choose a detected runtime…");
+        for (const auto &runtime : detectedRuntimes) {
+            runtimeChoices->addItem(runtime.launcher + " — " + runtime.installRoot, runtime.launcher);
+            runtimeChoices->setItemData(runtimeChoices->count() - 1, runtime.installRoot, Qt::UserRole + 1);
+        }
         volume->setText(LauncherSources::automaticSource(LauncherSources::candidates(mountProvider()), volume->text()));
         if ((darling->text().isEmpty() || !QFileInfo(darling->text()).isExecutable()) && !detectedRuntimes.isEmpty()) {
             darling->setText(detectedRuntimes.first().launcher); runtimeRoot->setText(detectedRuntimes.first().installRoot);
@@ -114,6 +118,8 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
             if (QFileInfo(launcher).isExecutable()) darling->setText(launcher);
             if (QFileInfo(runtime).isDir()) runtimeRoot->setText(runtime);
         }
+        for (int index = 1; index < runtimeChoices->count(); ++index)
+            if (runtimeChoices->itemData(index).toString() == darling->text() && runtimeChoices->itemData(index, Qt::UserRole + 1).toString() == runtimeRoot->text()) { runtimeChoices->setCurrentIndex(index); break; }
     };
     detectPaths();
     connect(prefix, &QLineEdit::editingFinished, this, detectPaths);

@@ -30,6 +30,25 @@
 class GuiTest : public QObject {
     Q_OBJECT
 private slots:
+    void runtimeDetectionRefresh() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        QString install = temporary.path() + "/runtime";
+        QVERIFY(QDir().mkpath(install + "/bin"));
+        QFile executable(install + "/bin/darling"); QVERIFY(executable.open(QIODevice::WriteOnly)); executable.close();
+        QVERIFY(executable.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        auto previousPath = qgetenv("PATH"); auto restore = qScopeGuard([=] { qputenv("PATH", previousPath); });
+        qputenv("PATH", (install + "/bin").toUtf8());
+        Window window; window.show();
+        auto *runtimes = window.findChild<QComboBox *>("detectedRuntimes"); QVERIFY(runtimes); QCOMPARE(runtimes->count(), 1);
+        QVERIFY(QDir().mkpath(install + "/libexec/darling/private/etc"));
+        window.findChild<QPushButton *>("Detect paths")->click();
+        QCOMPARE(runtimes->count(), 2); QCOMPARE(runtimes->currentIndex(), 1);
+        QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), executable.fileName());
+        QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), install);
+        QVERIFY(QDir(install + "/libexec/darling/private/etc").removeRecursively());
+        window.findChild<QPushButton *>("Detect paths")->click(); QCOMPARE(runtimes->count(), 1); QCOMPARE(runtimes->currentIndex(), 0);
+    }
     void iconViewsAndSelection() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QImage image(64, 64, QImage::Format_ARGB32); image.fill(Qt::green);
