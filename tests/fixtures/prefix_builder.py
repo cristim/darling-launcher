@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Synthetic implementation of the external builder CLI for launcher tests."""
 import argparse
 import json

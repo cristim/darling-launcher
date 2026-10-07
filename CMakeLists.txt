@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 cmake_minimum_required(VERSION 3.21)
 project(darling-launcher VERSION 0.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)

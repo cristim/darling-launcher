@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "window.h"
 #include "mountdialog.h"
 #include "appbrowser.h"
