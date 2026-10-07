@@ -1,5 +1,6 @@
 #include "core.h"
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -112,6 +113,33 @@ QStringList discoverApps(const QString &volume) {
     found.sort(Qt::CaseInsensitive);
     return found;
 }
+AppPreview appPreview(const QString &volume, const QString &relativeBundle) {
+    if (!confinedRelative(relativeBundle) || !relativeBundle.endsWith(".app")) return {};
+    const QString source = volume + '/' + relativeBundle;
+    const QString root = QFileInfo(source).canonicalFilePath();
+    if (root.isEmpty() || !within(root, QFileInfo(volume).canonicalFilePath())) return {};
+    AppPreview preview{relativeBundle, QFileInfo(source).completeBaseName(), {}, 0};
+    const QString plist = root + "/Contents/Info.plist";
+    if (within(QFileInfo(plist).canonicalFilePath(), root)) {
+        QString name = plistString(plist, "CFBundleDisplayName");
+        if (name.isEmpty()) name = plistString(plist, "CFBundleName");
+        if (!name.isEmpty()) preview.name = name;
+        QString icon = plistString(plist, "CFBundleIconFile");
+        if (icon.isEmpty()) icon = plistString(plist, "CFBundleIconName");
+        if (confinedRelative(icon)) {
+            QString candidate = root + "/Contents/Resources/" + icon;
+            if (!QFileInfo::exists(candidate)) candidate += ".icns";
+            QString resolved = QFileInfo(candidate).canonicalFilePath();
+            if (!resolved.isEmpty() && within(resolved, root)) preview.iconPath = resolved;
+        }
+    }
+    QDirIterator files(root, QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDirIterator::Subdirectories);
+    while (files.hasNext()) {
+        files.next(); auto info = files.fileInfo();
+        if (info.isFile() && !info.isSymLink()) preview.bytes += quint64(info.size());
+    }
+    return preview;
+}
 
 bool validateLocations(const QString &volume, const QString &prefix, QString *error) {
     QString v = QFileInfo(volume).canonicalFilePath();
@@ -134,7 +162,10 @@ bool importApp(const QString &volume, const QString &prefix, const QString &rela
         return fail(error, "Bundle executable is missing");
     const QString destRelative = "Applications/" + QFileInfo(source).fileName();
     if (!safeCopy(source, prefix + '/' + destRelative, volume, prefix, error)) return false;
-    if (result) *result = {QFileInfo(source).completeBaseName(), destRelative, executable, relativeBundle};
+    QString displayName = plistString(source + "/Contents/Info.plist", "CFBundleDisplayName");
+    if (displayName.isEmpty()) displayName = plistString(source + "/Contents/Info.plist", "CFBundleName");
+    if (displayName.isEmpty()) displayName = QFileInfo(source).completeBaseName();
+    if (result) *result = {displayName, destRelative, executable, relativeBundle};
     return true;
 }
 

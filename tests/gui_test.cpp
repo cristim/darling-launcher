@@ -1,18 +1,48 @@
 #include "window.h"
+#include "appbrowser.h"
 #include <QApplication>
 #include <QFile>
+#include <QBuffer>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QImage>
+#include <QJsonDocument>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QtTest>
+#include <QtEndian>
 
 class GuiTest : public QObject {
     Q_OBJECT
 private slots:
+    void iconViewsAndSelection() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        QImage image(64, 64, QImage::Format_ARGB32); image.fill(Qt::green);
+        QByteArray png; QBuffer buffer(&png); QVERIFY(buffer.open(QIODevice::WriteOnly)); QVERIFY(image.save(&buffer, "PNG"));
+        QByteArray icns = "icns";
+        auto appendLength = [](QByteArray &data, quint32 length) { quint32 big = qToBigEndian(length); data.append(reinterpret_cast<const char *>(&big), 4); };
+        appendLength(icns, quint32(16 + png.size())); icns += "icp6"; appendLength(icns, quint32(8 + png.size())); icns += png;
+        QString iconPath = temporary.path() + "/App.icns"; QFile file(iconPath); QVERIFY(file.open(QIODevice::WriteOnly)); file.write(icns); file.close();
+        AppBrowser browser; browser.resize(500, 350);
+        browser.showPreviews({{"Applications/One.app", "Friendly One", iconPath, 1250000}, {"Applications/Two.app", "Two", iconPath, 2000}, {"Applications/Three.app", "Three", {}, 3000}});
+        browser.show(); QTest::qWait(30);
+        QCOMPARE(browser.item(0)->text(), "Friendly One");
+        QCOMPARE(browser.item(0)->icon().pixmap(64, 64).toImage().pixelColor(32, 32), QColor(Qt::green));
+        QVERIFY(browser.item(0)->toolTip().contains("MB")); QCOMPARE(browser.iconSize(), QSize(32, 32));
+        QTest::mouseClick(browser.viewport(), Qt::LeftButton, Qt::NoModifier, browser.visualItemRect(browser.item(0)).center());
+        QTest::keyClick(&browser, Qt::Key_A, Qt::ControlModifier); QCOMPARE(browser.selectedBundles().size(), 3);
+        QTest::mouseClick(browser.viewport(), Qt::LeftButton, Qt::NoModifier, browser.visualItemRect(browser.item(0)).center());
+        QTest::mouseClick(browser.viewport(), Qt::LeftButton, Qt::ShiftModifier, browser.visualItemRect(browser.item(2)).center()); QCOMPARE(browser.selectedBundles().size(), 3);
+        QTest::mouseClick(browser.viewport(), Qt::LeftButton, Qt::ControlModifier, browser.visualItemRect(browser.item(1)).center()); QCOMPARE(browser.selectedBundles().size(), 2);
+        browser.setGridView(true); QCOMPARE(browser.viewMode(), QListView::IconMode); QCOMPARE(browser.iconSize(), QSize(64, 64)); QCOMPARE(browser.selectedBundles().size(), 2);
+        browser.setGridView(false); QCOMPARE(browser.viewMode(), QListView::ListMode); QCOMPARE(browser.selectedBundles().size(), 2);
+    }
     void importDiagnoseRetry() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
@@ -41,10 +71,14 @@ private slots:
         dismiss.start(20);
         window.findChild<QPushButton *>("Scan volume")->click();
         auto *available = window.findChild<QListWidget *>("availableApps");
-        QCOMPARE(available->count(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(available->count(), 1, 5000);
         available->item(0)->setSelected(true);
-        window.findChild<QPushButton *>("Import selected apps")->click();
         auto *apps = window.findChild<QTableWidget *>("importedApps");
+        QMimeData mime; mime.setData("application/x-darling-app-bundles", QJsonDocument(QJsonArray{"System/Applications/Test.app"}).toJson());
+        QDragEnterEvent enter(QPoint(10, 10), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(apps->viewport(), &enter); QVERIFY(enter.isAccepted());
+        QDropEvent drop(QPointF(10, 10), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(apps->viewport(), &drop); QVERIFY(drop.isAccepted());
         QTRY_COMPARE_WITH_TIMEOUT(apps->rowCount(), 1, 5000);
         QCOMPARE(apps->item(0, 1)->text(), "Applications/Test.app");
         apps->selectRow(0);

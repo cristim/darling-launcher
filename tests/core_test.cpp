@@ -7,6 +7,24 @@
 class CoreTest : public QObject {
     Q_OBJECT
 private slots:
+    void appMetadataAndSizes() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        QString app = temporary.path() + "/Applications/Fallback.app";
+        QVERIFY(QDir().mkpath(app + "/Contents/Resources"));
+        QFile plist(app + "/Contents/Info.plist"); QVERIFY(plist.open(QIODevice::WriteOnly));
+        QByteArray metadata = "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleDisplayName</key><string>Friendly Name</string><key>CFBundleIconFile</key><string>AppIcon</string></dict></plist>";
+        plist.write(metadata); plist.close();
+        QFile icon(app + "/Contents/Resources/AppIcon.icns"); QVERIFY(icon.open(QIODevice::WriteOnly)); icon.write("synthetic image resource"); icon.close();
+        auto preview = LauncherCore::appPreview(temporary.path(), "Applications/Fallback.app");
+        QCOMPARE(preview.name, "Friendly Name"); QCOMPARE(preview.relativeBundle, "Applications/Fallback.app");
+        QCOMPARE(preview.iconPath, icon.fileName()); QCOMPARE(preview.bytes, quint64(metadata.size() + 24));
+        QVERIFY(QFile::remove(icon.fileName()));
+        QFile outside(temporary.path() + "/outside.icns"); QVERIFY(outside.open(QIODevice::WriteOnly)); outside.write("private"); outside.close();
+        QVERIFY(QFile::link(outside.fileName(), icon.fileName()));
+        preview = LauncherCore::appPreview(temporary.path(), "Applications/Fallback.app");
+        QVERIFY(preview.iconPath.isEmpty()); QCOMPARE(preview.bytes, quint64(metadata.size()));
+        QVERIFY(LauncherCore::appPreview(temporary.path(), "../outside.app").relativeBundle.isEmpty());
+    }
     void diagnosis() {
         auto result = LauncherCore::diagnose("dyld: Symbol not found: _Example\n  Referenced from: /Applications/Notes.app/Contents/MacOS/Notes\n  Expected in: /System/Library/Frameworks/Example.framework/Versions/A/Example\n");
         QCOMPARE(result.symbol, "_Example");

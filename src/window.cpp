@@ -1,4 +1,6 @@
 #include "window.h"
+#include "mountdialog.h"
+#include "appbrowser.h"
 #include <QApplication>
 #include <QDir>
 #include <QFile>
@@ -7,6 +9,8 @@
 #include <QFormLayout>
 #include <QFutureWatcher>
 #include <QHeaderView>
+#include <QGridLayout>
+#include <QButtonGroup>
 #include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QLabel>
@@ -58,8 +62,9 @@ Window::Window() {
             QSettings settings("cristim", "darling-launcher");
             settings.setValue("volume", volume->text()); settings.setValue("prefix", prefix->text()); settings.setValue("darling", darling->text());
         });
-    auto *toolbar = new QHBoxLayout;
-    auto add = [&](const QString &title, auto callback) { auto *button = new QPushButton(title); button->setObjectName(title); toolbar->addWidget(button); connect(button, &QPushButton::clicked, this, callback); };
+    auto *toolbar = new QGridLayout;
+    int actionCount = 0;
+    auto add = [&](const QString &title, auto callback) { auto *button = new QPushButton(title); button->setObjectName(title); toolbar->addWidget(button, actionCount / 4, actionCount % 4); ++actionCount; connect(button, &QPushButton::clicked, this, callback); };
     add("Create prefix", [this] {
         QString path = prefix->text();
         QString mounted = QFileInfo(volume->text()).canonicalFilePath();
@@ -77,36 +82,22 @@ Window::Window() {
     });
     add("Detect mounted macOS volumes", [this] {
         QStringList mounts = LauncherCore::mountedMacVolumes();
-        if (mounts.isEmpty()) { setBusy(false, "No mounted macOS volume found. Mount one yourself, then scan again."); return; }
+        if (mounts.isEmpty()) { setBusy(false, "No mounted macOS volume found. Use Mount macOS source to select a partition."); return; }
         QMenu menu(this);
         for (const QString &mount : mounts) menu.addAction(mount, this, [this, mount] { volume->setText(mount); refresh(); });
         menu.exec(QCursor::pos());
     });
-    add("Import selected apps", [this] {
-        auto selected = available->selectedItems();
-        if (selected.isEmpty()) return;
-        QString error;
-        if (!LauncherCore::validateLocations(volume->text(), prefix->text(), &error)) { QMessageBox::warning(this, "Locations", error); return; }
-        auto *watcher = new QFutureWatcher<QPair<QList<AppEntry>, QString>>(this);
-        setBusy(true, "Importing selected apps…");
-        QString v = volume->text(), p = prefix->text();
-        QStringList names; for (auto *item : selected) names << item->text();
-        connect(watcher, &QFutureWatcher<QPair<QList<AppEntry>, QString>>::finished, this, [this, watcher] {
-            auto result = watcher->result(); watcher->deleteLater();
-            for (const auto &entry : result.first) entries.insert(entry.relativeBundle, entry);
-            persist(); load(); setBusy(false, result.second.isEmpty() ? "Import complete" : result.second);
-            if (!result.second.isEmpty()) QMessageBox::warning(this, "Import", result.second);
-        });
-        watcher->setFuture(QtConcurrent::run([v, p, names] {
-            QList<AppEntry> result; QString error;
-            for (const QString &name : names) {
-                AppEntry entry;
-                if (!LauncherCore::importApp(v, p, name, &entry, &error)) break;
-                result << entry;
-            }
-            return qMakePair(result, error);
-        }));
+    add("Mount macOS source…", [this] {
+        if (!mountDialog) {
+            mountDialog = new MountDialog(this);
+            connect(mountDialog, &MountDialog::sourceMounted, this, [this](const QString &path) {
+                volume->setText(path); refresh(); setBusy(false, "Mounted macOS source: " + path);
+                QSettings("cristim", "darling-launcher").setValue("volume", path);
+            });
+        }
+        mountDialog->show(); mountDialog->raise(); mountDialog->activateWindow();
     });
+    add("Import selected apps", [this] { importBundles(available->selectedBundles()); });
     add("Launch selected", [this] { QString key = selectedKey(); if (!key.isEmpty()) launch(key); });
     add("Import needed library and retry", [this] {
         QString key = selectedKey();
@@ -129,10 +120,23 @@ Window::Window() {
     });
     layout->addLayout(toolbar);
     auto *split = new QSplitter(Qt::Horizontal);
-    available = new QListWidget; available->setObjectName("availableApps"); available->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    apps = new QTableWidget(0, 3); apps->setObjectName("importedApps"); apps->setHorizontalHeaderLabels({"Imported app", "Bundle", "Status"});
+    auto *sourcePane = new QWidget; auto *sourceLayout = new QVBoxLayout(sourcePane);
+    auto *views = new QHBoxLayout; views->addWidget(new QLabel("Available apps")); views->addStretch();
+    auto *group = new QButtonGroup(this);
+    auto *list = new QPushButton("List"); list->setObjectName("listView"); list->setCheckable(true); list->setChecked(true);
+    auto *grid = new QPushButton("Grid"); grid->setObjectName("gridView"); grid->setCheckable(true);
+    group->addButton(list); group->addButton(grid); views->addWidget(list); views->addWidget(grid); sourceLayout->addLayout(views);
+    available = new AppBrowser; available->setObjectName("availableApps"); sourceLayout->addWidget(available);
+    sourceLayout->addWidget(new QLabel("Ctrl+A selects all · Ctrl-click toggles · Shift-click selects a range"));
+    connect(list, &QPushButton::clicked, this, [this] { available->setGridView(false); });
+    connect(grid, &QPushButton::clicked, this, [this] { available->setGridView(true); });
+    auto *importPane = new QWidget; auto *importLayout = new QVBoxLayout(importPane);
+    importLayout->addWidget(new QLabel("Imported apps — drag selected apps here to import"));
+    apps = new ImportTable; apps->setObjectName("importedApps"); apps->setHorizontalHeaderLabels({"Imported app", "Bundle", "Status"});
+    connect(apps, &ImportTable::bundlesDropped, this, &Window::importBundles);
     apps->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch); apps->setSelectionBehavior(QAbstractItemView::SelectRows);
-    split->addWidget(available); split->addWidget(apps); split->setStretchFactor(1, 2);
+    importLayout->addWidget(apps);
+    split->addWidget(sourcePane); split->addWidget(importPane); split->setStretchFactor(1, 2);
     layout->addWidget(split);
     auto *bottom = new QHBoxLayout;
     auto *draft = new QPushButton("Save proposed issue"); bottom->addWidget(draft);
@@ -159,7 +163,55 @@ Window::Window() {
 }
 
 void Window::setBusy(bool busy, const QString &message) { progress->setRange(0, busy ? 0 : 1); if (!busy) progress->setValue(1); statusBar()->showMessage(message); log->append(message); }
-void Window::refresh() { available->clear(); available->addItems(LauncherCore::discoverApps(volume->text())); }
+void Window::refresh() {
+    const QString source = volume->text(); const int generation = ++scanGeneration;
+    available->clear();
+    if (source.isEmpty() || !QFileInfo(source).isDir()) return;
+    auto *watcher = new QFutureWatcher<QList<AppPreview>>(this);
+    setBusy(true, "Reading application names, icons and sizes…");
+    connect(watcher, &QFutureWatcher<QList<AppPreview>>::finished, this, [this, watcher, generation, source] {
+        auto previews = watcher->result(); watcher->deleteLater();
+        if (generation != scanGeneration || volume->text() != source) return;
+        available->showPreviews(previews); setBusy(activeProcesses > 0 || importRunning, QString::number(previews.size()) + " apps available");
+    });
+    watcher->setFuture(QtConcurrent::run([source] {
+        QList<AppPreview> previews;
+        for (const QString &name : LauncherCore::discoverApps(source)) {
+            auto preview = LauncherCore::appPreview(source, name);
+            if (!preview.relativeBundle.isEmpty()) previews << preview;
+        }
+        return previews;
+    }));
+}
+void Window::importBundles(const QStringList &names) {
+    if (names.isEmpty()) return;
+    if (importRunning) { statusBar()->showMessage("An app import is already in progress."); return; }
+    QString error;
+    if (!LauncherCore::validateLocations(volume->text(), prefix->text(), &error)) { QMessageBox::warning(this, "Locations", error); return; }
+    auto *watcher = new QFutureWatcher<QPair<QList<AppEntry>, QString>>(this);
+    importRunning = true; setBusy(true, "Importing selected apps…");
+    const QString v = volume->text(), p = prefix->text();
+    connect(watcher, &QFutureWatcher<QPair<QList<AppEntry>, QString>>::finished, this, [this, watcher, p] {
+        auto result = watcher->result(); watcher->deleteLater(); importRunning = false;
+        auto catalog = LauncherCore::loadCatalog(p); auto array = catalog.value("apps").toArray();
+        for (const auto &entry : result.first)
+            array.append(QJsonObject{{"name", entry.name}, {"bundle", entry.relativeBundle}, {"executable", entry.executable}, {"source", entry.sourceRelative}, {"chain", QJsonArray{}}});
+        catalog.insert("apps", array); QString error;
+        if (!LauncherCore::saveCatalog(p, catalog, &error)) result.second += "\n" + error;
+        if (prefix->text() == p) load();
+        setBusy(activeProcesses > 0, result.second.isEmpty() ? "Import complete" : result.second);
+        if (!result.second.isEmpty()) QMessageBox::warning(this, "Import", result.second);
+    });
+    watcher->setFuture(QtConcurrent::run([v, p, names] {
+        QList<AppEntry> result; QString error;
+        for (const QString &name : names) {
+            AppEntry entry;
+            if (!LauncherCore::importApp(v, p, name, &entry, &error)) break;
+            result << entry;
+        }
+        return qMakePair(result, error);
+    }));
+}
 void Window::load() {
     entries.clear(); chains.clear();
     auto catalog = LauncherCore::loadCatalog(prefix->text());

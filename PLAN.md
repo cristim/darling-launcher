@@ -8,3 +8,5 @@
 6. Test parser and copy confinement with synthetic fixtures; build and launch the actual Qt GUI in an offscreen display.
 
 No changes are planned in the Darling or VibeDarling checkouts. Provenance: Darling `AGENTS.md` clean-room rule, `src/startup/darling.c` DPREFIX and exec interface, and `tools/darling-applications` in the integration checkout for prefix/Brewfile conventions.
+
+Follow-up slice: explicit read-only pkexec mounting, partition discovery, and a metadata/icon/size browser with list/grid selection and drag-to-import. Verify with fake privilege commands and synthetic ICNS fixtures; real mounting waits for a user-selected partition and installed APFS driver.

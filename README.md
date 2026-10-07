@@ -4,7 +4,7 @@ A Linux host Qt launcher for user-owned Darling prefixes. It never runs inside a
 
 ## Build and run
 
-Requires CMake, a C++17 compiler, Qt 6 Core/Widgets/Concurrent/Test, and `libplist-2.0`.
+Requires CMake, a C++17 compiler, Qt 6 Core/Widgets/Concurrent/Test, Qt image format plugins (ICNS), and `libplist-2.0`.
 
 ```sh
 cmake -S . -B build -G Ninja
@@ -13,9 +13,13 @@ ctest --test-dir build --output-on-failure
 ./build/darling-launcher
 ```
 
-The core tests use synthetic app bundles, libraries, and Brewfiles. The offscreen GUI test uses a fake host Darling command to exercise import, loader diagnosis, library import, retry, and catalog recording without touching a real prefix or Apple payload.
+The core tests use synthetic app bundles, libraries, and Brewfiles. Mount tests cover partition discovery, fixed read-only arguments, and fake pkexec success/cancellation/denial. The offscreen GUI tests decode a synthetic ICNS icon, exercise keyboard and mouse selection in list/grid views, and drag an app into the import area before a fake Darling diagnosis/import/retry sequence.
 
 Choose a mounted macOS volume and a separate prefix. **Detect mounted macOS volumes** lists currently mounted APFS/HFS volumes with a macOS directory layout; it never mounts a partition. **Create prefix** asks Darling to initialize the selected directory. **Scan volume** lists top-level `.app` bundles from `Applications` and `System/Applications`; select any set to copy into the prefix. Imports reject source escapes, unsafe symlinks, and existing targets. Bundle metadata is read with libplist; executable bytes are copied privately and never inspected.
+
+**Mount macOS source** lists detected APFS/HFS partitions using `lsblk`. Choose a partition, an existing empty directory, a kernel driver or APFS FUSE, and an explicit APFS volume index. It invokes the selected driver through `pkexec` with read-only, nodev, nosuid and noexec options. The kernel path requires an installed filesystem module; APFS FUSE requires `apfs-fuse`. Authorization cancellation and denial stop the action. The source field is updated only after verifying the mount and macOS layout. You can explicitly unmount a source mounted during this launcher session; it is not unmounted on exit. Encrypted APFS unlocking is outside this workflow. Driver option references: [APFS FUSE](https://github.com/sgan81/apfs-fuse) and [Linux APFS](https://github.com/eafer/linux-apfs-rw).
+
+The source browser reads bundle display names, `CFBundleIconFile` resources and total file sizes in the background. List view uses 32-pixel icons and shows sizes in decimal units; grid view uses 64-pixel icons. Ctrl+A, Ctrl-click and Shift-click select sets. Drag a set into the imported-apps area or use **Import selected apps**. Missing or unreadable icon resources use a generic icon; no executable code is read to obtain icons.
 
 **Launch selected** uses `DPREFIX=<selected prefix> <selected darling> exec <guest executable>`. Each launch has a separate host `QProcess`, and the progress/output area shows its activity and exit status. If dyld reports `Symbol not found`, `Referenced from`, and `Expected in`, the GUI offers to copy the named system library or framework from the selected mounted volume and retry. Each accepted import is added to a private chain at `<prefix>/.darling-launcher/catalog.json`. The proposed issue is saved locally under that directory for review. Nothing is submitted automatically.
 

@@ -10,6 +10,12 @@ struct AppEntry {
     QString executable;
     QString sourceRelative;
 };
+struct AppPreview {
+    QString relativeBundle;
+    QString name;
+    QString iconPath;
+    quint64 bytes = 0;
+};
 
 struct MissingSymbol {
     QString symbol;
@@ -20,6 +26,7 @@ struct MissingSymbol {
 
 namespace LauncherCore {
 QStringList discoverApps(const QString &volume);
+AppPreview appPreview(const QString &volume, const QString &relativeBundle);
 QStringList mountedMacVolumes();
 bool looksLikeMacVolume(const QString &root);
 bool validateLocations(const QString &volume, const QString &prefix, QString *error);
