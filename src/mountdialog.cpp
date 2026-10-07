@@ -162,6 +162,7 @@ void MountDialog::updateExistingSources() {
         if (candidate.usable()) { ++usable; usableRoots << candidate.root; }
         else if (auto *model = qobject_cast<QStandardItemModel *>(existingSources->model())) model->item(existingSources->count() - 1)->setEnabled(false);
     }
+    if (usable == 0) existingSources->setItemText(0, candidates.isEmpty() ? "No existing mounted volumes" : "No usable sources — mounted volumes have no app/library directories");
     QString chosen = LauncherSources::automaticSource(candidates, previous);
     int selected = usableRoots.contains(chosen) ? existingSources->findData(chosen) : 0; existingSources->setCurrentIndex(selected < 0 ? 0 : selected);
     useSource->setEnabled(existingSources->currentIndex() > 0);

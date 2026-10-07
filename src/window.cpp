@@ -280,6 +280,7 @@ void Window::updateSourceChoices() {
         if (item.usable()) { ++usable; usableRoots << item.root; }
         else if (auto *model = qobject_cast<QStandardItemModel *>(sourceChoices->model())) model->item(sourceChoices->count() - 1)->setEnabled(false);
     }
+    if (usable == 0) sourceChoices->setItemText(0, items.isEmpty() ? "No mounted macOS volumes" : "No usable sources — mounted volumes have no app/library directories");
     int index = usableRoots.contains(chosen) ? sourceChoices->findData(chosen) : 0; sourceChoices->setCurrentIndex(index < 0 ? 0 : index);
     sourceSummary->setText(items.isEmpty() ? "No mounted macOS volumes detected." : QString::number(items.size()) + " mounted volumes detected; " + QString::number(usable) + " suitable for app or library import. " + (usable > 1 ? "Choose a source; multiple usable volumes are mounted." : usable == 0 ? "These mounts contain no readable app/library directories." : "The usable source is selected automatically."));
     if (chosen != previous) { volume->setText(chosen); QSettings("cristim", "darling-launcher").setValue("volume", chosen); }

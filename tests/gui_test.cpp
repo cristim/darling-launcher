@@ -30,6 +30,16 @@
 class GuiTest : public QObject {
     Q_OBJECT
 private slots:
+    void unsuitableMountsExplainDisabledChoices() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        QString mount = temporary.path() + "/recovery"; QVERIFY(QDir().mkpath(mount + "/root/Firmware"));
+        Window window({}, false, [mount] { return QList<SourceMount>{{mount, "/dev/synthetic", "fuse", true}}; });
+        auto *choices = window.findChild<QComboBox *>("mountedSourceChoices"); QVERIFY(choices); QCOMPARE(choices->count(), 2);
+        QVERIFY(choices->currentText().startsWith("No usable sources"));
+        QVERIFY(!(choices->model()->flags(choices->model()->index(1, 0)) & Qt::ItemIsEnabled));
+        QVERIFY(window.findChild<QLabel *>("mountedSourceSummary")->text().contains("0 suitable"));
+    }
     void runtimeDetectionRefresh() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
