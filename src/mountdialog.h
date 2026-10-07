@@ -18,6 +18,7 @@ signals:
 private:
     QComboBox *partitions;
     QComboBox *backend;
+    QComboBox *ownedMountChoices;
     QLineEdit *directory;
     QSpinBox *volumeIndex;
     QPushButton *mountButton;
@@ -25,6 +26,7 @@ private:
     QTextEdit *output;
     QList<MacPartition> detected;
     QProcess discovery;
+    QStringList batchMounts;
     QString ownedMount;
     QByteArray ownedDevice;
     void discover();

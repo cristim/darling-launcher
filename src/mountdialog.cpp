@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "mountdialog.h"
 #include "core.h"
+#include "discovery.h"
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -15,6 +16,7 @@
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QStorageInfo>
+#include <QSettings>
 #include <QTextEdit>
 #include <QVBoxLayout>
 #include <sys/stat.h>
@@ -35,7 +37,18 @@ MountDialog::MountDialog(QWidget *parent) : QDialog(parent) {
         QString path = QFileDialog::getExistingDirectory(this, "Choose an empty mount directory");
         if (!path.isEmpty()) directory->setText(path);
     });
-    form->addRow("Mount directory", row); layout->addLayout(form);
+    form->addRow("Mount directory", row);
+    ownedMountChoices = new QComboBox; form->addRow("Session mounts (select to unmount)", ownedMountChoices);
+    connect(ownedMountChoices, &QComboBox::activated, this, [this](int index) {
+        ownedMount = ownedMountChoices->itemText(index); ownedDevice = ownedMountChoices->itemData(index).toByteArray(); unmountButton->setEnabled(!ownedMount.isEmpty());
+    });
+    layout->addLayout(form);
+    auto *fusePath = new QLineEdit(QSettings("cristim", "darling-launcher").value("apfsFuse", LauncherDiscovery::helperExecutable(LauncherDiscovery::roots(), "apfs-fuse")).toString());
+    auto *utilityPath = new QLineEdit(QSettings("cristim", "darling-launcher").value("apfsUtil", LauncherDiscovery::helperExecutable(LauncherDiscovery::roots(), "apfsutil")).toString());
+    auto *batchRoot = new QLineEdit(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/mounts");
+    form->addRow("APFS FUSE executable", fusePath); form->addRow("APFS metadata utility", utilityPath); form->addRow("Batch mount root", batchRoot);
+    connect(fusePath, &QLineEdit::editingFinished, this, [=] { QSettings("cristim", "darling-launcher").setValue("apfsFuse", fusePath->text()); });
+    connect(utilityPath, &QLineEdit::editingFinished, this, [=] { QSettings("cristim", "darling-launcher").setValue("apfsUtil", utilityPath->text()); });
     layout->addWidget(new QLabel("Kernel APFS requires an installed APFS module; FUSE requires apfs-fuse.\nEncrypted APFS volumes require an external unlock workflow."));
     auto *actions = new QHBoxLayout;
     auto *refresh = new QPushButton("Refresh partitions"); actions->addWidget(refresh); connect(refresh, &QPushButton::clicked, this, &MountDialog::discover);
@@ -47,6 +60,26 @@ MountDialog::MountDialog(QWidget *parent) : QDialog(parent) {
         QString pkexec = QStandardPaths::findExecutable("pkexec"), umount = QStandardPaths::findExecutable("umount");
         if (pkexec.isEmpty() || umount.isEmpty()) { output->append("pkexec or umount is unavailable."); return; }
         execute({pkexec, {umount, "--", ownedMount}}, true);
+    });
+    auto *all = new QPushButton("Mount all detected volumes read-only"); all->setObjectName("mountAllVolumes"); actions->addWidget(all);
+    connect(all, &QPushButton::clicked, this, [=] {
+        if (detected.isEmpty()) { output->append("No macOS partitions detected. Refresh first."); return; }
+        auto *batch = new MountBatch(this); all->setEnabled(false); mountButton->setEnabled(false);
+        connect(batch, &MountBatch::output, output, &QTextEdit::append);
+        connect(batch, &MountBatch::completed, this, [=](const QStringList &mounts, bool cancelled) {
+            batchMounts += mounts; all->setEnabled(true); mountButton->setEnabled(true);
+            for (const auto &path : mounts) if (ownedMountChoices->findText(path) < 0) ownedMountChoices->addItem(path, QStorageInfo(path).device());
+            if (!mounts.isEmpty()) { ownedMount = mounts.first(); ownedDevice = QStorageInfo(ownedMount).device(); ownedMountChoices->setCurrentText(ownedMount); unmountButton->setEnabled(true); }
+            output->append(cancelled ? "Stopped after authorization was cancelled or denied." : "Finished scanning detected volumes.");
+            auto sources = LauncherCore::mountedMacVolumes();
+            if (sources.size() == 1) emit sourceMounted(sources.first());
+            else if (sources.size() > 1) {
+                partitions->clear(); partitions->addItem("Multiple sources found; use Detect mounted macOS volumes in Settings", -1);
+                for (const auto &source : sources) output->append("macOS applications source: " + source);
+            } else output->append("No mounted volume with macOS applications was found.");
+            batch->deleteLater();
+        });
+        batch->start(detected, batchRoot->text(), QStandardPaths::findExecutable("pkexec"), QStandardPaths::findExecutable("mount"), fusePath->text(), utilityPath->text());
     });
     layout->addLayout(actions);
     output = new QTextEdit; output->setReadOnly(true); output->setObjectName("mountOutput"); layout->addWidget(output);
@@ -86,7 +119,7 @@ void MountDialog::mountSelected() {
     QStorageInfo storage(directory->text()); storage.refresh();
     if (storage.rootPath() == QFileInfo(directory->text()).canonicalFilePath()) { output->append("The mount directory is already a mount point."); return; }
     MountBackend driver = backend->currentIndex() == 1 ? MountBackend::ApfsFuse : MountBackend::Kernel;
-    QString tool = QStandardPaths::findExecutable(driver == MountBackend::ApfsFuse ? "apfs-fuse" : "mount");
+    QString tool = driver == MountBackend::ApfsFuse ? QSettings("cristim", "darling-launcher").value("apfsFuse", LauncherDiscovery::helperExecutable(LauncherDiscovery::roots(), "apfs-fuse")).toString() : QStandardPaths::findExecutable("mount");
     MountCommand command; QString error;
     if (!LauncherMount::makeCommand(partition, directory->text(), driver, volumeIndex->value(), getuid(), getgid(),
                                     QStandardPaths::findExecutable("pkexec"), tool, &command, &error)) { output->append(error); return; }
@@ -103,9 +136,13 @@ void MountDialog::execute(const MountCommand &command, bool unmount, const QStri
         if (success) {
             QStorageInfo storage(target); storage.refresh();
             if (unmount) {
-                if (storage.rootPath() != target) ownedMount.clear(); else output->append("The directory is still mounted.");
+                if (storage.rootPath() != target) {
+                    ownedMount.clear(); int index = ownedMountChoices->findText(target); if (index >= 0) ownedMountChoices->removeItem(index);
+                    if (ownedMountChoices->count()) { ownedMount = ownedMountChoices->currentText(); ownedDevice = ownedMountChoices->currentData().toByteArray(); }
+                } else output->append("The directory is still mounted.");
             } else if (storage.rootPath() == target && storage.isReadOnly() && QFileInfo(QString::fromLocal8Bit(storage.device())).canonicalFilePath() == QFileInfo(device).canonicalFilePath()) {
                 ownedMount = target; ownedDevice = storage.device();
+                if (ownedMountChoices->findText(target) < 0) ownedMountChoices->addItem(target, ownedDevice);
                 if (LauncherCore::looksLikeMacVolume(target)) emit sourceMounted(target);
                 else output->append("Mounted, but no macOS applications layout was found. Choose the appropriate APFS volume index.");
             } else output->append("The selected directory was not verified as a read-only mount.");

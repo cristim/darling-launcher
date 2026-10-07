@@ -84,3 +84,36 @@ in each private dependency-chain step and included in the proposed draft. Review
 local paths and logs before sharing; Apple payloads remain private and no issue or
 PR is submitted automatically. Source-fix opt-in currently presents workflow
 guidance; automated source edits and PR creation remain future work.
+
+### Machine defaults and a private source build
+
+With no saved prefix, the launcher proposes its own `prefixes/default` location
+under Qt's application data directory. It does not select another tab's test
+prefix. A verified installed launcher/runtime pair is populated automatically;
+**Detected runtimes** offers other complete discovered build/image pairs. Saved
+paths remain editable, and a prefix's build provenance takes priority when
+recovering its runtime paths.
+
+**Build and deploy Darling…** defaults the builder script, a clean VibeDarling
+main/master source clone (or a visible proposed clone path), and a fresh workspace.
+Building from a missing source path clones upstream first, then invokes the
+separate builder to integrate root and nested repositories, build, deploy a
+private image and initialize its prefix. Choose default branches or include open
+PRs. Successful completion selects all three resulting paths automatically.
+This does not install over the system runtime or change other checkouts.
+
+### Mount every detected macOS volume
+
+**Settings → Mount macOS source… → Mount all detected volumes read-only** scans
+APFS/HFS partitions detected by `lsblk`. For APFS it uses `apfsutil` metadata to
+obtain actual volume indices, then mounts each unencrypted volume with APFS FUSE.
+It does not guess indices or unlock FileVault. All mount commands use `pkexec`
+and `ro,nodev,nosuid,noexec`; cancelling or denying authorization stops the batch.
+Mount helpers and the batch mount root are configurable. Installed helpers or
+helpers built in discovered Darling folders are detected automatically.
+
+After mounting, a single macOS applications source is selected automatically;
+multiple matches require a choice. Verified mounts are listed in the dialog's
+session mount selector for explicit unmounting. They remain mounted on exit.
+A working desktop polkit authentication agent is required. The launcher does not
+install kernel drivers or attempt an alternate privilege route after denial.

@@ -9,6 +9,27 @@
 class MountTest : public QObject {
     Q_OBJECT
 private slots:
+    void apfsVolumeMetadata() {
+        auto volumes = LauncherMount::parseVolumes("Volume 0 12345678-1234-1234-1234-123456789ABC\nName:               macOS\nFileVault:          No\n"
+            "Volume 4 ABCDEFAB-1234-1234-1234-123456789ABC\nName:               Data\nFileVault:          Yes\n"
+            "Volume 99 ABCDEFAB-1234-1234-1234-123456789ABC\nName:               Unknown\n");
+        QCOMPARE(volumes.size(), 3); QCOMPARE(volumes[0].index, 0); QCOMPARE(volumes[0].name, QString("macOS"));
+        QVERIFY(!volumes[0].encrypted); QVERIFY(volumes[1].encrypted); QVERIFY(volumes[2].encrypted);
+        QVERIFY(LauncherMount::parseVolumes("Volume 0 invalid\nFileVault: No").isEmpty());
+        auto invalidTail = LauncherMount::parseVolumes("Volume 0 12345678-1234-1234-1234-123456789ABC\nFileVault: Yes\nVolume 100 12345678-1234-1234-1234-123456789ABC\nFileVault: No\n");
+        QCOMPARE(invalidTail.size(), 1); QVERIFY(invalidTail.first().encrypted);
+        QVERIFY(LauncherMount::parseVolumes("Volume 2147483648 12345678-1234-1234-1234-123456789ABC").isEmpty());
+    }
+    void batchSkipsUnavailableAndMounted() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        MountBatch batch; QSignalSpy done(&batch, &MountBatch::completed), output(&batch, &MountBatch::output);
+        batch.start({{"/dev/missing-macOS", "apfs", {}, false}, {"/dev/mounted", "apfs", {}, true}}, temporary.path(), "/usr/bin/true", "/usr/bin/true", "/usr/bin/true", "/usr/bin/true");
+        QCOMPARE(done.count(), 1); QVERIFY(done.first().first().toStringList().isEmpty()); QVERIFY(!done.first()[1].toBool());
+        QCOMPARE(output.count(), 2);
+        MountBatch invalid; QSignalSpy rejected(&invalid, &MountBatch::completed);
+        QString link = temporary.path() + "/link"; QVERIFY(QFile::link(temporary.path(), link));
+        invalid.start({}, link, "/usr/bin/true", {}, {}, {}); QCOMPARE(rejected.count(), 1);
+    }
     void partitionDiscovery() {
         QString error;
         auto partitions = LauncherMount::parsePartitions(R"({"blockdevices":[{"path":"/dev/disk","fstype":null,"children":[{"path":"/dev/disk1","fstype":"apfs","mountpoints":[null]},{"path":"/dev/disk2","fstype":"hfsplus","label":"macOS","mountpoints":["/mnt/mac"]},{"path":"/dev/disk3","fstype":"ext4","mountpoints":[]}]}]})", &error);
