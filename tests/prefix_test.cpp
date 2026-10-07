@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "prefixbuilder.h"
+#include "discovery.h"
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -15,6 +16,39 @@ QJsonObject readJson(const QString &path) { QFile file(path); if (!file.open(QIO
 class PrefixTest : public QObject {
     Q_OBJECT
 private slots:
+    void independentClone() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        QString git = QStandardPaths::findExecutable("git"); QVERIFY(!git.isEmpty());
+        QString original = temporary.path() + "/source", destination = temporary.path() + "/clone with spaces";
+        QCOMPARE(QProcess::execute(git, {"init", original}), 0);
+        QProcess clone;
+        clone.start(git, LauncherDiscovery::cloneArguments(original, destination));
+        QVERIFY(clone.waitForFinished()); QCOMPARE(clone.exitCode(), 0);
+        QVERIFY(QFileInfo::exists(destination + "/.git"));
+        clone.start(git, LauncherDiscovery::cloneArguments(original, destination));
+        QVERIFY(clone.waitForFinished()); QVERIFY(clone.exitCode() != 0);
+        QVERIFY(QFileInfo::exists(original + "/.git"));
+    }
+    void volumeDefaults() {
+        QCOMPARE(LauncherDiscovery::defaultVolume({"/mounted/macOS"}, ""), QString("/mounted/macOS"));
+        QCOMPARE(LauncherDiscovery::defaultVolume({}, ""), QString());
+        QCOMPARE(LauncherDiscovery::defaultVolume({"/one", "/two"}, "/two"), QString("/two"));
+    }
+    void pathDiscovery() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        QString root = temporary.path();
+        QVERIFY(QDir().mkpath(root + "/vibedarling/tools"));
+        QVERIFY(QDir().mkpath(root + "/vibedarling/.git"));
+        QVERIFY(QDir().mkpath(root + "/vibedarling/src/startup"));
+        QFile script(root + "/vibedarling/tools/all-vibedarling-pr-prefix.py"); QVERIFY(script.open(QIODevice::WriteOnly)); script.close();
+        QFile cmake(root + "/vibedarling/CMakeLists.txt"); QVERIFY(cmake.open(QIODevice::WriteOnly)); cmake.close();
+        QCOMPARE(LauncherDiscovery::scripts({root}), QStringList{script.fileName()});
+        QCOMPARE(LauncherDiscovery::sources({root}), QStringList{root + "/vibedarling"});
+        QCOMPARE(LauncherDiscovery::newWorkspace(root), root + "/darling-workspace");
+        QVERIFY(QDir().mkpath(root + "/darling-workspace"));
+        QCOMPARE(LauncherDiscovery::newWorkspace(root), root + "/darling-workspace-2");
+        QVERIFY(LauncherDiscovery::sources({root + "/missing"}).isEmpty());
+    }
     void preserveDiscoveryInputs() {
         QJsonObject discovery{{"schema", 1}, {"owner", "VibeDarling"}, {"complete", true},
             {"repos", QJsonArray{QJsonObject{{"repo", "darling"}, {"branch", "master"}, {"base", QString(40, 'a')}, {"prs", QJsonArray{QJsonObject{{"number", 7}}}}}}}};

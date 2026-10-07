@@ -48,3 +48,22 @@ The **Opt in: source fix workflow** action describes a separate clean-room VibeD
 ## Current limits
 
 App scanning covers top-level stock apps and requires a usable `CFBundleExecutable` in `Info.plist`. It does not discover nested utilities, configure native Homebrew, or resolve failures for which the loader supplies no absolute `Expected in` path. Framework imports copy a whole framework bundle. A successful Darling exit proves the launcher invocation completed, not that the guest app's UI worked. Real import and launch verification needs a user-selected mounted macOS source and an appropriate Darling runtime.
+
+### Guided path setup
+
+On startup, a single detected mounted macOS volume is selected automatically.
+Multiple sources require a choice; no partition is mounted automatically.
+**Detect paths** also finds an installed `darling` executable and reads runtime
+paths from the selected prefix's launcher build provenance.
+
+In **Create prefix**, **Find local tools and sources** searches immediate Darling
+folders in `~/src`, the launcher's data sources folder, and `/tmp`. Multiple
+matches are presented for selection. Paths remain editable. A fresh workspace
+under the launcher's application data folder is proposed visibly.
+**Clone VibeDarling…** clones `https://github.com/VibeDarling/darling.git` into a
+new folder under a parent you select, streams Git progress, and fills the source
+field. Existing checkouts are not modified. Submodule integration remains the
+prefix builder's responsibility. The prefix-builder script must be present in
+that clone or selected from the separate tooling checkout; the launcher does
+not assume the tooling branch has been merged upstream. Clone failures retain
+partial folders for inspection, and require an explicit retry.

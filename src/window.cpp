@@ -3,6 +3,7 @@
 #include "mountdialog.h"
 #include "appbrowser.h"
 #include "prefixdialog.h"
+#include "discovery.h"
 #include <QApplication>
 #include <QDir>
 #include <QFile>
@@ -25,6 +26,7 @@
 #include <QPushButton>
 #include <QSaveFile>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QSplitter>
 #include <QTableWidget>
@@ -62,6 +64,21 @@ Window::Window(const QString &builderScript) {
     prefix->setText(settings.value("prefix").toString());
     darling->setText(settings.value("darling").toString());
     runtimeRoot->setText(settings.value("runtimeRoot").toString());
+    auto detectPaths = [this] {
+        const auto mounts = LauncherCore::mountedMacVolumes();
+        volume->setText(LauncherDiscovery::defaultVolume(mounts, volume->text()));
+        if (darling->text().isEmpty()) darling->setText(QStandardPaths::findExecutable("darling"));
+        QFile provenance(prefix->text() + "/.darling-launcher/build-provenance.json");
+        if (!prefix->text().isEmpty() && provenance.open(QIODevice::ReadOnly)) {
+            auto data = QJsonDocument::fromJson(provenance.readAll()).object();
+            QString launcher = data.value("launcher").toString();
+            QString runtime = data.value("runtime_install_root").toString();
+            if (QFileInfo(launcher).isExecutable()) darling->setText(launcher);
+            if (QFileInfo(runtime).isDir()) runtimeRoot->setText(runtime);
+        }
+    };
+    detectPaths();
+    connect(prefix, &QLineEdit::editingFinished, this, detectPaths);
     for (QLineEdit *field : {volume, prefix, darling, runtimeRoot})
         connect(field, &QLineEdit::editingFinished, this, [this] {
             QSettings settings("cristim", "darling-launcher");
@@ -71,6 +88,7 @@ Window::Window(const QString &builderScript) {
     auto *toolbar = new QGridLayout;
     int actionCount = 0;
     auto add = [&](const QString &title, auto callback) { auto *button = new QPushButton(title); button->setObjectName(title); toolbar->addWidget(button, actionCount / 4, actionCount % 4); ++actionCount; connect(button, &QPushButton::clicked, this, callback); };
+    add("Detect paths", [this, detectPaths] { detectPaths(); refresh(); load(); });
     add("Create prefix", [this, builderScript] {
         if (!prefixDialog) {
             prefixDialog = new PrefixDialog(volume->text(), builderScript, this);
@@ -101,6 +119,7 @@ Window::Window(const QString &builderScript) {
         QStringList mounts = LauncherCore::mountedMacVolumes();
         if (mounts.isEmpty()) { setBusy(false, "No mounted macOS volume found. Use Mount macOS source to select a partition."); return; }
         QMenu menu(this);
+        if (mounts.size() == 1) { volume->setText(mounts.first()); refresh(); return; }
         for (const QString &mount : mounts) menu.addAction(mount, this, [this, mount] { volume->setText(mount); refresh(); });
         menu.exec(QCursor::pos());
     });
