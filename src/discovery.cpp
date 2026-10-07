@@ -3,10 +3,12 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QStandardPaths>
+#include <QFile>
+#include <QProcess>
 namespace LauncherDiscovery {
 QStringList cloneArguments(const QString &repository, const QString &destination) { return {"clone", "--progress", "--", repository, destination}; }
 QString defaultVolume(const QStringList &mounts, const QString &current) { return mounts.size() == 1 ? mounts.first() : current; }
-QStringList roots() { return {QDir::homePath()+"/src", QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)+"/sources", QDir::tempPath()}; }
+QStringList roots() { return {QDir::homePath()+"/src", QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)+"/sources", QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)+"/workspaces", QDir::tempPath()}; }
 static QStringList candidates(const QStringList &roots) {
     QStringList result;
     for (const auto &root : roots) {
@@ -16,6 +18,51 @@ static QStringList candidates(const QStringList &roots) {
             if (entry.fileName().contains("darling", Qt::CaseInsensitive)) result << entry.absoluteFilePath();
     }
     result.removeDuplicates(); return result;
+}
+QString helperExecutable(const QStringList &roots, const QString &name) {
+    QString installed = QStandardPaths::findExecutable(name);
+    if (!installed.isEmpty()) return installed;
+    for (const auto &path : candidates(roots)) {
+        QString helper = path + "/build/" + name;
+        if (QFileInfo(helper).isExecutable()) return helper;
+    }
+    return {};
+}
+QString managedPrefix(const QString &dataRoot) { return dataRoot + "/prefixes/default"; }
+QList<Runtime> runtimes(const QStringList &roots, const QString &installedLauncher) {
+    QList<Runtime> result;
+    auto add = [&](const QString &launcher, const QString &root) {
+        if (!QFileInfo(launcher).isExecutable() || !QFileInfo(root + "/libexec/darling/private/etc").isDir()) return;
+        for (const auto &item : result) if (item.launcher == launcher && item.installRoot == root) return;
+        result.append({launcher, root});
+    };
+    if (!installedLauncher.isEmpty()) {
+        QDir install(QFileInfo(installedLauncher).absolutePath()); install.cdUp();
+        add(installedLauncher, install.absolutePath());
+    }
+    for (const auto &path : candidates(roots)) {
+        add(path + "/build/src/startup/darling", path + "/image/usr/local");
+        add(path + "/build/src/startup/darling", path + "/install/usr/local");
+        add(path + "/build/src/startup/darling", path + "/build/image/usr/local");
+    }
+    return result;
+}
+QString cleanSource(const QStringList &roots) {
+    QString git = QStandardPaths::findExecutable("git");
+    if (git.isEmpty()) return {};
+    for (const auto &path : sources(roots)) {
+        auto query = [&](const QStringList &args) -> QString {
+            QProcess process; process.start(git, QStringList{"-C", path} + args);
+            if (!process.waitForFinished(1500) || process.exitCode() != 0) return {};
+            return QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+        };
+        if (query({"remote", "get-url", "origin"}) != "https://github.com/VibeDarling/darling.git") continue;
+        QString branch = query({"symbolic-ref", "--short", "HEAD"});
+        if (branch != "main" && branch != "master") continue;
+        QProcess status; status.start(git, {"-C", path, "status", "--porcelain"});
+        if (status.waitForFinished(1500) && status.exitCode() == 0 && status.readAllStandardOutput().trimmed().isEmpty()) return path;
+    }
+    return {};
 }
 QStringList scripts(const QStringList &roots) {
     QStringList result;

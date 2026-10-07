@@ -142,6 +142,26 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(apps->item(0, 2)->text(), retrySuccess ? QString("Exited successfully") : QString("Exited 2"), 5000);
         QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
     }
+    void cloneThenBuildAndDeploy() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        QString fakeGit = temporary.path() + "/git";
+        QFile git(fakeGit); QVERIFY(git.open(QIODevice::WriteOnly));
+        git.write("#!/bin/sh\nif [ \"$1\" = clone ]; then mkdir -p \"$5\"; echo cloned fixture; exit 0; fi\nexit 1\n"); git.close();
+        QVERIFY(git.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        QByteArray originalPath = qgetenv("PATH"); qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath);
+        Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py"); window.show();
+        window.findChild<QLineEdit *>("volumeField")->clear();
+        window.findChild<QPushButton *>("Create prefix")->click();
+        auto *dialog = window.findChild<PrefixDialog *>(); QVERIFY(dialog);
+        QString source = temporary.path() + "/sources/new clone", workspace = temporary.path() + "/workspace";
+        dialog->findChild<QLineEdit *>("prefixBuilderSource")->setText(source);
+        dialog->findChild<QLineEdit *>("prefixBuilderWorkspace")->setText(workspace);
+        dialog->findChild<QPushButton *>("buildPrefix")->click();
+        QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLineEdit *>("prefixField")->text(), workspace + "/prefix", 5000);
+        QVERIFY(QFileInfo(source).isDir()); QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), workspace + "/image/usr/local");
+        qputenv("PATH", originalPath);
+    }
     void prefixBuilderRuntimeSelection() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());

@@ -4,6 +4,7 @@
 #include "discovery.h"
 #include <QProcess>
 #include <QDateTime>
+#include <QSharedPointer>
 #include <QComboBox>
 #include <QDir>
 #include <QFileDialog>
@@ -45,7 +46,7 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
     auto *status = new QLabel("The source clone is read-only input. Existing workspaces are refused."); layout->addWidget(status);
     auto *progress = new QProgressBar; progress->setRange(0, 1); progress->setValue(0); layout->addWidget(progress);
     auto *output = new QTextEdit; output->setReadOnly(true); layout->addWidget(output);
-    auto *build = new QPushButton("Build prefix"); build->setObjectName("buildPrefix"); layout->addWidget(build);
+    auto *build = new QPushButton("Build and deploy private runtime"); build->setObjectName("buildPrefix"); layout->addWidget(build);
     QSettings settings("cristim", "darling-launcher");
     script->setText(scriptOverride.isEmpty() ? settings.value("builderScript").toString() : scriptOverride);
     source->setText(settings.value("builderSource").toString());
@@ -74,14 +75,25 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
     QDir().mkpath(data + "/workspaces");
     workspace->setText(LauncherDiscovery::newWorkspace(data + "/workspaces"));
     auto tools = LauncherDiscovery::scripts(LauncherDiscovery::roots());
-    if (script->text().isEmpty() && tools.size() == 1) script->setText(tools.first());
+    if ((script->text().isEmpty() || !QFileInfo(script->text()).isFile()) && !tools.isEmpty()) script->setText(tools.first());
+    if (source->text().isEmpty() || !QFileInfo(source->text()).isDir()) {
+        QString detected = LauncherDiscovery::cleanSource(LauncherDiscovery::roots());
+        source->setText(detected.isEmpty() ? data + "/sources/vibedarling" : detected);
+    }
+    auto *defaults = new QLabel("Paths are populated from installed tools and clean default-branch clones. A missing source path is a proposed new clone location.");
+    defaults->setWordWrap(true); layout->insertWidget(2, defaults);
+    auto buildAfterClone = QSharedPointer<bool>::create(false);
     connect(clone, &QPushButton::clicked, this, [=] {
-        QString parent = QFileDialog::getExistingDirectory(this, "Choose parent folder for a new VibeDarling clone", data);
-        if (parent.isEmpty()) return;
-        QString destination = parent + "/vibedarling-" + QDateTime::currentDateTimeUtc().toString("yyyyMMdd-hhmmsszzz");
-        if (QFileInfo::exists(destination)) { status->setText("Clone destination already exists."); return; }
+        QString destination = source->text();
+        if (destination.isEmpty() || QFileInfo::exists(destination)) {
+            QString parent = QFileDialog::getExistingDirectory(this, "Choose parent folder for a new VibeDarling clone", data);
+            if (parent.isEmpty()) { *buildAfterClone = false; return; }
+            destination = parent + "/vibedarling-" + QDateTime::currentDateTimeUtc().toString("yyyyMMdd-hhmmsszzz");
+        }
+        if (!QDir::isAbsolutePath(destination) || !QDir().mkpath(QFileInfo(destination).absolutePath())) { *buildAfterClone = false; status->setText("Choose an absolute source path with a writable parent."); return; }
+        if (QFileInfo::exists(destination)) { *buildAfterClone = false; status->setText("Clone destination already exists."); return; }
         QString git = QStandardPaths::findExecutable("git");
-        if (git.isEmpty()) { status->setText("Install Git to clone VibeDarling."); return; }
+        if (git.isEmpty()) { *buildAfterClone = false; status->setText("Install Git to clone VibeDarling."); return; }
         auto *process = new QProcess(this); process->setProcessChannelMode(QProcess::MergedChannels);
         clone->setEnabled(false); build->setEnabled(false); progress->setRange(0,0);
         status->setText("Cloning https://github.com/VibeDarling/darling.git into " + destination);
@@ -94,7 +106,8 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
                 if (QFileInfo(tool).isFile()) script->setText(tool);
                 QSettings("cristim", "darling-launcher").setValue("builderSource", destination);
                 status->setText("Independent VibeDarling clone ready. Choose inputs and Build prefix.");
-            } else status->setText("Clone failed. See output; any partial clone is retained for inspection.");
+                if (*buildAfterClone) { *buildAfterClone = false; build->click(); }
+            } else { *buildAfterClone = false; status->setText("Clone failed. See output; any partial clone is retained for inspection."); }
             process->deleteLater();
         };
         connect(process, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) { done(code == 0 && exit == QProcess::NormalExit); });
@@ -102,6 +115,10 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
         process->start(git, LauncherDiscovery::cloneArguments("https://github.com/VibeDarling/darling.git", destination));
     });
     connect(build, &QPushButton::clicked, this, [=] {
+        if (!QFileInfo(source->text()).isDir()) {
+            if (!QFileInfo(script->text()).isFile()) { status->setText("Select a prefix-builder script before building."); return; }
+            *buildAfterClone = true; clone->click(); return;
+        }
         QString volume = QFileInfo(sourceVolume).canonicalFilePath();
         QString parent = QFileInfo(QFileInfo(workspace->text()).absolutePath()).canonicalFilePath();
         if (!volume.isEmpty() && (parent == volume || parent.startsWith(volume + '/'))) { status->setText("The build workspace must be outside the macOS source volume."); return; }

@@ -29,6 +29,39 @@ private slots:
         QVERIFY(clone.waitForFinished()); QVERIFY(clone.exitCode() != 0);
         QVERIFY(QFileInfo::exists(original + "/.git"));
     }
+    void runtimeDefaults() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        QString root = temporary.path(), install = root + "/installed";
+        QVERIFY(QDir().mkpath(install + "/bin"));
+        QFile launcher(install + "/bin/darling"); QVERIFY(launcher.open(QIODevice::WriteOnly)); launcher.close();
+        QVERIFY(launcher.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        QVERIFY(LauncherDiscovery::runtimes({root}, launcher.fileName()).isEmpty());
+        QVERIFY(QDir().mkpath(install + "/libexec/darling/private/etc"));
+        auto found = LauncherDiscovery::runtimes({root}, launcher.fileName()); QCOMPARE(found.size(), 1);
+        QCOMPARE(found.first().launcher, launcher.fileName()); QCOMPARE(found.first().installRoot, install);
+        QString built = root + "/darling-workspace";
+        QVERIFY(QDir().mkpath(built + "/build/src/startup"));
+        QVERIFY(QDir().mkpath(built + "/image/usr/local/libexec/darling/private/etc"));
+        QVERIFY(QFile::copy(launcher.fileName(), built + "/build/src/startup/darling"));
+        QCOMPARE(LauncherDiscovery::runtimes({root}, launcher.fileName()).size(), 2);
+        QCOMPARE(LauncherDiscovery::managedPrefix(root), root + "/prefixes/default");
+        QVERIFY(QDir().mkpath(built + "/build"));
+        QVERIFY(QFile::copy(launcher.fileName(), built + "/build/launcher-fixture-helper"));
+        QCOMPARE(LauncherDiscovery::helperExecutable({root}, "launcher-fixture-helper"), built + "/build/launcher-fixture-helper");
+    }
+    void cleanBuildSource() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); QString root = temporary.path();
+        QString source = root + "/darling-source", git = QStandardPaths::findExecutable("git");
+        QCOMPARE(QProcess::execute(git, {"init", "-b", "main", source}), 0);
+        QVERIFY(QDir().mkpath(source + "/src/startup"));
+        QFile cmake(source + "/CMakeLists.txt"); QVERIFY(cmake.open(QIODevice::WriteOnly)); cmake.write("fixture"); cmake.close();
+        QCOMPARE(QProcess::execute(git, {"-C", source, "add", "."}), 0);
+        QCOMPARE(QProcess::execute(git, {"-C", source, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"}), 0);
+        QCOMPARE(QProcess::execute(git, {"-C", source, "remote", "add", "origin", "https://github.com/VibeDarling/darling.git"}), 0);
+        QCOMPARE(LauncherDiscovery::cleanSource({root}), source);
+        QVERIFY(cmake.open(QIODevice::Append)); cmake.write("dirty"); cmake.close();
+        QVERIFY(LauncherDiscovery::cleanSource({root}).isEmpty());
+    }
     void volumeDefaults() {
         QCOMPARE(LauncherDiscovery::defaultVolume({"/mounted/macOS"}, ""), QString("/mounted/macOS"));
         QCOMPARE(LauncherDiscovery::defaultVolume({}, ""), QString());

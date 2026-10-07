@@ -14,6 +14,7 @@
 #include <QHeaderView>
 #include <QGridLayout>
 #include <QButtonGroup>
+#include <QComboBox>
 #include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QLabel>
@@ -72,10 +73,27 @@ Window::Window(const QString &builderScript) {
     prefix->setText(settings.value("prefix").toString());
     darling->setText(settings.value("darling").toString());
     runtimeRoot->setText(settings.value("runtimeRoot").toString());
-    auto detectPaths = [this] {
+    const QString dataRoot = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (prefix->text().isEmpty()) prefix->setText(LauncherDiscovery::managedPrefix(dataRoot));
+    volume->setPlaceholderText("No mounted macOS source detected — mount or select one");
+    auto *runtimeChoices = new QComboBox; runtimeChoices->setObjectName("detectedRuntimes");
+    runtimeChoices->addItem("Select a detected runtime…");
+    const auto detectedRuntimes = LauncherDiscovery::runtimes(LauncherDiscovery::roots(), QStandardPaths::findExecutable("darling"));
+    for (const auto &runtime : detectedRuntimes) runtimeChoices->addItem(runtime.launcher + " — " + runtime.installRoot);
+    form->addRow("Detected runtimes", runtimeChoices);
+    connect(runtimeChoices, &QComboBox::activated, this, [this, detectedRuntimes](int index) {
+        if (index <= 0) return;
+        const auto runtime = detectedRuntimes.at(index - 1);
+        darling->setText(runtime.launcher); runtimeRoot->setText(runtime.installRoot);
+    });
+    auto detectPaths = [this, detectedRuntimes] {
         const auto mounts = LauncherCore::mountedMacVolumes();
         volume->setText(LauncherDiscovery::defaultVolume(mounts, volume->text()));
-        if (darling->text().isEmpty()) darling->setText(QStandardPaths::findExecutable("darling"));
+        if ((darling->text().isEmpty() || !QFileInfo(darling->text()).isExecutable()) && !detectedRuntimes.isEmpty()) {
+            darling->setText(detectedRuntimes.first().launcher); runtimeRoot->setText(detectedRuntimes.first().installRoot);
+        }
+        if (runtimeRoot->text().isEmpty()) for (const auto &runtime : detectedRuntimes)
+            if (runtime.launcher == darling->text()) { runtimeRoot->setText(runtime.installRoot); break; }
         QFile provenance(prefix->text() + "/.darling-launcher/build-provenance.json");
         if (!prefix->text().isEmpty() && provenance.open(QIODevice::ReadOnly)) {
             auto data = QJsonDocument::fromJson(provenance.readAll()).object();
@@ -97,7 +115,7 @@ Window::Window(const QString &builderScript) {
     auto *settingsToolbar = new QGridLayout;
     int actionCount = 0, settingsActionCount = 0;
     auto add = [&](const QString &title, auto callback) {
-        auto *button = new QPushButton(title); button->setObjectName(title);
+        auto *button = new QPushButton(title == "Create prefix" ? "Build and deploy Darling…" : title); button->setObjectName(title);
         bool setting = title == "Detect paths" || title == "Create prefix" || title == "Initialize selected prefix" || title == "Detect mounted macOS volumes" || title == "Mount macOS source…" || title == "Apply settings";
         int &count = setting ? settingsActionCount : actionCount;
         (setting ? settingsToolbar : toolbar)->addWidget(button, count / 3, count % 3); ++count;
