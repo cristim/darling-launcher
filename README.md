@@ -67,3 +67,20 @@ prefix builder's responsibility. The prefix-builder script must be present in
 that clone or selected from the separate tooling checkout; the launcher does
 not assume the tooling branch has been merged upstream. Clone failures retain
 partial folders for inspection, and require an explicit retry.
+
+### Apps, settings and contributions
+
+The **Apps** tab contains the import browser, imported apps, launches and progress.
+Configure source, prefix and runtime paths in **Settings**; **Apply settings**
+returns to Apps and reloads the selected source and prefix.
+
+A contribution offer appears only for a selected app whose missing-symbol launch
+failure was followed by a successful library import into the private prefix.
+It explains the imported libraries and retry result, and offers a local issue
+draft or the separate opt-in source-fix workflow. The offer also remains available
+if the retry still fails. Failed imports, ordinary failures and launches without
+this workaround show no contribution actions. Original loader errors are retained
+in each private dependency-chain step and included in the proposed draft. Review
+local paths and logs before sharing; Apple payloads remain private and no issue or
+PR is submitted automatically. Source-fix opt-in currently presents workflow
+guidance; automated source edits and PR creation remain future work.

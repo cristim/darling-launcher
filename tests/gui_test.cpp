@@ -11,6 +11,8 @@
 #include <QImage>
 #include <QJsonDocument>
 #include <QLineEdit>
+#include <QLabel>
+#include <QTabWidget>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QMimeData>
@@ -47,7 +49,29 @@ private slots:
         browser.setGridView(true); QCOMPARE(browser.viewMode(), QListView::IconMode); QCOMPARE(browser.iconSize(), QSize(64, 64)); QCOMPARE(browser.selectedBundles().size(), 2);
         browser.setGridView(false); QCOMPARE(browser.viewMode(), QListView::ListMode); QCOMPARE(browser.selectedBundles().size(), 2);
     }
+    void settingsAreSeparate() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        Window window; window.show();
+        auto *tabs = window.findChild<QTabWidget *>("mainTabs"); QVERIFY(tabs);
+        QCOMPARE(tabs->count(), 2); QCOMPARE(tabs->tabText(0), QString("Apps")); QCOMPARE(tabs->tabText(1), QString("Settings"));
+        QVERIFY(tabs->widget(1)->isAncestorOf(window.findChild<QLineEdit *>("volumeField")));
+        QVERIFY(tabs->widget(1)->isAncestorOf(window.findChild<QPushButton *>("Create prefix")));
+        QVERIFY(tabs->widget(0)->isAncestorOf(window.findChild<QListWidget *>("availableApps")));
+        QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
+        QVERIFY(!window.findChild<QPushButton *>("saveProposedIssue")->isVisible());
+        tabs->setCurrentIndex(1);
+        QVERIFY(window.findChild<QLineEdit *>("volumeField")->isVisible());
+        QVERIFY(!window.findChild<QListWidget *>("availableApps")->isVisible());
+        window.findChild<QPushButton *>("Apply settings")->click(); QCOMPARE(tabs->currentIndex(), 0);
+    }
+    void importDiagnoseRetry_data() {
+        QTest::addColumn<bool>("retrySuccess");
+        QTest::newRow("workaround-succeeds") << true;
+        QTest::newRow("workaround-still-fails") << false;
+    }
     void importDiagnoseRetry() {
+        QFETCH(bool, retrySuccess);
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
         QString volume = temporary.path() + "/volume", prefix = temporary.path() + "/prefix";
@@ -63,6 +87,8 @@ private slots:
         QFile fake(fakePath); QVERIFY(fake.open(QIODevice::WriteOnly));
         fake.write("#!/bin/sh\nif [ -f \"$DPREFIX/usr/lib/libExample.dylib\" ]; then echo launched; exit 0; fi\n"
                    "printf 'Symbol not found: _Example\\n  Referenced from: /Applications/Test.app/Contents/MacOS/Test\\n  Expected in: /usr/lib/libExample.dylib\\n'\nexit 1\n");
+        if (!retrySuccess) { fake.resize(0); fake.seek(0); fake.write("#!/bin/sh\nif [ -f \"$DPREFIX/usr/lib/libExample.dylib\" ]; then echo unrelated failure; exit 2; fi\n"
+            "printf 'Symbol not found: _Example\\n  Referenced from: /Applications/Test.app/Contents/MacOS/Test\\n  Expected in: /usr/lib/libExample.dylib\\n'\nexit 1\n"); }
         fake.close(); QVERIFY(QFile::setPermissions(fakePath, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         Window window; window.show();
         window.findChild<QLineEdit *>("volumeField")->setText(volume);
@@ -89,11 +115,32 @@ private slots:
         apps->selectRow(0);
         window.findChild<QPushButton *>("Launch selected")->click();
         QTRY_VERIFY_WITH_TIMEOUT(apps->item(0, 2)->text().contains("Missing _Example"), 5000);
+        QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
+        QVERIFY(window.findChild<QPushButton *>("Import needed library and retry")->isVisible());
+        QVERIFY(QFile::rename(volume + "/usr/lib/libExample.dylib", volume + "/usr/lib/temporarily-unavailable"));
         window.findChild<QPushButton *>("Import needed library and retry")->click();
-        QTRY_COMPARE_WITH_TIMEOUT(apps->item(0, 2)->text(), QString("Exited successfully"), 5000);
+        QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
+        QVERIFY(QFile::rename(volume + "/usr/lib/temporarily-unavailable", volume + "/usr/lib/libExample.dylib"));
+        window.findChild<QPushButton *>("Import needed library and retry")->click();
+        QTRY_COMPARE_WITH_TIMEOUT(apps->item(0, 2)->text(), retrySuccess ? QString("Exited successfully") : QString("Exited 2"), 5000);
         QVERIFY(QFileInfo::exists(prefix + "/usr/lib/libExample.dylib"));
         auto catalog = LauncherCore::loadCatalog(prefix);
         QCOMPARE(catalog.value("apps").toArray().first().toObject().value("chain").toArray().size(), 1);
+        QVERIFY(window.findChild<QWidget *>("contributionPanel")->isVisible());
+        QString explanation = window.findChild<QLabel *>("contributionMessage")->text();
+        QVERIFY(explanation.contains("libExample.dylib")); QVERIFY(explanation.contains("nothing is submitted"));
+        QVERIFY(!window.findChild<QPushButton *>("Import needed library and retry")->isVisible());
+        QVERIFY(!QFileInfo::exists(prefix + "/.darling-launcher/proposed-vibedarling-issue.md"));
+        window.findChild<QPushButton *>("saveProposedIssue")->click();
+        QFile draft(prefix + "/.darling-launcher/proposed-vibedarling-issue.md"); QVERIFY(draft.open(QIODevice::ReadOnly));
+        QVERIFY(draft.readAll().contains("Symbol not found: _Example"));
+        auto savedApps = catalog.value("apps").toArray(); auto savedApp = savedApps.first().toObject();
+        savedApp.insert("chain", QJsonArray{}); savedApps[0] = savedApp; catalog.insert("apps", savedApps);
+        QString error; QVERIFY(LauncherCore::saveCatalog(prefix, catalog, &error));
+        window.findChild<QPushButton *>("Scan volume")->click(); apps->selectRow(0);
+        window.findChild<QPushButton *>("Launch selected")->click();
+        QTRY_COMPARE_WITH_TIMEOUT(apps->item(0, 2)->text(), retrySuccess ? QString("Exited successfully") : QString("Exited 2"), 5000);
+        QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
     }
     void prefixBuilderRuntimeSelection() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());

@@ -241,6 +241,7 @@ QString issueDraft(const AppEntry &app, const QJsonArray &chain, const QString &
     for (const auto &entry : chain) {
         auto item = entry.toObject();
         text += "- " + item.value("symbol").toString() + " expected in " + item.value("library").toString() + "; action: " + item.value("action").toString() + "\n";
+        if (!item.value("loaderOutput").toString().isEmpty()) text += "\n```text\n" + item.value("loaderOutput").toString().left(8000) + "\n```\n";
     }
     text += "\n## Latest loader output\n```text\n" + output.left(8000) + "\n```\n\n";
     text += "Provenance: user-selected mounted macOS volume; app and library payloads remain private in the local prefix. No binary implementation was inspected.\n";

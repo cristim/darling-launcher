@@ -31,6 +31,7 @@
 #include <QSplitter>
 #include <QTableWidget>
 #include <QTextEdit>
+#include <QTabWidget>
 #include <QVBoxLayout>
 #include <QtConcurrent>
 
@@ -38,7 +39,14 @@ Window::Window(const QString &builderScript) {
     setWindowTitle("Darling Launcher — host application");
     resize(1050, 720);
     auto *central = new QWidget;
-    auto *layout = new QVBoxLayout(central);
+    auto *rootLayout = new QVBoxLayout(central);
+    auto *tabs = new QTabWidget; tabs->setObjectName("mainTabs"); rootLayout->addWidget(tabs);
+    auto *appsPage = new QWidget; appsPage->setObjectName("appsPage");
+    auto *settingsPage = new QWidget; settingsPage->setObjectName("settingsPage");
+    tabs->addTab(appsPage, "Apps"); tabs->addTab(settingsPage, "Settings");
+    auto *layout = new QVBoxLayout(appsPage);
+    auto *settingsLayout = new QVBoxLayout(settingsPage);
+    settingsLayout->addWidget(new QLabel("Choose your macOS source and isolated Darling runtime. Paths are detected where possible."));
     auto *form = new QFormLayout;
     auto locationRow = [&](const QString &label, QLineEdit *&field, bool file) {
         auto *row = new QWidget;
@@ -58,7 +66,7 @@ Window::Window(const QString &builderScript) {
     locationRow("Runtime install root (optional)", runtimeRoot, false);
     runtimeRoot->setObjectName("runtimeRootField");
     volume->setObjectName("volumeField"); prefix->setObjectName("prefixField"); darling->setObjectName("darlingField");
-    layout->addLayout(form);
+    settingsLayout->addLayout(form);
     QSettings settings("cristim", "darling-launcher");
     volume->setText(settings.value("volume").toString());
     prefix->setText(settings.value("prefix").toString());
@@ -86,9 +94,23 @@ Window::Window(const QString &builderScript) {
             settings.setValue("runtimeRoot", runtimeRoot->text());
         });
     auto *toolbar = new QGridLayout;
-    int actionCount = 0;
-    auto add = [&](const QString &title, auto callback) { auto *button = new QPushButton(title); button->setObjectName(title); toolbar->addWidget(button, actionCount / 4, actionCount % 4); ++actionCount; connect(button, &QPushButton::clicked, this, callback); };
+    auto *settingsToolbar = new QGridLayout;
+    int actionCount = 0, settingsActionCount = 0;
+    auto add = [&](const QString &title, auto callback) {
+        auto *button = new QPushButton(title); button->setObjectName(title);
+        bool setting = title == "Detect paths" || title == "Create prefix" || title == "Initialize selected prefix" || title == "Detect mounted macOS volumes" || title == "Mount macOS source…" || title == "Apply settings";
+        int &count = setting ? settingsActionCount : actionCount;
+        (setting ? settingsToolbar : toolbar)->addWidget(button, count / 3, count % 3); ++count;
+        connect(button, &QPushButton::clicked, this, callback);
+        return button;
+    };
     add("Detect paths", [this, detectPaths] { detectPaths(); refresh(); load(); });
+    add("Apply settings", [this, tabs] {
+        QSettings settings("cristim", "darling-launcher");
+        settings.setValue("volume", volume->text()); settings.setValue("prefix", prefix->text());
+        settings.setValue("darling", darling->text()); settings.setValue("runtimeRoot", runtimeRoot->text());
+        refresh(); load(); tabs->setCurrentIndex(0);
+    });
     add("Create prefix", [this, builderScript] {
         if (!prefixDialog) {
             prefixDialog = new PrefixDialog(volume->text(), builderScript, this);
@@ -135,15 +157,15 @@ Window::Window(const QString &builderScript) {
     });
     add("Import selected apps", [this] { importBundles(available->selectedBundles()); });
     add("Launch selected", [this] { QString key = selectedKey(); if (!key.isEmpty()) launch(key); });
-    add("Import needed library and retry", [this] {
+    libraryRetry = add("Import needed library and retry", [this] {
         QString key = selectedKey();
         if (!pending.contains(key)) { QMessageBox::information(this, "Diagnosis", "Select an app with a loader symbol failure."); return; }
         QString error; auto missing = pending.value(key);
         if (!LauncherCore::importLibrary(volume->text(), prefix->text(), missing.expectedIn, &error)) {
             QMessageBox::warning(this, "Library import", error); return;
         }
-        QJsonObject step{{"symbol", missing.symbol}, {"library", missing.expectedIn}, {"referencedFrom", missing.referencedFrom}, {"action", "imported from selected volume"}};
-        chains[key].append(step); persist(); pending.remove(key); launch(key);
+        QJsonObject step{{"symbol", missing.symbol}, {"library", missing.expectedIn}, {"referencedFrom", missing.referencedFrom}, {"action", "imported from selected volume"}, {"loaderOutput", outputs.value(key)}};
+        chains[key].append(step); persist(); pending.remove(key); updateContribution(); launch(key);
     });
     add("Install Brewfile", [this] {
         QString source = QFileDialog::getOpenFileName(this, "Select Brewfile"); if (source.isEmpty()) return;
@@ -154,6 +176,7 @@ Window::Window(const QString &builderScript) {
         if (!LauncherCore::stageBrewfile(p, source, &guestPath, &error)) { QMessageBox::warning(this, "Brewfile", error); return; }
         runCommand("Brewfile", {"exec", "/opt/homebrew/bin/brew", "bundle", "--file", guestPath});
     });
+    settingsLayout->addLayout(settingsToolbar); settingsLayout->addStretch();
     layout->addLayout(toolbar);
     auto *split = new QSplitter(Qt::Horizontal);
     auto *sourcePane = new QWidget; auto *sourceLayout = new QVBoxLayout(sourcePane);
@@ -174,10 +197,14 @@ Window::Window(const QString &builderScript) {
     importLayout->addWidget(apps);
     split->addWidget(sourcePane); split->addWidget(importPane); split->setStretchFactor(1, 2);
     layout->addWidget(split);
+    contributionPanel = new QWidget; contributionPanel->setObjectName("contributionPanel");
+    auto *contributionLayout = new QVBoxLayout(contributionPanel);
+    contributionMessage = new QLabel; contributionMessage->setObjectName("contributionMessage"); contributionMessage->setWordWrap(true); contributionMessage->setTextFormat(Qt::PlainText);
+    contributionLayout->addWidget(contributionMessage);
     auto *bottom = new QHBoxLayout;
-    auto *draft = new QPushButton("Save proposed issue"); bottom->addWidget(draft);
+    auto *draft = new QPushButton("Save proposed issue"); draft->setObjectName("saveProposedIssue"); bottom->addWidget(draft);
     connect(draft, &QPushButton::clicked, this, [this] {
-        QString key = selectedKey(); if (!entries.contains(key)) return;
+        QString key = selectedKey(); if (!entries.contains(key) || chains.value(key).isEmpty()) return;
         QString path = prefix->text() + "/.darling-launcher/proposed-vibedarling-issue.md";
         QSaveFile file(path);
         if (!file.open(QIODevice::WriteOnly)) { QMessageBox::warning(this, "Draft", file.errorString()); return; }
@@ -185,11 +212,14 @@ Window::Window(const QString &builderScript) {
         if (!file.commit()) { QMessageBox::warning(this, "Draft", file.errorString()); return; }
         QMessageBox::information(this, "Draft saved", path + "\nReview and approve before any submission.");
     });
-    auto *fix = new QPushButton("Opt in: source fix workflow"); bottom->addWidget(fix);
+    auto *fix = new QPushButton("Opt in: source fix workflow"); fix->setObjectName("sourceFixWorkflow"); bottom->addWidget(fix);
     connect(fix, &QPushButton::clicked, this, [this] {
+        if (chains.value(selectedKey()).isEmpty()) return;
         QMessageBox::information(this, "Separate source fix workflow", "After reviewing the issue draft, opt in separately to a clean-room VibeDarling source change. Work from published source, headers, documentation and API observations only. Prepare a patch, tests and PR draft for your review; no PR is submitted automatically.");
     });
-    layout->addLayout(bottom);
+    contributionLayout->addLayout(bottom); layout->addWidget(contributionPanel);
+    contributionPanel->hide(); libraryRetry->hide();
+    connect(apps, &QTableWidget::itemSelectionChanged, this, &Window::updateContribution);
     progress = new QProgressBar; progress->setRange(0, 1); progress->setValue(0); layout->addWidget(progress);
     log = new QTextEdit; log->setReadOnly(true); layout->addWidget(log);
     setCentralWidget(central);
@@ -199,6 +229,26 @@ Window::Window(const QString &builderScript) {
 }
 Window::~Window() {
     for (auto *process : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) process->disconnect(this);
+}
+
+void Window::updateContribution() {
+    const QString key = selectedKey();
+    libraryRetry->setVisible(pending.contains(key));
+    const auto chain = chains.value(key);
+    contributionPanel->setVisible(entries.contains(key) && !chain.isEmpty());
+    if (chain.isEmpty()) return;
+    QStringList libraries;
+    for (const auto &step : chain) libraries << step.toObject().value("library").toString();
+    QString result;
+    const int row = apps->currentRow();
+    if (row >= 0 && apps->item(row, 2)) result = apps->item(row, 2)->text();
+    contributionMessage->setText(entries.value(key).name + " failed to launch because a library symbol was missing. "
+        "At your request, we copied these libraries from your macOS volume into this private prefix and retried: "
+        + libraries.join(", ") + ".\nCurrent result: " + result + ".\n"
+        "This is a local workaround using Apple libraries. You can help VibeDarling implement the missing functionality "
+        "by reviewing a proposed issue with the reproduction steps, loader error and dependency chain. "
+        "A source fix is a separate opt-in contribution using published sources, headers and documented behavior. "
+        "Libraries remain private; nothing is submitted until you approve a completed draft.");
 }
 
 void Window::setBusy(bool busy, const QString &message) { progress->setRange(0, busy ? 0 : 1); if (!busy) progress->setValue(1); statusBar()->showMessage(message); log->append(message); }
@@ -264,6 +314,7 @@ void Window::load() {
         apps->setItem(row, 1, new QTableWidgetItem(it.key()));
         apps->setItem(row, 2, new QTableWidgetItem("Ready"));
     }
+    updateContribution();
 }
 void Window::persist() {
     QJsonArray array;
@@ -272,11 +323,13 @@ void Window::persist() {
     QString error;
     if (!LauncherCore::saveCatalog(prefix->text(), QJsonObject{{"apps", array}}, &error)) QMessageBox::warning(this, "Catalog", error);
 }
-QString Window::selectedKey() const { int row = apps->currentRow(); return row < 0 ? QString() : apps->item(row, 1)->text(); }
+QString Window::selectedKey() const { int row = apps->currentRow(); return row < 0 || !apps->item(row, 1) ? QString() : apps->item(row, 1)->text(); }
 void Window::launch(const QString &key) {
     if (!entries.contains(key)) return;
     const AppEntry app = entries.value(key);
     outputs[key].clear();
+    for (int row = 0; row < apps->rowCount(); ++row) if (apps->item(row, 1)->text() == key) apps->item(row, 2)->setText("Launching…");
+    updateContribution();
     runCommand(app.name, {"exec", "/" + app.relativeBundle + "/Contents/MacOS/" + app.executable}, key);
 }
 void Window::runCommand(const QString &label, const QStringList &args, const QString &key) {
@@ -310,9 +363,11 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
                 QMessageBox::warning(this, "Library needed", missing.symbol + "\nExpected in: " + missing.expectedIn + "\nSelect the app and choose Import needed library and retry.");
             } else if (row >= 0) {
                 apps->item(row, 2)->setText(code == 0 ? "Exited successfully" : "Exited " + QString::number(code));
-                if (code == 0 && !chains.value(key).isEmpty()) QMessageBox::information(this, "Launch succeeded", "The dependency chain for " + entries.value(key).name + " is recorded. Save the proposed issue for review.");
+                if (code == 0 && !chains.value(key).isEmpty())
+                    setBusy(activeProcesses > 0, label + " succeeded after importing macOS libraries. Review the contribution offer below to help VibeDarling.");
             }
         }
+        updateContribution();
         process->deleteLater();
     });
     connect(process, &QProcess::errorOccurred, this, [this, process, label](QProcess::ProcessError error) {

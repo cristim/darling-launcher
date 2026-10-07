@@ -6,9 +6,12 @@
 #include <QMap>
 #include <QProcess>
 
+class QLabel;
+class QWidget;
 class QLineEdit;
 class QListWidget;
 class QTableWidget;
+class QPushButton;
 class QTextEdit;
 class QProgressBar;
 class MountDialog;
@@ -28,6 +31,9 @@ private:
     AppBrowser *available;
     ImportTable *apps;
     QTextEdit *log;
+    QWidget *contributionPanel;
+    QLabel *contributionMessage;
+    QPushButton *libraryRetry;
     QProgressBar *progress;
     MountDialog *mountDialog = nullptr;
     PrefixDialog *prefixDialog = nullptr;
@@ -38,6 +44,7 @@ private:
     QMap<QString, QJsonArray> chains;
     QMap<QString, QString> outputs;
     QMap<QString, MissingSymbol> pending;
+    void updateContribution();
     void refresh();
     void importBundles(const QStringList &names);
     void load();
