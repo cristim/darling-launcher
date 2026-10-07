@@ -51,8 +51,17 @@ App scanning covers top-level stock apps and requires a usable `CFBundleExecutab
 
 ### Guided path setup
 
-On startup, a single detected mounted macOS volume is selected automatically.
+On startup, a single usable mounted macOS source is selected automatically.
 Multiple sources require a choice; no partition is mounted automatically.
+Settings lists existing mounts even when they contain only recovery or firmware
+data, with readability and app/library suitability shown separately. Discovery
+reads the live mount table, including generic APFS FUSE mounts, and supports its
+`root` wrapper directory. The list refreshes automatically and through **Detect
+mounted macOS volumes**. In the mount dialog, selecting a partition lists all of
+its existing volumes: **Use existing source** reuses a suitable mount without
+authorization or another mount operation. Multiple usable volumes require an
+explicit choice; mounted partitions cannot be mounted again through the individual
+mount action.
 **Detect paths** also finds an installed `darling` executable and reads runtime
 paths from the selected prefix's launcher build provenance.
 

@@ -14,10 +14,10 @@ void collect(const QJsonArray &devices, QList<MacPartition> *result) {
         const auto item = value.toObject();
         const QString fs = item.value("fstype").toString().toLower();
         if (fs == "apfs" || fs == "hfs" || fs == "hfsplus") {
-            bool mounted = false;
+            QStringList points;
             for (const auto &point : item.value("mountpoints").toArray())
-                if (!point.toString().isEmpty()) mounted = true;
-            result->append({item.value("path").toString(), fs, item.value("label").toString(), mounted});
+                if (!point.toString().isEmpty()) points << point.toString();
+            result->append({item.value("path").toString(), fs, item.value("label").toString(), !points.isEmpty(), points});
         }
         collect(item.value("children").toArray(), result);
     }

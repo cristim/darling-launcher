@@ -10,6 +10,7 @@ struct MacPartition {
     QString filesystem;
     QString label;
     bool mounted = false;
+    QStringList mountPoints;
 };
 
 enum class MountBackend { Kernel, ApfsFuse };

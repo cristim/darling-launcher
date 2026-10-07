@@ -12,3 +12,11 @@ No changes are planned in the Darling or VibeDarling checkouts. Provenance: Darl
 Follow-up slice: explicit read-only pkexec mounting, partition discovery, and a metadata/icon/size browser with list/grid selection and drag-to-import. Verify with fake privilege commands and synthetic ICNS fixtures; real mounting waits for a user-selected partition and installed APFS driver.
 
 Prefix-builder integration: use the existing committed external tool's resolve/checkout/build interface in a new workspace, preserving discovery and selected locks. Expose default branches or default branches plus PRs. Select the resulting private runtime and prefix together and test both scope choices, failure stops and runtime environment propagation with a synthetic builder.
+
+Mounted-source reuse: read the live mount table including generic FUSE entries;
+map every mounted volume to its selected partition and validate readable app/library
+directories, including APFS FUSE's root wrapper. Without this, existing mounts are
+hidden or the wrong volume is chosen. Show unsuitable mounts separately from usable
+sources, require a choice when several are usable, and refresh without mounting.
+Prove partition mapping, confinement, automatic/manual refresh and GUI import with
+synthetic fixtures; run the real desktop GUI against the existing mounted volumes.

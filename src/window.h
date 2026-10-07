@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "core.h"
+#include "sources.h"
+#include <functional>
 #include <QJsonArray>
 #include <QMainWindow>
 #include <QMap>
 #include <QProcess>
 
+class QComboBox;
 class QCloseEvent;
 class QLabel;
 class QWidget;
@@ -22,11 +25,16 @@ class PrefixDialog;
 
 class Window : public QMainWindow {
 public:
-    explicit Window(const QString &builderScript = {}, bool mountAll = false);
+    explicit Window(const QString &builderScript = {}, bool mountAll = false, std::function<QList<SourceMount>()> mountProvider = LauncherSources::mounts);
     ~Window() override;
 protected:
     void closeEvent(QCloseEvent *event) override;
 private:
+    std::function<QList<SourceMount>()> mountProvider;
+    QComboBox *sourceChoices;
+    QLabel *sourceSummary;
+    QString sourceSignature;
+    bool sourceChoicesInitialized = false;
     QLineEdit *volume;
     QLineEdit *prefix;
     QLineEdit *darling;
@@ -47,6 +55,7 @@ private:
     QMap<QString, QJsonArray> chains;
     QMap<QString, QString> outputs;
     QMap<QString, MissingSymbol> pending;
+    void updateSourceChoices();
     void updateContribution();
     void refresh();
     void importBundles(const QStringList &names);

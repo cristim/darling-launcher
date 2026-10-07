@@ -52,6 +52,40 @@ private slots:
         browser.setGridView(true); QCOMPARE(browser.viewMode(), QListView::IconMode); QCOMPARE(browser.iconSize(), QSize(64, 64)); QCOMPARE(browser.selectedBundles().size(), 2);
         browser.setGridView(false); QCOMPARE(browser.viewMode(), QListView::ListMode); QCOMPARE(browser.selectedBundles().size(), 2);
     }
+    void reuseMountedPartitionAndImport() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        QString first = temporary.path() + "/mounted one", second = temporary.path() + "/mounted two", prefix = temporary.path() + "/prefix";
+        QVERIFY(QDir().mkpath(first + "/System/Applications/Fixture.app/Contents/MacOS"));
+        QVERIFY(QDir().mkpath(first + "/System/Library")); QVERIFY(QDir().mkpath(second + "/usr/lib")); QVERIFY(QDir().mkpath(prefix));
+        QFile metadata(first + "/System/Applications/Fixture.app/Contents/Info.plist"); QVERIFY(metadata.open(QIODevice::WriteOnly));
+        metadata.write("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>Fixture</string><key>CFBundleDisplayName</key><string>Mounted Fixture</string></dict></plist>"); metadata.close();
+        QFile executable(first + "/System/Applications/Fixture.app/Contents/MacOS/Fixture"); QVERIFY(executable.open(QIODevice::WriteOnly)); executable.write("synthetic private fixture"); executable.close();
+        QList<SourceMount> records{{first, "/dev/synthetic1", "fuse", true}, {second, "/dev/synthetic1", "fuse", true}};
+        QFile lsblk(temporary.path() + "/lsblk"); QVERIFY(lsblk.open(QIODevice::WriteOnly));
+        QByteArray json = QJsonDocument(QJsonObject{{"blockdevices", QJsonArray{QJsonObject{{"path", "/dev/synthetic1"}, {"fstype", "apfs"}, {"mountpoints", QJsonArray{first, second}}}}}}).toJson(QJsonDocument::Compact);
+        lsblk.write("#!/bin/sh\nprintf '%s' '" + json + "'\n"); lsblk.close(); QVERIFY(lsblk.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        auto originalPath = qgetenv("PATH"); auto restore = qScopeGuard([=] { qputenv("PATH", originalPath); });
+        qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath);
+        Window window({}, false, [&records] { return records; }); window.show();
+        auto *choices = window.findChild<QComboBox *>("mountedSourceChoices"); QCOMPARE(choices->count(), 3);
+        QCOMPARE(window.findChild<QLineEdit *>("volumeField")->text(), QString());
+        window.findChild<QPushButton *>("Mount macOS source…")->click();
+        auto *dialog = window.findChild<MountDialog *>(); QVERIFY(dialog);
+        auto *partitions = dialog->findChild<QComboBox *>("mountPartitions"); QTRY_COMPARE(partitions->count(), 2); partitions->setCurrentIndex(1);
+        auto *sources = dialog->findChild<QComboBox *>("existingPartitionSources"); QCOMPARE(sources->count(), 3); QCOMPARE(sources->currentIndex(), 0);
+        QVERIFY(!dialog->findChild<QPushButton *>("mountReadOnly")->isEnabled()); QVERIFY(!dialog->findChild<QPushButton *>("useExistingSource")->isEnabled());
+        sources->setCurrentIndex(sources->findData(first)); dialog->findChild<QPushButton *>("useExistingSource")->click();
+        QCOMPARE(window.findChild<QLineEdit *>("volumeField")->text(), first);
+        window.findChild<QLineEdit *>("prefixField")->setText(prefix);
+        auto *available = window.findChild<QListWidget *>("availableApps"); QTRY_COMPARE(available->count(), 1); QCOMPARE(available->item(0)->text(), QString("Mounted Fixture"));
+        available->item(0)->setSelected(true); window.findChild<QPushButton *>("Import selected apps")->click();
+        QTRY_VERIFY(QFileInfo::exists(prefix + "/Applications/Fixture.app/Contents/MacOS/Fixture"));
+        QVERIFY(!dialog->isMounting());
+        records.removeLast(); QTRY_COMPARE_WITH_TIMEOUT(choices->count(), 2, 5000);
+        records.clear(); window.findChild<QPushButton *>("Detect mounted macOS volumes")->click(); QCOMPARE(choices->count(), 1);
+        auto *refresh = dialog->findChild<QPushButton *>("refreshPartitions"); QVERIFY(refresh); refresh->click(); QTRY_COMPARE(sources->count(), 1); QVERIFY(!dialog->findChild<QPushButton *>("useExistingSource")->isEnabled());
+    }
     void settingsAreSeparate() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());

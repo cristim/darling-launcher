@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "core.h"
+#include "sources.h"
 #include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
@@ -8,6 +9,31 @@
 class CoreTest : public QObject {
     Q_OBJECT
 private slots:
+    void mountedSourcesAndContent() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        QString first = temporary.path() + "/one volume", second = temporary.path() + "/two", recovery = temporary.path() + "/recovery";
+        QVERIFY(QDir().mkpath(first + "/root/System/Applications")); QVERIFY(QDir().mkpath(first + "/root/System/Library"));
+        QVERIFY(QDir().mkpath(second + "/usr/lib")); QVERIFY(QDir().mkpath(recovery + "/root/Recovery"));
+        QByteArray escaped = first.toUtf8(); escaped.replace(" ", "\\040");
+        QByteArray metadata = "10 1 0:3 / " + escaped + " ro,nosuid,nodev,noexec - fuse /dev/synthetic1 ro\n";
+        metadata += "11 1 0:4 / " + second.toUtf8() + " ro - apfs /dev/synthetic1 ro\n";
+        metadata += "12 1 0:5 / " + recovery.toUtf8() + " ro - fuse /dev/synthetic2 ro\n";
+        auto mounts = LauncherSources::parseMountInfo(metadata); QCOMPARE(mounts.size(), 3); QCOMPARE(mounts.first().path, first);
+        auto candidates = LauncherSources::candidates(mounts, "/dev/synthetic1"); QCOMPARE(candidates.size(), 2);
+        auto wrapped = candidates.first(); QCOMPARE(wrapped.root, first + "/root"); QVERIFY(wrapped.apps); QVERIFY(wrapped.libraries); QVERIFY(wrapped.readOnly);
+        QVERIFY(candidates.last().libraries); QVERIFY(!candidates.last().apps);
+        QCOMPARE(LauncherSources::automaticSource(candidates, ""), QString());
+        QCOMPARE(LauncherSources::automaticSource(candidates, second), second);
+        QCOMPARE(LauncherSources::automaticSource({wrapped}, ""), wrapped.root);
+        auto unsuitable = LauncherSources::candidates(mounts, "/dev/synthetic2"); QCOMPARE(unsuitable.size(), 1); QVERIFY(unsuitable.first().readable); QVERIFY(!unsuitable.first().usable());
+        QVERIFY(LauncherSources::candidates(mounts, "/dev/missing").isEmpty());
+        QVERIFY(LauncherSources::parseMountInfo("malformed").isEmpty());
+        QVERIFY(QDir().mkpath(temporary.path() + "/outside/Library"));
+        QVERIFY(QFile::link(temporary.path() + "/outside", recovery + "/System"));
+        QVERIFY(!LauncherSources::candidates(mounts, "/dev/synthetic2").first().usable());
+        mounts.append({temporary.path() + "/missing", "/dev/synthetic1", "fuse", true});
+        QVERIFY(!LauncherSources::candidates(mounts, "/dev/synthetic1").first().readable);
+    }
     void appMetadataAndSizes() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString app = temporary.path() + "/Applications/Fallback.app";

@@ -35,10 +35,12 @@
 #include <QTextEdit>
 #include <QTabWidget>
 #include <QTimer>
+#include <QStandardItemModel>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 #include <QtConcurrent>
 
-Window::Window(const QString &builderScript, bool mountAll) {
+Window::Window(const QString &builderScript, bool mountAll, std::function<QList<SourceMount>()> provider) : mountProvider(std::move(provider)) {
     setWindowTitle("Darling Launcher — host application");
     resize(1050, 720);
     auto *central = new QWidget;
@@ -69,6 +71,15 @@ Window::Window(const QString &builderScript, bool mountAll) {
     locationRow("Runtime install root (optional)", runtimeRoot, false);
     runtimeRoot->setObjectName("runtimeRootField");
     volume->setObjectName("volumeField"); prefix->setObjectName("prefixField"); darling->setObjectName("darlingField");
+    sourceChoices = new QComboBox; sourceChoices->setObjectName("mountedSourceChoices"); form->addRow("Existing mounted volumes", sourceChoices);
+    sourceSummary = new QLabel; sourceSummary->setObjectName("mountedSourceSummary"); sourceSummary->setWordWrap(true); settingsLayout->addWidget(sourceSummary);
+    connect(sourceChoices, &QComboBox::activated, this, [this](int index) {
+        const QString root = sourceChoices->itemData(index).toString();
+        for (const auto &candidate : LauncherSources::candidates(mountProvider())) if (candidate.root == root && candidate.usable()) {
+            volume->setText(root); refresh(); QSettings("cristim", "darling-launcher").setValue("volume", root); return;
+        }
+        updateSourceChoices();
+    });
     settingsLayout->addLayout(form);
     QSettings settings("cristim", "darling-launcher");
     volume->setText(settings.value("volume").toString());
@@ -77,7 +88,7 @@ Window::Window(const QString &builderScript, bool mountAll) {
     runtimeRoot->setText(settings.value("runtimeRoot").toString());
     const QString dataRoot = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     if (prefix->text().isEmpty()) prefix->setText(LauncherDiscovery::managedPrefix(dataRoot));
-    volume->setPlaceholderText("No mounted macOS source detected — mount or select one");
+    volume->setPlaceholderText("Select a mounted source with apps or libraries");
     auto *runtimeChoices = new QComboBox; runtimeChoices->setObjectName("detectedRuntimes");
     runtimeChoices->addItem("Select a detected runtime…");
     const auto detectedRuntimes = LauncherDiscovery::runtimes(LauncherDiscovery::roots(), QStandardPaths::findExecutable("darling"));
@@ -89,8 +100,7 @@ Window::Window(const QString &builderScript, bool mountAll) {
         darling->setText(runtime.launcher); runtimeRoot->setText(runtime.installRoot);
     });
     auto detectPaths = [this, detectedRuntimes] {
-        const auto mounts = LauncherCore::mountedMacVolumes();
-        volume->setText(LauncherDiscovery::defaultVolume(mounts, volume->text()));
+        volume->setText(LauncherSources::automaticSource(LauncherSources::candidates(mountProvider()), volume->text()));
         if ((darling->text().isEmpty() || !QFileInfo(darling->text()).isExecutable()) && !detectedRuntimes.isEmpty()) {
             darling->setText(detectedRuntimes.first().launcher); runtimeRoot->setText(detectedRuntimes.first().installRoot);
         }
@@ -124,7 +134,7 @@ Window::Window(const QString &builderScript, bool mountAll) {
         connect(button, &QPushButton::clicked, this, callback);
         return button;
     };
-    add("Detect paths", [this, detectPaths] { detectPaths(); refresh(); load(); });
+    add("Detect paths", [this, detectPaths] { detectPaths(); updateSourceChoices(); refresh(); load(); });
     add("Apply settings", [this, tabs] {
         QSettings settings("cristim", "darling-launcher");
         settings.setValue("volume", volume->text()); settings.setValue("prefix", prefix->text());
@@ -157,19 +167,15 @@ Window::Window(const QString &builderScript, bool mountAll) {
         if (!QFileInfo(volume->text()).isDir()) { setBusy(false, "No mounted macOS source selected."); return; }
         refresh(); load();
     });
-    add("Detect mounted macOS volumes", [this] {
-        QStringList mounts = LauncherCore::mountedMacVolumes();
-        if (mounts.isEmpty()) { setBusy(false, "No mounted macOS volume found. Use Mount macOS source to select a partition."); return; }
-        QMenu menu(this);
-        if (mounts.size() == 1) { volume->setText(mounts.first()); refresh(); return; }
-        for (const QString &mount : mounts) menu.addAction(mount, this, [this, mount] { volume->setText(mount); refresh(); });
-        menu.exec(QCursor::pos());
+    add("Detect mounted macOS volumes", [this, tabs] {
+        updateSourceChoices(); refresh(); tabs->setCurrentIndex(1);
+        setBusy(false, sourceSummary->text());
     });
     add("Mount macOS source…", [this] {
         if (!mountDialog) {
-            mountDialog = new MountDialog(this);
+            mountDialog = new MountDialog(this, mountProvider);
             connect(mountDialog, &MountDialog::sourceMounted, this, [this](const QString &path) {
-                volume->setText(path); refresh(); setBusy(false, "Mounted macOS source: " + path);
+                volume->setText(path); updateSourceChoices(); refresh(); setBusy(false, "Selected mounted macOS source: " + path);
                 QSettings("cristim", "darling-launcher").setValue("volume", path);
             });
         }
@@ -243,9 +249,10 @@ Window::Window(const QString &builderScript, bool mountAll) {
     progress = new QProgressBar; progress->setRange(0, 1); progress->setValue(0); layout->addWidget(progress);
     log = new QTextEdit; log->setReadOnly(true); layout->addWidget(log);
     setCentralWidget(central);
-    refresh(); load();
-    if (LauncherCore::mountedMacVolumes().isEmpty())
-        statusBar()->showMessage("No mounted macOS volume found. Select a mounted volume when available.");
+    updateSourceChoices(); load();
+    statusBar()->showMessage(sourceSummary->text());
+    auto *mountRefresh = new QTimer(this); mountRefresh->setInterval(3000);
+    connect(mountRefresh, &QTimer::timeout, this, &Window::updateSourceChoices); mountRefresh->start();
     if (mountAll) QTimer::singleShot(0, this, [this, tabs] {
         tabs->setCurrentIndex(1); findChild<QPushButton *>("Mount macOS source…")->click();
         mountDialog->mountAllWhenReady();
@@ -253,6 +260,26 @@ Window::Window(const QString &builderScript, bool mountAll) {
 }
 Window::~Window() {
     for (auto *process : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) process->disconnect(this);
+}
+
+void Window::updateSourceChoices() {
+    const auto items = LauncherSources::candidates(mountProvider());
+    const QString previous = volume->text();
+    const QString chosen = LauncherSources::automaticSource(items, previous);
+    QSignalBlocker blocker(sourceChoices); sourceChoices->clear(); sourceChoices->addItem("Choose a usable mounted source…", QString());
+    int usable = 0; QStringList signature, usableRoots;
+    for (const auto &item : items) {
+        sourceChoices->addItem(item.description(), item.root);
+        signature << item.description();
+        if (item.usable()) { ++usable; usableRoots << item.root; }
+        else if (auto *model = qobject_cast<QStandardItemModel *>(sourceChoices->model())) model->item(sourceChoices->count() - 1)->setEnabled(false);
+    }
+    int index = usableRoots.contains(chosen) ? sourceChoices->findData(chosen) : 0; sourceChoices->setCurrentIndex(index < 0 ? 0 : index);
+    sourceSummary->setText(items.isEmpty() ? "No mounted macOS volumes detected." : QString::number(items.size()) + " mounted volumes detected; " + QString::number(usable) + " suitable for app or library import. " + (usable > 1 ? "Choose a source; multiple usable volumes are mounted." : usable == 0 ? "These mounts contain no readable app/library directories." : "The usable source is selected automatically."));
+    if (chosen != previous) { volume->setText(chosen); QSettings("cristim", "darling-launcher").setValue("volume", chosen); }
+    QString updated = signature.join('\n');
+    if (!sourceChoicesInitialized || chosen != previous || updated != sourceSignature) refresh();
+    sourceChoicesInitialized = true; sourceSignature = updated;
 }
 
 void Window::updateContribution() {

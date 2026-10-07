@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "core.h"
+#include "sources.h"
 #include <QDir>
 #include <QDirIterator>
 #include <QCryptographicHash>
@@ -97,13 +98,8 @@ bool looksLikeMacVolume(const QString &root) {
 }
 QStringList mountedMacVolumes() {
     QStringList result;
-    for (const QStorageInfo &storage : QStorageInfo::mountedVolumes()) {
-        if (!storage.isValid() || !storage.isReady()) continue;
-        QString root = storage.rootPath();
-        if (root == "/" || root.isEmpty()) continue;
-        if (looksLikeMacVolume(root)) result << root;
-    }
-    result.removeDuplicates(); result.sort();
+    for (const auto &candidate : LauncherSources::candidates(LauncherSources::mounts()))
+        if (candidate.usable()) result << candidate.root;
     return result;
 }
 QStringList discoverApps(const QString &volume) {
