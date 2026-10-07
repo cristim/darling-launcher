@@ -1,6 +1,7 @@
 #include "core.h"
 #include <QDir>
 #include <QDirIterator>
+#include <QCryptographicHash>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -12,6 +13,7 @@
 
 namespace {
 bool fail(QString *error, const QString &message) { if (error) *error = message; return false; }
+QString shellQuote(QString value) { value.replace("'", "'\\''"); return "'" + value + "'"; }
 
 bool confinedRelative(const QString &path) {
     if (path.isEmpty() || QDir::isAbsolutePath(path)) return false;
@@ -221,10 +223,19 @@ bool stageBrewfile(const QString &prefix, const QString &source, QString *guestP
     return true;
 }
 QString issueDraft(const AppEntry &app, const QJsonArray &chain, const QString &output,
-                   const QString &volume, const QString &prefix, const QString &darling) {
+                   const QString &volume, const QString &prefix, const QString &darling, const QString &runtime) {
     QString text = "# Proposed VibeDarling issue: " + app.name + " launch dependency\n\n";
     text += "## Local provenance (review before sharing)\n- Source volume: `" + volume + "`\n- Source bundle: `" + volume + "/" + app.sourceRelative + "`\n- Prefix: `" + prefix + "`\n- Host launcher: `" + darling + "`\n\n";
-    text += "## Reproduction\n1. Select the volume and prefix above.\n2. Import the bundle above.\n3. Run `DPREFIX='" + prefix + "' '" + darling + "' exec '/" + app.relativeBundle + "/Contents/MacOS/" + app.executable + "'`.\n\n";
+    if (!runtime.isEmpty()) text += "- Runtime install root: `" + runtime + "`\n";
+    QFile provenance(prefix + "/.darling-launcher/build-provenance.json");
+    if (provenance.open(QIODevice::ReadOnly)) {
+        auto bytes = provenance.readAll();
+        text += "- Build provenance: `" + provenance.fileName() + "`\n- Provenance SHA-256: `" + QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()) + "`\n\n";
+    }
+    QString command = "DPREFIX=" + shellQuote(prefix) + ' ';
+    if (!runtime.isEmpty()) command += "DARLING_INSTALL_PREFIX=" + shellQuote(runtime) + ' ';
+    command += shellQuote(darling) + " exec " + shellQuote('/' + app.relativeBundle + "/Contents/MacOS/" + app.executable);
+    text += "## Reproduction\n1. Select the volume and prefix above.\n2. Import the bundle above.\n3. Run `" + command + "`.\n\n";
     text += "## Dependency chain (loader interface output)\n";
     for (const auto &entry : chain) {
         auto item = entry.toObject();

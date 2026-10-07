@@ -6,3 +6,5 @@
 *.log
 *.core
 core
+__pycache__/
+**/.darling-launcher/

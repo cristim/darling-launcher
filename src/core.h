@@ -38,5 +38,5 @@ QJsonObject loadCatalog(const QString &prefix);
 bool saveCatalog(const QString &prefix, const QJsonObject &catalog, QString *error);
 bool stageBrewfile(const QString &prefix, const QString &source, QString *guestPath, QString *error);
 QString issueDraft(const AppEntry &app, const QJsonArray &chain, const QString &output,
-                   const QString &volume, const QString &prefix, const QString &darling);
+                   const QString &volume, const QString &prefix, const QString &darling, const QString &runtime = {});
 }

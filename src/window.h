@@ -13,20 +13,23 @@ class QProgressBar;
 class MountDialog;
 class AppBrowser;
 class ImportTable;
+class PrefixDialog;
 
 class Window : public QMainWindow {
 public:
-    Window();
+    explicit Window(const QString &builderScript = {});
     ~Window() override;
 private:
     QLineEdit *volume;
     QLineEdit *prefix;
     QLineEdit *darling;
+    QLineEdit *runtimeRoot;
     AppBrowser *available;
     ImportTable *apps;
     QTextEdit *log;
     QProgressBar *progress;
     MountDialog *mountDialog = nullptr;
+    PrefixDialog *prefixDialog = nullptr;
     QMap<QString, AppEntry> entries;
     int activeProcesses = 0;
     int scanGeneration = 0;

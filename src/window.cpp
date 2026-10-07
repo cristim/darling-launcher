@@ -1,6 +1,7 @@
 #include "window.h"
 #include "mountdialog.h"
 #include "appbrowser.h"
+#include "prefixdialog.h"
 #include <QApplication>
 #include <QDir>
 #include <QFile>
@@ -30,7 +31,7 @@
 #include <QVBoxLayout>
 #include <QtConcurrent>
 
-Window::Window() {
+Window::Window(const QString &builderScript) {
     setWindowTitle("Darling Launcher — host application");
     resize(1050, 720);
     auto *central = new QWidget;
@@ -51,21 +52,36 @@ Window::Window() {
     locationRow("Mounted macOS volume", volume, false);
     locationRow("Darling prefix", prefix, false);
     locationRow("Darling executable", darling, true);
+    locationRow("Runtime install root (optional)", runtimeRoot, false);
+    runtimeRoot->setObjectName("runtimeRootField");
     volume->setObjectName("volumeField"); prefix->setObjectName("prefixField"); darling->setObjectName("darlingField");
     layout->addLayout(form);
     QSettings settings("cristim", "darling-launcher");
     volume->setText(settings.value("volume").toString());
     prefix->setText(settings.value("prefix").toString());
     darling->setText(settings.value("darling").toString());
-    for (QLineEdit *field : {volume, prefix, darling})
+    runtimeRoot->setText(settings.value("runtimeRoot").toString());
+    for (QLineEdit *field : {volume, prefix, darling, runtimeRoot})
         connect(field, &QLineEdit::editingFinished, this, [this] {
             QSettings settings("cristim", "darling-launcher");
             settings.setValue("volume", volume->text()); settings.setValue("prefix", prefix->text()); settings.setValue("darling", darling->text());
+            settings.setValue("runtimeRoot", runtimeRoot->text());
         });
     auto *toolbar = new QGridLayout;
     int actionCount = 0;
     auto add = [&](const QString &title, auto callback) { auto *button = new QPushButton(title); button->setObjectName(title); toolbar->addWidget(button, actionCount / 4, actionCount % 4); ++actionCount; connect(button, &QPushButton::clicked, this, callback); };
-    add("Create prefix", [this] {
+    add("Create prefix", [this, builderScript] {
+        if (!prefixDialog) {
+            prefixDialog = new PrefixDialog(volume->text(), builderScript, this);
+            connect(prefixDialog, &PrefixDialog::prefixReady, this, [this](const QString &path, const QString &launcher, const QString &runtime) {
+                prefix->setText(path); darling->setText(launcher); runtimeRoot->setText(runtime); load();
+                QSettings settings("cristim", "darling-launcher"); settings.setValue("prefix", path); settings.setValue("darling", launcher); settings.setValue("runtimeRoot", runtime);
+                setBusy(activeProcesses > 0 || importRunning, "New isolated prefix ready: " + path);
+            });
+        }
+        prefixDialog->show(); prefixDialog->raise(); prefixDialog->activateWindow();
+    });
+    add("Initialize selected prefix", [this] {
         QString path = prefix->text();
         QString mounted = QFileInfo(volume->text()).canonicalFilePath();
         if (!mounted.isEmpty() && QDir::cleanPath(path).startsWith(mounted + '/')) {
@@ -145,7 +161,7 @@ Window::Window() {
         QString path = prefix->text() + "/.darling-launcher/proposed-vibedarling-issue.md";
         QSaveFile file(path);
         if (!file.open(QIODevice::WriteOnly)) { QMessageBox::warning(this, "Draft", file.errorString()); return; }
-        file.write(LauncherCore::issueDraft(entries.value(key), chains.value(key), outputs.value(key), volume->text(), prefix->text(), darling->text()).toUtf8());
+        file.write(LauncherCore::issueDraft(entries.value(key), chains.value(key), outputs.value(key), volume->text(), prefix->text(), darling->text(), runtimeRoot->text()).toUtf8());
         if (!file.commit()) { QMessageBox::warning(this, "Draft", file.errorString()); return; }
         QMessageBox::information(this, "Draft saved", path + "\nReview and approve before any submission.");
     });
@@ -161,7 +177,6 @@ Window::Window() {
     if (LauncherCore::mountedMacVolumes().isEmpty())
         statusBar()->showMessage("No mounted macOS volume found. Select a mounted volume when available.");
 }
-
 Window::~Window() {
     for (auto *process : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) process->disconnect(this);
 }
@@ -248,8 +263,13 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     if (!QFileInfo(darling->text()).isExecutable()) { QMessageBox::warning(this, label, "Select an executable Darling host launcher."); return; }
     QString p = prefix->text();
     if (!QDir::isAbsolutePath(p) || !QFileInfo(p).isDir()) { QMessageBox::warning(this, label, "Select an existing prefix directory."); return; }
+    if (!runtimeRoot->text().isEmpty() && (!QDir::isAbsolutePath(runtimeRoot->text()) || !QFileInfo(runtimeRoot->text()).isDir())) { QMessageBox::warning(this, label, "Select a valid runtime install root."); return; }
     auto *process = new QProcess(this);
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment(); env.remove("DYLD_LIBRARY_PATH"); env.remove("DYLD_INSERT_LIBRARIES"); env.insert("DPREFIX", p);
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    for (const auto &name : env.keys()) if (name.startsWith("DYLD_")) env.remove(name);
+    env.remove("DARLING_INSTALL_PREFIX");
+    if (!runtimeRoot->text().isEmpty()) env.insert("DARLING_INSTALL_PREFIX", runtimeRoot->text());
+    env.insert("DPREFIX", p);
     process->setProcessEnvironment(env); process->setProcessChannelMode(QProcess::MergedChannels);
     ++activeProcesses;
     setBusy(true, "Running " + label);

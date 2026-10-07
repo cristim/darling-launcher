@@ -1,8 +1,10 @@
 #include "window.h"
 #include "appbrowser.h"
+#include "prefixdialog.h"
 #include <QApplication>
 #include <QFile>
 #include <QBuffer>
+#include <QComboBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QImage>
@@ -65,6 +67,7 @@ private slots:
         window.findChild<QLineEdit *>("volumeField")->setText(volume);
         window.findChild<QLineEdit *>("prefixField")->setText(prefix);
         window.findChild<QLineEdit *>("darlingField")->setText(fakePath);
+        window.findChild<QLineEdit *>("runtimeRootField")->clear();
         QTimer dismiss;
         connect(&dismiss, &QTimer::timeout, [] {
             if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) box->accept();
@@ -90,6 +93,30 @@ private slots:
         QVERIFY(QFileInfo::exists(prefix + "/usr/lib/libExample.dylib"));
         auto catalog = LauncherCore::loadCatalog(prefix);
         QCOMPARE(catalog.value("apps").toArray().first().toObject().value("chain").toArray().size(), 1);
+    }
+    void prefixBuilderRuntimeSelection() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        QString source = temporary.path() + "/source", workspace = temporary.path() + "/workspace"; QVERIFY(QDir().mkpath(source));
+        Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py"); window.show();
+        window.findChild<QLineEdit *>("volumeField")->clear();
+        window.findChild<QPushButton *>("Create prefix")->click();
+        auto *dialog = window.findChild<PrefixDialog *>(); QVERIFY(dialog);
+        dialog->findChild<QLineEdit *>("prefixBuilderSource")->setText(source);
+        dialog->findChild<QLineEdit *>("prefixBuilderWorkspace")->setText(workspace);
+        dialog->findChild<QComboBox *>("prefixBuilderScope")->setCurrentIndex(1);
+        dialog->findChild<QPushButton *>("buildPrefix")->click();
+        QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLineEdit *>("prefixField")->text(), workspace + "/prefix", 5000);
+        QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), workspace + "/image/usr/local");
+        QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), workspace + "/build/src/startup/darling");
+        window.findChild<QPushButton *>("Initialize selected prefix")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(workspace + "/prefix/runtime-used.txt"), 5000);
+        QFile used(workspace + "/prefix/runtime-used.txt"); QVERIFY(used.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromLocal8Bit(used.readAll()).trimmed(), workspace + "/image/usr/local");
+        QTRY_VERIFY_WITH_TIMEOUT([&window] {
+            for (auto *process : window.findChildren<QProcess *>()) if (process->state() != QProcess::NotRunning) return false;
+            return true;
+        }(), 5000);
     }
     void closeDuringLaunch() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
