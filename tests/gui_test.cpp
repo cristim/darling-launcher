@@ -12,6 +12,7 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -89,6 +90,25 @@ private slots:
         QVERIFY(QFileInfo::exists(prefix + "/usr/lib/libExample.dylib"));
         auto catalog = LauncherCore::loadCatalog(prefix);
         QCOMPARE(catalog.value("apps").toArray().first().toObject().value("chain").toArray().size(), 1);
+    }
+    void closeDuringLaunch() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        QString prefix = temporary.path() + "/prefix"; QVERIFY(QDir().mkpath(prefix));
+        QString fakePath = temporary.path() + "/fake-darling";
+        QFile fake(fakePath); QVERIFY(fake.open(QIODevice::WriteOnly)); fake.write("#!/bin/sh\nexec /usr/bin/sleep 5\n"); fake.close();
+        QVERIFY(QFile::setPermissions(fakePath, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        QString error; QVERIFY(LauncherCore::saveCatalog(prefix, {{"apps", QJsonArray{QJsonObject{{"name", "Test"}, {"bundle", "Applications/Test.app"}, {"executable", "Test"}}}}}, &error));
+        auto *window = new Window; window->show();
+        window->findChild<QLineEdit *>("volumeField")->setText(temporary.path());
+        window->findChild<QLineEdit *>("prefixField")->setText(prefix);
+        window->findChild<QLineEdit *>("darlingField")->setText(fakePath);
+        window->findChild<QLineEdit *>("runtimeRootField")->clear();
+        window->findChild<QPushButton *>("Scan volume")->click();
+        window->findChild<QTableWidget *>("importedApps")->selectRow(0);
+        window->findChild<QPushButton *>("Launch selected")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!window->findChildren<QProcess *>().isEmpty() && window->findChildren<QProcess *>().first()->state() == QProcess::Running, 5000);
+        QTest::ignoreMessage(QtWarningMsg, QRegularExpression("QProcess: Destroyed while process .* is still running\\."));
+        delete window;
     }
 };
 QTEST_MAIN(GuiTest)

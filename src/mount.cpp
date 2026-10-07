@@ -83,3 +83,4 @@ MountRunner::MountRunner(QObject *parent) : QObject(parent) {
     });
 }
 void MountRunner::start(const MountCommand &command) { process.start(command.program, command.arguments); }
+MountRunner::~MountRunner() { process.disconnect(this); }

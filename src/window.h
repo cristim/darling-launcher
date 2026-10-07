@@ -17,6 +17,7 @@ class ImportTable;
 class Window : public QMainWindow {
 public:
     Window();
+    ~Window() override;
 private:
     QLineEdit *volume;
     QLineEdit *prefix;

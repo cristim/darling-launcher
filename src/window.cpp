@@ -162,6 +162,10 @@ Window::Window() {
         statusBar()->showMessage("No mounted macOS volume found. Select a mounted volume when available.");
 }
 
+Window::~Window() {
+    for (auto *process : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) process->disconnect(this);
+}
+
 void Window::setBusy(bool busy, const QString &message) { progress->setRange(0, busy ? 0 : 1); if (!busy) progress->setValue(1); statusBar()->showMessage(message); log->append(message); }
 void Window::refresh() {
     const QString source = volume->text(); const int generation = ++scanGeneration;

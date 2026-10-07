@@ -26,6 +26,7 @@ class MountRunner : public QObject {
     Q_OBJECT
 public:
     explicit MountRunner(QObject *parent = nullptr);
+    ~MountRunner() override;
     void start(const MountCommand &command);
 signals:
     void output(const QString &text);
