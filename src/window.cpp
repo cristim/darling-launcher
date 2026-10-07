@@ -5,6 +5,7 @@
 #include "prefixdialog.h"
 #include "discovery.h"
 #include <QApplication>
+#include <QCloseEvent>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -397,4 +398,12 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
         if (error == QProcess::FailedToStart) { --activeProcesses; setBusy(activeProcesses > 0, label + ": " + process->errorString()); process->deleteLater(); }
     });
     process->start(darling->text(), args);
+}
+
+void Window::closeEvent(QCloseEvent *event) {
+    if (mountDialog && mountDialog->isMounting()) {
+        statusBar()->showMessage("Complete or dismiss the authentication prompt before closing the launcher.");
+        event->ignore(); return;
+    }
+    QMainWindow::closeEvent(event);
 }

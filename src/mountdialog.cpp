@@ -73,7 +73,7 @@ MountDialog::MountDialog(QWidget *parent) : QDialog(parent) {
         const QString script = QStringLiteral(LAUNCHER_MOUNT_SCRIPT);
         if (python.isEmpty() || !QFileInfo(script).isFile()) { output->append("Python or the single-authorization mount script is unavailable."); return; }
         auto *batch = new QProcess(this); batch->setProcessChannelMode(QProcess::MergedChannels);
-        all->setEnabled(false); mountButton->setEnabled(false);
+        mountBusy = true; all->setEnabled(false); mountButton->setEnabled(false);
         output->append("Waiting for one authorization request for the entire read-only batch…");
         auto buffer = QSharedPointer<QByteArray>::create();
         auto mounts = QSharedPointer<QStringList>::create();
@@ -99,7 +99,7 @@ MountDialog::MountDialog(QWidget *parent) : QDialog(parent) {
         };
         connect(batch, &QProcess::readyReadStandardOutput, this, consume);
         connect(batch, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) {
-            consume();
+            consume(); mountBusy = false;
             batchMounts += *mounts; all->setEnabled(true); mountButton->setEnabled(true);
             if (!mounts->isEmpty()) { ownedMount = mounts->first(); ownedDevice = QStorageInfo(ownedMount).device(); ownedMountChoices->setCurrentText(ownedMount); unmountButton->setEnabled(true); }
             output->append(exit != QProcess::NormalExit ? "Mount helper crashed." : LauncherMount::exitDescription(code));
@@ -110,7 +110,7 @@ MountDialog::MountDialog(QWidget *parent) : QDialog(parent) {
             batch->deleteLater();
         });
         connect(batch, &QProcess::errorOccurred, this, [=](QProcess::ProcessError error) {
-            if (error == QProcess::FailedToStart) { output->append(batch->errorString()); all->setEnabled(true); mountButton->setEnabled(true); batch->deleteLater(); }
+            if (error == QProcess::FailedToStart) { mountBusy = false; output->append(batch->errorString()); all->setEnabled(true); mountButton->setEnabled(true); batch->deleteLater(); }
         });
         batch->start(python, {"-I", script, "--mount-root", batchRoot->text(), "--apfs-fuse", fusePath->text(), "--apfsutil", utilityPath->text()});
     });
@@ -189,4 +189,9 @@ void MountDialog::execute(const MountCommand &command, bool unmount, const QStri
 void MountDialog::mountAllWhenReady() {
     if (discovery.state() != QProcess::NotRunning) requestedBatch = true;
     else findChild<QPushButton *>("mountAllVolumes")->click();
+}
+
+void MountDialog::reject() {
+    if (mountBusy) { output->append("Complete or dismiss the authentication prompt before closing the mount workflow."); return; }
+    QDialog::reject();
 }

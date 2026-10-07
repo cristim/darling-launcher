@@ -6,6 +6,7 @@
 #include <QMap>
 #include <QProcess>
 
+class QCloseEvent;
 class QLabel;
 class QWidget;
 class QLineEdit;
@@ -23,6 +24,8 @@ class Window : public QMainWindow {
 public:
     explicit Window(const QString &builderScript = {}, bool mountAll = false);
     ~Window() override;
+protected:
+    void closeEvent(QCloseEvent *event) override;
 private:
     QLineEdit *volume;
     QLineEdit *prefix;

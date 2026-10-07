@@ -14,6 +14,8 @@ class MountDialog : public QDialog {
 public:
     explicit MountDialog(QWidget *parent = nullptr);
     void mountAllWhenReady();
+    bool isMounting() const { return mountBusy; }
+    void reject() override;
 signals:
     void sourceMounted(const QString &directory);
 private:
@@ -25,6 +27,7 @@ private:
     QPushButton *mountButton;
     QPushButton *unmountButton;
     QTextEdit *output;
+    bool mountBusy = false;
     bool requestedBatch = false;
     QList<MacPartition> detected;
     QProcess discovery;

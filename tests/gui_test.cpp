@@ -145,6 +145,27 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(apps->item(0, 2)->text(), retrySuccess ? QString("Exited successfully") : QString("Exited 2"), 5000);
         QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
     }
+    void oneAuthorizationGuiAndCloseGuard() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        QFile lsblk(temporary.path() + "/lsblk"); QVERIFY(lsblk.open(QIODevice::WriteOnly));
+        lsblk.write("#!/bin/sh\nprintf '%s' '{\"blockdevices\":[{\"path\":\"/dev/synthetic\",\"fstype\":\"apfs\",\"mountpoints\":[]}]}'\n"); lsblk.close();
+        QVERIFY(lsblk.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        QFile pkexec(temporary.path() + "/pkexec"); QVERIFY(pkexec.open(QIODevice::WriteOnly));
+        pkexec.write("#!/bin/sh\nprintf x >> \"$LAUNCHER_TEST_AUTH_COUNTER\"\n/usr/bin/sleep 1\nprintf '%s\\n' '{\"event\":\"progress\",\"message\":\"One batch authorized\"}'\nexit 0\n"); pkexec.close();
+        QVERIFY(pkexec.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        QByteArray originalPath = qgetenv("PATH"), oldCounter = qgetenv("LAUNCHER_TEST_AUTH_COUNTER");
+        auto restore = qScopeGuard([=] { qputenv("PATH", originalPath); qputenv("LAUNCHER_TEST_AUTH_COUNTER", oldCounter); });
+        qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath); qputenv("LAUNCHER_TEST_AUTH_COUNTER", (temporary.path() + "/count").toUtf8());
+        Window window({}, true); window.show();
+        QTRY_VERIFY(window.findChild<MountDialog *>() && window.findChild<MountDialog *>()->isMounting());
+        auto *dialog = window.findChild<MountDialog *>();
+        dialog->reject(); QVERIFY(dialog->isVisible()); window.close(); QVERIFY(window.isVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isMounting(), 5000);
+        QFile count(temporary.path() + "/count"); QVERIFY(count.open(QIODevice::ReadOnly)); QCOMPARE(count.readAll(), QByteArray("x"));
+        QVERIFY(dialog->findChild<QTextEdit *>("mountOutput")->toPlainText().contains("One batch authorized"));
+        dialog->reject(); QVERIFY(!dialog->isVisible()); window.close(); QVERIFY(!window.isVisible());
+    }
     void explicitMountBatchStartup() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
