@@ -21,7 +21,7 @@ class PrefixDialog;
 
 class Window : public QMainWindow {
 public:
-    explicit Window(const QString &builderScript = {});
+    explicit Window(const QString &builderScript = {}, bool mountAll = false);
     ~Window() override;
 private:
     QLineEdit *volume;

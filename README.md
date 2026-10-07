@@ -117,3 +117,9 @@ multiple matches require a choice. Verified mounts are listed in the dialog's
 session mount selector for explicit unmounting. They remain mounted on exit.
 A working desktop polkit authentication agent is required. The launcher does not
 install kernel drivers or attempt an alternate privilege route after denial.
+
+For an explicitly requested desktop batch mount, start the launcher with
+`--mount-all`. It opens Settings and begins the batch after partition discovery.
+Launch it from your desktop session so `pkexec` can reach that session's existing
+polkit agent; setting display variables alone does not create a login-session
+association. Ordinary startup never mounts partitions automatically.

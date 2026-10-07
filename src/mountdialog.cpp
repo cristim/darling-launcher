@@ -17,6 +17,7 @@
 #include <QStandardPaths>
 #include <QStorageInfo>
 #include <QSettings>
+#include <QDebug>
 #include <QTextEdit>
 #include <QVBoxLayout>
 #include <sys/stat.h>
@@ -66,12 +67,14 @@ MountDialog::MountDialog(QWidget *parent) : QDialog(parent) {
         if (detected.isEmpty()) { output->append("No macOS partitions detected. Refresh first."); return; }
         auto *batch = new MountBatch(this); all->setEnabled(false); mountButton->setEnabled(false);
         connect(batch, &MountBatch::output, output, &QTextEdit::append);
+        connect(batch, &MountBatch::output, this, [](const QString &message) { qInfo().noquote() << message; });
         connect(batch, &MountBatch::completed, this, [=](const QStringList &mounts, bool cancelled) {
             batchMounts += mounts; all->setEnabled(true); mountButton->setEnabled(true);
             for (const auto &path : mounts) if (ownedMountChoices->findText(path) < 0) ownedMountChoices->addItem(path, QStorageInfo(path).device());
             if (!mounts.isEmpty()) { ownedMount = mounts.first(); ownedDevice = QStorageInfo(ownedMount).device(); ownedMountChoices->setCurrentText(ownedMount); unmountButton->setEnabled(true); }
             output->append(cancelled ? "Stopped after authorization was cancelled or denied." : "Finished scanning detected volumes.");
             auto sources = LauncherCore::mountedMacVolumes();
+            qInfo().noquote() << "Detected macOS application sources:" << sources.join(", ");
             if (sources.size() == 1) emit sourceMounted(sources.first());
             else if (sources.size() > 1) {
                 partitions->clear(); partitions->addItem("Multiple sources found; use Detect mounted macOS volumes in Settings", -1);
@@ -94,6 +97,7 @@ MountDialog::MountDialog(QWidget *parent) : QDialog(parent) {
             partitions->addItem(part.device + " — " + part.filesystem + " " + part.label + (part.mounted ? " (mounted)" : ""), i);
         }
         if (detected.isEmpty()) output->append("No APFS or HFS partitions found.");
+        if (requestedBatch) { requestedBatch = false; findChild<QPushButton *>("mountAllVolumes")->click(); }
     });
     connect(&discovery, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) output->append(discovery.errorString());
@@ -150,4 +154,9 @@ void MountDialog::execute(const MountCommand &command, bool unmount, const QStri
         unmountButton->setEnabled(!ownedMount.isEmpty()); runner->deleteLater(); discover();
     });
     runner->start(command);
+}
+
+void MountDialog::mountAllWhenReady() {
+    if (discovery.state() != QProcess::NotRunning) requestedBatch = true;
+    else findChild<QPushButton *>("mountAllVolumes")->click();
 }

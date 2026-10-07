@@ -2,6 +2,7 @@
 #include "window.h"
 #include "appbrowser.h"
 #include "prefixdialog.h"
+#include "mountdialog.h"
 #include <QApplication>
 #include <QFile>
 #include <QBuffer>
@@ -21,6 +22,8 @@
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QTextEdit>
+#include <QScopeGuard>
 #include <QtTest>
 #include <QtEndian>
 
@@ -142,6 +145,20 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(apps->item(0, 2)->text(), retrySuccess ? QString("Exited successfully") : QString("Exited 2"), 5000);
         QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
     }
+    void explicitMountBatchStartup() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        QFile lsblk(temporary.path() + "/lsblk"); QVERIFY(lsblk.open(QIODevice::WriteOnly));
+        lsblk.write("#!/bin/sh\nprintf '%s' '{\"blockdevices\":[]}'\n"); lsblk.close();
+        QVERIFY(lsblk.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        QByteArray originalPath = qgetenv("PATH"); auto restore = qScopeGuard([originalPath] { qputenv("PATH", originalPath); });
+        qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath);
+        Window window({}, true); window.show();
+        QTRY_VERIFY(window.findChild<MountDialog *>() != nullptr);
+        auto *dialog = window.findChild<MountDialog *>();
+        QTRY_VERIFY(dialog->findChild<QTextEdit *>("mountOutput")->toPlainText().contains("No macOS partitions detected"));
+        QCOMPARE(window.findChild<QTabWidget *>("mainTabs")->currentIndex(), 1);
+    }
     void cloneThenBuildAndDeploy() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
@@ -149,7 +166,7 @@ private slots:
         QFile git(fakeGit); QVERIFY(git.open(QIODevice::WriteOnly));
         git.write("#!/bin/sh\nif [ \"$1\" = clone ]; then mkdir -p \"$5\"; echo cloned fixture; exit 0; fi\nexit 1\n"); git.close();
         QVERIFY(git.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
-        QByteArray originalPath = qgetenv("PATH"); qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath);
+        QByteArray originalPath = qgetenv("PATH"); auto restore = qScopeGuard([originalPath] { qputenv("PATH", originalPath); }); qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath);
         Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py"); window.show();
         window.findChild<QLineEdit *>("volumeField")->clear();
         window.findChild<QPushButton *>("Create prefix")->click();

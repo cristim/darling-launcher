@@ -33,10 +33,11 @@
 #include <QTableWidget>
 #include <QTextEdit>
 #include <QTabWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QtConcurrent>
 
-Window::Window(const QString &builderScript) {
+Window::Window(const QString &builderScript, bool mountAll) {
     setWindowTitle("Darling Launcher — host application");
     resize(1050, 720);
     auto *central = new QWidget;
@@ -244,6 +245,10 @@ Window::Window(const QString &builderScript) {
     refresh(); load();
     if (LauncherCore::mountedMacVolumes().isEmpty())
         statusBar()->showMessage("No mounted macOS volume found. Select a mounted volume when available.");
+    if (mountAll) QTimer::singleShot(0, this, [this, tabs] {
+        tabs->setCurrentIndex(1); findChild<QPushButton *>("Mount macOS source…")->click();
+        mountDialog->mountAllWhenReady();
+    });
 }
 Window::~Window() {
     for (auto *process : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) process->disconnect(this);
