@@ -147,9 +147,10 @@ private slots:
         const QJsonObject proposal{{"source", workspace + "/clone"}, {"repo", "VibeDarling/fixture"}, {"base", "main"}, {"head", "test:fix-fixture"}, {"title", "fixture: repair missing behavior"}, {"body", "Completed synthetic proposal"}};
         QFile proposalFile(workspace + "/proposal.json"); QVERIFY(proposalFile.open(QIODevice::WriteOnly)); proposalFile.write(QJsonDocument(proposal).toJson()); proposalFile.close();
         QVERIFY(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).error.contains("until the fix is verified"));
-        QFile verification(workspace + "/LAUNCHER-VERIFICATION.json"); QVERIFY(verification.open(QIODevice::WriteOnly)); verification.write(QJsonDocument(QJsonObject{{"verified", true}, {"proposalCommit", "stale-sha"}}).toJson()); verification.close();
-        QVERIFY(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).error.contains("changed after it was verified"));
-        QVERIFY(verification.open(QIODevice::WriteOnly)); verification.write(QJsonDocument(QJsonObject{{"verified", true}, {"proposalCommit", "reviewed-sha"}}).toJson()); verification.close();
+        QFile forged(workspace + "/LAUNCHER-VERIFICATION.json"); QVERIFY(forged.open(QIODevice::WriteOnly)); forged.write(QJsonDocument(QJsonObject{{"verified", true}, {"proposalCommit", "reviewed-sha"}}).toJson()); forged.close();
+        QVERIFY(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).error.contains("until the fix is verified"));
+        const QString recorded = LauncherTroubleshooting::verificationFile(workspace, "stale-sha"); QVERIFY(QDir().mkpath(QFileInfo(recorded).absolutePath()));
+        QFile verification(LauncherTroubleshooting::verificationFile(workspace, "reviewed-sha")); QVERIFY(verification.open(QIODevice::WriteOnly)); verification.write(QJsonDocument(QJsonObject{{"verified", true}, {"proposalCommit", "reviewed-sha"}}).toJson()); verification.close();
         QVERIFY2(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).valid(), qPrintable(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).error));
         auto *timer = new QTimer(&dialog); timer->setInterval(10); bool approved = false;
         connect(timer, &QTimer::timeout, &dialog, [&] { if (auto *approval = dialog.findChild<QDialog *>("prApprovalDialog")) { timer->stop(); if (approved) approval->findChild<QPushButton *>("approveCompletedPr")->click(); else approval->reject(); } });

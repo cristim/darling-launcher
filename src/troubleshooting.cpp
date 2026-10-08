@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "troubleshooting.h"
 #include "log.h"
+#include <QCryptographicHash>
 #include "core.h"
 #include "discovery.h"
 #include <QComboBox>
@@ -73,8 +74,11 @@ FixVerifier::FixVerifier(const QString &workspace, const QJsonObject &diagnostic
 void FixVerifier::finish(bool verified, const QString &reason) {
     running = false;
     QJsonObject report{{"verified", verified}, {"reason", reason}, {"launcher", launcher}, {"runtimeRoot", runtimeRoot}, {"bundle", diagnostic.value("bundle")}, {"prefix", diagnostic.value("prefix")}, {"proposalCommit", proposalCommit}, {"stableSeconds", stableSeconds}, {"outputTail", output.right(4000)}};
-    QSaveFile file(workspace + "/LAUNCHER-VERIFICATION.json");
-    if (file.open(QIODevice::WriteOnly) && file.write(QJsonDocument(report).toJson()) >= 0) file.commit();
+    for (const QString &path : {LauncherTroubleshooting::verificationFile(workspace, proposalCommit), workspace + "/LAUNCHER-VERIFICATION.json"}) {
+        if (!QDir().mkpath(QFileInfo(path).absolutePath())) continue;
+        QSaveFile file(path);
+        if (file.open(QIODevice::WriteOnly) && file.write(QJsonDocument(report).toJson()) >= 0) file.commit();
+    }
     LauncherLog::write("verify", (verified ? "verified: " : "not verified: ") + reason);
     emit finished({verified, reason});
 }
@@ -119,7 +123,7 @@ void FixVerifier::start() {
     process.start(launcher, {"exec", "/" + bundle + "/Contents/MacOS/" + executable});
 }
 BackgroundFix::BackgroundFix(const QString &agent, const QStringList &args, const QString &workspace, QObject *parent, const QJsonObject &diagnostic) : QObject(parent) {
-    setObjectName("backgroundFix");
+    setObjectName("backgroundFix"); workspacePath = workspace; failure = diagnostic;
     process.setWorkingDirectory(workspace); process.setProcessChannelMode(QProcess::MergedChannels);
     auto append = [workspace](const QByteArray &bytes) { LauncherLog::write("agent", QString::fromUtf8(bytes)); QFile log(workspace + "/AGENT.log"); if (log.open(QIODevice::WriteOnly | QIODevice::Append)) log.write(bytes); };
     connect(&process, &QProcess::started, this, [this, agent, workspace] { process.closeWriteChannel(); emit statusChanged(agent + " is working in the background. Private log: " + workspace + "/AGENT.log"); });
@@ -129,15 +133,20 @@ BackgroundFix::BackgroundFix(const QString &agent, const QStringList &args, cons
         const bool success = exit == QProcess::NormalExit && code == 0;
         emit statusChanged(agent + (success ? " finished. Trying its fix inside the imported prefix before offering a PR…" : " stopped without a verified fix. Check its permissions/authentication and log in ") + workspace);
         if (!success || diagnostic.isEmpty()) return;
-        verifier = new FixVerifier(workspace, diagnostic, 20, this);
-        connect(verifier, &FixVerifier::finished, this, [this, workspace](const FixVerification &result) {
-            emit statusChanged(result.verified ? "Fix verified inside the imported prefix. You can now review and submit the PR." : "The fix was not verified: " + result.reason);
-            if (result.verified) emit verified(workspace + "/proposal.json");
-        });
-        verifier->start();
+        if (!QFileInfo::exists(workspace + "/verification.json")) { emit statusChanged("The agent declared no patched runtime to try, so no PR is offered. See " + workspace); return; }
+        emit verificationOffered();
     });
     connect(&process, &QProcess::errorOccurred, this, [this, agent](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) emit statusChanged(agent + " failed to start: " + process.errorString()); });
     QTimer::singleShot(0, this, [this, agent, args] { if (!waiting) return; waiting = false; process.start(QStandardPaths::findExecutable(agent), args); });
+}
+void BackgroundFix::verify() {
+    if (verifier && verifier->isRunning()) return;
+    delete verifier; verifier = new FixVerifier(workspacePath, failure, 20, this);
+    connect(verifier, &FixVerifier::finished, this, [this](const FixVerification &result) {
+        emit statusChanged(result.verified ? "Fix verified inside the imported prefix. You can now review and submit the PR." : "The fix was not verified: " + result.reason);
+        if (result.verified) emit verified(workspacePath + "/proposal.json");
+    });
+    verifier->start();
 }
 bool BackgroundFix::isRunning() const { return waiting || process.state() != QProcess::NotRunning || (verifier && verifier->isRunning()); }
 BackgroundFix::~BackgroundFix() { process.disconnect(); }
@@ -145,6 +154,10 @@ void BackgroundFix::stop() {
     waiting = false; process.terminate();
     QTimer::singleShot(5000, this, [this] { if (process.state() != QProcess::NotRunning) process.kill(); });
     emit statusChanged("Stopping the owned agent CLI. Commands it already started may still finish in its private workspace.");
+}
+QString LauncherTroubleshooting::verificationFile(const QString &workspace, const QString &commit) {
+    const QByteArray key = (QFileInfo(workspace).canonicalFilePath() + '\n' + commit).toUtf8();
+    return LauncherDiscovery::dataRoot() + "/verifications/" + QString::fromLatin1(QCryptographicHash::hash(key, QCryptographicHash::Sha256).toHex()) + ".json";
 }
 PrProposal LauncherTroubleshooting::reviewProposal(const QString &file) {
     PrProposal result; QFile input(file);
@@ -166,7 +179,7 @@ PrProposal LauncherTroubleshooting::reviewProposal(const QString &file) {
     if (run({"symbolic-ref", "--short", "HEAD"}) != selectedHead.captured(2) || !ok) { result.error = "Proposal head must match the source clone's current branch."; return result; }
     result.commit = run({"rev-parse", "HEAD"});
     if (!ok || result.commit.isEmpty()) { result.error = "Cannot identify source commit."; return result; }
-    QFile verification(workspace + "/LAUNCHER-VERIFICATION.json");
+    QFile verification(LauncherTroubleshooting::verificationFile(workspace, result.commit));
     const auto verified = verification.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(verification.readAll()).object() : QJsonObject();
     if (!verified.value("verified").toBool()) { result.error = "No PR is offered until the fix is verified: the launcher has not run the app successfully with this patch in the imported prefix."; return result; }
     if (verified.value("proposalCommit").toString() != result.commit) { result.error = "The patch changed after it was verified. Verify the current commit before offering a PR."; return result; }
@@ -305,6 +318,10 @@ TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWi
             connect(job, &BackgroundFix::statusChanged, this, [this](const QString &message) { status->setText(message); });
             if (auto *window = qobject_cast<QMainWindow *>(parentWidget())) connect(job, &BackgroundFix::statusChanged, window, [window](const QString &message) { window->statusBar()->showMessage(message); });
             const QJsonObject failure = diagnostic; QWidget *window = parentWidget();
+            connect(job, &BackgroundFix::verificationOffered, job, [window, job] {
+                const auto answer = QMessageBox::question(window, "Try the agent's fix", "The agent says it built a patched Darling in its workspace (" + job->property("workspace").toString() + ").\n\nTrying the fix runs that agent-built program against your imported prefix for about 20 seconds. Run it?");
+                if (answer == QMessageBox::Yes) job->verify(); else if (auto *bar = qobject_cast<QMainWindow *>(window)) bar->statusBar()->showMessage("Fix not tried; no PR is offered until it has been verified in the prefix.");
+            });
             connect(job, &BackgroundFix::verified, job, [window, failure](const QString &proposalFile) {
                 if (QMessageBox::question(window, "Fix verified", "The fix ran successfully inside your imported prefix.\n\nReview the completed patch and PR draft now? Nothing is submitted until you approve the completed draft.") != QMessageBox::Yes) return;
                 auto *review = new TroubleshootingDialog(failure, window); review->setAttribute(Qt::WA_DeleteOnClose); review->show(); review->loadProposal(proposalFile);

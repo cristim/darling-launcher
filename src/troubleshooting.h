@@ -42,7 +42,12 @@ public slots:
 signals:
     void statusChanged(const QString &message);
     void verified(const QString &proposalFile);
+    void verificationOffered();
+public slots:
+    void verify();
 private:
+    QString workspacePath;
+    QJsonObject failure;
     FixVerifier *verifier = nullptr;
     QProcess process;
     bool waiting = true;
@@ -53,6 +58,7 @@ struct PrProposal {
     bool valid() const { return error.isEmpty() && !patch.isEmpty(); }
 };
 namespace LauncherTroubleshooting {
+QString verificationFile(const QString &workspace, const QString &commit);
 QStringList agents();
 QStringList agentArguments(const QString &agent, const QString &prompt);
 QStringList backgroundArguments(const QString &agent, const QString &prompt);
