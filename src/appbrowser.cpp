@@ -11,6 +11,8 @@
 #include <QStyleOptionViewItem>
 #include <QStyle>
 #include <QPainter>
+#include <QMouseEvent>
+#include <QRubberBand>
 
 namespace {
 const QString bundleMime = "application/x-darling-app-bundles";
@@ -68,6 +70,57 @@ AppBrowser::AppBrowser(QWidget *parent) : QListWidget(parent) {
     setDragEnabled(true); setDragDropMode(QAbstractItemView::DragOnly); setDefaultDropAction(Qt::CopyAction);
     setMovement(QListView::Static); setResizeMode(QListView::Adjust);
     setItemDelegate(new AppDelegate(this)); setGridView(false);
+}
+QList<QRect> AppBrowser::contentRects(const QModelIndex &index) const {
+    const QRect cell = visualRect(index);
+    const QFontMetrics metrics = fontMetrics();
+    if (viewMode() == QListView::ListMode) {
+        const QString text = index.data(Qt::DisplayRole).toString() + "    " + QLocale().formattedDataSize(index.data(SizeRole).toLongLong(), 1, QLocale::DataSizeSIFormat) + "    · " + index.data(StatusRole).toString();
+        return {QRect(cell.left(), cell.top(), 12 + iconSize().width() + metrics.horizontalAdvance(text), cell.height())};
+    }
+    const int textWidth = qMin(cell.width(), metrics.horizontalAdvance(index.data(Qt::DisplayRole).toString()) + 8);
+    const QRect icon(cell.center().x() - iconSize().width() / 2, cell.top(), iconSize().width(), iconSize().height() + 8);
+    const QRect text(cell.center().x() - textWidth / 2, icon.bottom(), textWidth, cell.bottom() - icon.bottom());
+    return {icon, text};
+}
+QRect AppBrowser::contentRect(const QModelIndex &index) const {
+    QRect all; for (const QRect &rect : contentRects(index)) all = all.united(rect);
+    return all;
+}
+bool AppBrowser::onContent(const QModelIndex &index, const QPoint &point) const {
+    for (const QRect &rect : contentRects(index)) if (rect.contains(point)) return true;
+    return false;
+}
+void AppBrowser::mousePressEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton && !(event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier))) {
+        const QModelIndex index = indexAt(event->pos());
+        if (index.isValid() && onContent(index, event->pos())) { QListWidget::mousePressEvent(event); return; }
+        clearSelection(); setCurrentIndex(QModelIndex());
+        rubberOrigin = event->pos();
+        if (!rubberBand) rubberBand = new QRubberBand(QRubberBand::Rectangle, viewport());
+        rubberBand->setGeometry(QRect(rubberOrigin, QSize())); rubberBand->show();
+        event->accept(); return;
+    }
+    QListWidget::mousePressEvent(event);
+}
+void AppBrowser::mouseMoveEvent(QMouseEvent *event) {
+    if (rubberBand && rubberBand->isVisible()) {
+        const QRect area = QRect(rubberOrigin, event->pos()).normalized().intersected(viewport()->rect());
+        rubberBand->setGeometry(area);
+        QItemSelection hit;
+        for (int row = 0; row < count(); ++row) {
+            const QModelIndex index = model()->index(row, 0);
+            if (isRowHidden(row)) continue;
+            for (const QRect &rect : contentRects(index)) if (rect.intersects(area)) { hit.select(index, index); break; }
+        }
+        selectionModel()->select(hit, QItemSelectionModel::ClearAndSelect);
+        event->accept(); return;
+    }
+    QListWidget::mouseMoveEvent(event);
+}
+void AppBrowser::mouseReleaseEvent(QMouseEvent *event) {
+    if (rubberBand && rubberBand->isVisible()) { rubberBand->hide(); event->accept(); return; }
+    QListWidget::mouseReleaseEvent(event);
 }
 void AppBrowser::setSorting(bool bySize, bool descending) {
     setProperty("sortingConfigured", true); setProperty("sortBySize", bySize); setProperty("sortDescending", descending);

@@ -3,6 +3,8 @@
 #include "core.h"
 #include <QListWidget>
 #include <QLabel>
+#include <QPoint>
+#include <QRubberBand>
 
 class AppBrowser : public QListWidget {
     Q_OBJECT
@@ -12,6 +14,9 @@ public:
     void setGridView(bool grid);
     void setSorting(bool bySize, bool descending);
     QStringList selectedBundles() const;
+    QRect contentRect(const QModelIndex &index) const;
+    QList<QRect> contentRects(const QModelIndex &index) const;
+    bool onContent(const QModelIndex &index, const QPoint &point) const;
     enum class Filter { All, Imported, Running, Failed, NotImported };
     void setSearch(const QString &query);
     void setFilter(Filter filter);
@@ -26,7 +31,12 @@ private:
     Filter filter = Filter::All;
     QStringList importedBundles;
     void applyFilter();
+    QRubberBand *rubberBand = nullptr;
+    QPoint rubberOrigin;
 protected:
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
     QMimeData *mimeData(const QList<QListWidgetItem *> &items) const override;
     QStringList mimeTypes() const override;
     virtual QString dragMimeType() const;

@@ -220,6 +220,32 @@ private slots:
         QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), install);
         QVERIFY(!window.findChild<QWidget *>("Detect paths"));
     }
+    void rubberBandOnBlankSpaceDragOnApps() {
+        AppBrowser browser; browser.resize(500, 300);
+        browser.showPreviews({{"Applications/A.app", "Calculator", {}, 10}, {"Applications/B.app", "Calendar", {}, 20}, {"Applications/C.app", "Notes", {}, 30}}); browser.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&browser));
+        const QModelIndex first = browser.model()->index(0, 0), second = browser.model()->index(1, 0), third = browser.model()->index(2, 0);
+        const QPoint onApp = browser.contentRect(first).center(), blank(browser.viewport()->width() - 10, browser.visualRect(first).center().y());
+        QVERIFY(!browser.onContent(first, blank));
+        browser.selectAll(); QCOMPARE(browser.selectedItems().size(), 3);
+        QTest::mousePress(browser.viewport(), Qt::LeftButton, Qt::NoModifier, browser.contentRect(second).center());
+        QCOMPARE(browser.selectedItems().size(), 3);
+        QTest::mouseRelease(browser.viewport(), Qt::LeftButton, Qt::NoModifier, browser.contentRect(second).center());
+        browser.selectAll();
+        QTest::mousePress(browser.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(browser.viewport()->width() - 10, browser.visualRect(first).top() + 1));
+        QCOMPARE(browser.selectedItems().size(), 0);
+        QTest::mouseMove(browser.viewport(), QPoint(browser.viewport()->width() - 10, browser.visualRect(second).bottom() - 1));
+        QTest::mouseMove(browser.viewport(), QPoint(10, browser.visualRect(second).center().y()));
+        QTest::mouseRelease(browser.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(10, browser.visualRect(second).center().y()));
+        QCOMPARE(browser.selectedBundles(), (QStringList{"Applications/A.app", "Applications/B.app"})); Q_UNUSED(onApp); Q_UNUSED(third);
+        browser.setGridView(true); QTRY_VERIFY(browser.visualRect(first).width() <= 130);
+        const QRect cell = browser.visualRect(first), content = browser.contentRect(first);
+        QVERIFY(content.isValid()); QVERIFY(browser.onContent(first, QPoint(cell.center().x(), cell.top() + 30))); QVERIFY(!browser.onContent(first, QPoint(cell.left() - 3, cell.top() + 40)));
+        browser.selectAll(); QTest::mousePress(browser.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(cell.center().x(), cell.top() + 30)); QCOMPARE(browser.selectedItems().size(), 3);
+        QTest::mouseRelease(browser.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(cell.center().x(), cell.top() + 30));
+        QTest::mousePress(browser.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(cell.left() - 3, cell.top() + 40)); QCOMPARE(browser.selectedItems().size(), 0);
+        QTest::mouseRelease(browser.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(cell.left() - 3, cell.top() + 40));
+    }
     void iconViewsAndSelection() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QImage image(64, 64, QImage::Format_ARGB32); image.fill(Qt::green);
@@ -234,11 +260,11 @@ private slots:
         QCOMPARE(browser.item(0)->text(), "Friendly One");
         QCOMPARE(browser.item(0)->icon().pixmap(64, 64).toImage().pixelColor(32, 32), QColor(Qt::green));
         QVERIFY(browser.item(0)->toolTip().contains("MB")); QCOMPARE(browser.iconSize(), QSize(32, 32));
-        QTest::mouseClick(browser.viewport(), Qt::LeftButton, Qt::NoModifier, browser.visualItemRect(browser.item(0)).center());
+        QTest::mouseClick(browser.viewport(), Qt::LeftButton, Qt::NoModifier, browser.contentRect(browser.model()->index(0, 0)).center());
         QTest::keyClick(&browser, Qt::Key_A, Qt::ControlModifier); QCOMPARE(browser.selectedBundles().size(), 3);
-        QTest::mouseClick(browser.viewport(), Qt::LeftButton, Qt::NoModifier, browser.visualItemRect(browser.item(0)).center());
-        QTest::mouseClick(browser.viewport(), Qt::LeftButton, Qt::ShiftModifier, browser.visualItemRect(browser.item(2)).center()); QCOMPARE(browser.selectedBundles().size(), 3);
-        QTest::mouseClick(browser.viewport(), Qt::LeftButton, Qt::ControlModifier, browser.visualItemRect(browser.item(1)).center()); QCOMPARE(browser.selectedBundles().size(), 2);
+        QTest::mouseClick(browser.viewport(), Qt::LeftButton, Qt::NoModifier, browser.contentRect(browser.model()->index(0, 0)).center());
+        QTest::mouseClick(browser.viewport(), Qt::LeftButton, Qt::ShiftModifier, browser.contentRect(browser.model()->index(2, 0)).center()); QCOMPARE(browser.selectedBundles().size(), 3);
+        QTest::mouseClick(browser.viewport(), Qt::LeftButton, Qt::ControlModifier, browser.contentRect(browser.model()->index(1, 0)).center()); QCOMPARE(browser.selectedBundles().size(), 2);
         browser.setGridView(true); QCOMPARE(browser.viewMode(), QListView::IconMode); QCOMPARE(browser.iconSize(), QSize(64, 64)); QCOMPARE(browser.selectedBundles().size(), 2);
         browser.setGridView(false); QCOMPARE(browser.viewMode(), QListView::ListMode); QCOMPARE(browser.selectedBundles().size(), 2);
     }
@@ -360,7 +386,7 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(apps->count(), 1, 5000);
         QCOMPARE(apps->item(0)->data(Qt::UserRole).toString(), "Applications/Test.app");
         apps->setCurrentRow(0);
-        QTest::mouseClick(apps->viewport(), Qt::LeftButton, Qt::NoModifier, apps->visualItemRect(apps->item(0)).center());
+        QTest::mouseClick(apps->viewport(), Qt::LeftButton, Qt::NoModifier, apps->contentRect(apps->model()->index(0, 0)).center());
         LauncherTroubleshooting::saveRecoveryChoices({false, false, false, false, {}});
         int confirmations = 0;
         QTimer confirmation;
@@ -371,7 +397,7 @@ private slots:
                 dialog->accept();
             }
         }); confirmation.start(20);
-        QTest::mouseDClick(apps->viewport(), Qt::LeftButton, Qt::NoModifier, apps->visualItemRect(apps->item(0)).center());
+        QTest::mouseDClick(apps->viewport(), Qt::LeftButton, Qt::NoModifier, apps->contentRect(apps->model()->index(0, 0)).center());
         confirmation.stop(); QCOMPARE(confirmations, 1); QVERIFY(LauncherTroubleshooting::recoveryChoices().remember);
         QTRY_VERIFY_WITH_TIMEOUT(apps->status("Applications/Test.app").contains(missingLibrary ? "Needs libExample.dylib" : "Missing _Example"), 5000);
         QVERIFY(!window.findChild<QWidget *>("contributionPanel"));
