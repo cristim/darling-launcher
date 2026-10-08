@@ -101,24 +101,34 @@ apps onto the trash icon to move their private copies into that prefix's
 session trash moves without overwriting an existing app; copies remain recoverable
 on disk after closing the launcher. The macOS source is never deleted.
 
-A failed app shows a concise diagnosis and **Show details** for that app's loader
-output. Healthy launches keep logs hidden. **Import needed library and retry**
-copies only the diagnosed local dependency into the chosen private prefix and
-records its source and loader provenance. A contribution offer appears after a
-successful dependency copy, including when the retry still fails. It explains what
-was copied and provides a local issue draft and a separate source-fix workflow.
-A failure without a successful copy also offers a troubleshooting dialog and local
-issue draft. Saving a draft never submits it.
+Before launching an app, choose recovery actions for missing dependencies: private
+macOS library imports, an issue draft, or a background AI source fix. The confirmation
+can remember your choices; change them in **Settings → Launch recovery preferences…**.
+The macOS import option appears only when the selected source matches a readable,
+usable mounted volume. Otherwise **Mount or select macOS source…** opens the existing
+explicit mount chooser and cancels the pending launch. No partition is guessed.
 
-The troubleshooting dialog distinguishes local dependency workarounds, issue
-drafts, and source fixes. It detects installed Claude, Codex and OpenCode CLIs.
-Before starting an agent, review the displayed loader/provenance JSON and explicitly
-approve sharing it with that tool's configured service. The launcher creates a new
-workspace outside the prefix and macOS source, saves that JSON and clean-room
-instructions, then opens the selected CLI through `xdg-terminal-exec`. No Apple
-apps/libraries are attached. Agents are instructed to use independent source clones,
-private prefixes, published source/APIs/headers and the shared heavy-build lock;
-no push or issue/PR submission is authorized by starting an agent.
+A missing library or symbol opens an app-specific recovery popup. **Show details**
+reveals loader output and provenance there; the main window keeps only app status
+and progress. Import copies the exact standalone dependency into the selected
+private prefix, records its source and retries with the original launch choices.
+A stalled launch requires explicit prefix shutdown before importing. Copied-library
+outcomes and contribution explanations remain in the popup.
+
+Report prepares a completed editable issue draft. The authenticated GitHub account
+is used only after **Approve completed issue and submit**. Saving or selecting a
+report option alone never submits it.
+
+The popup detects installed Claude, Codex and OpenCode CLIs. Selecting AI in the
+pre-launch confirmation authorizes sharing subsequent loader output and path
+provenance with the selected tool’s configured service. Manual popup actions require
+approval of the displayed data. The launcher creates an independent workspace,
+saves diagnostic JSON and clean-room instructions, and runs the CLI in the background
+with a private `AGENT.log`; a terminal option remains available. No Apple payloads are
+attached. Jobs survive popup closure; Settings can stop the owned CLI. Tools retain
+their configured authentication and permission boundaries. Source work uses independent
+clones, private prefixes and the shared heavy-build lock. No push or issue/PR submission
+is authorized by starting an agent.
 
 If `gh auth status --hostname github.com` succeeds, **Review completed PR proposal…**
 can load a local `proposal.json` with string fields `source`, `repo`, `base`, `head`,

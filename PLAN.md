@@ -42,3 +42,30 @@ Eight UX improvements, in requested order:
 7. Guide empty panes toward source selection and first import, including no-mounted-volume state.
 8. Explain local dependency imports, issue drafts and agent fixes separately, preview shared data and require explicit consent before starting an agent.
 For every step, add behavior tests; build under the shared heavy-build lock and run the real Qt GUI.
+
+Missing dependency popup: diagnose loader output once per current failure and show
+an app/prefix-bound popup with collapsed details and independent import, completed
+issue review, and background AI checkboxes. Move main-window failure details and
+workaround explanations into this popup. Keep imports bound to the originating
+prefix and source; a stalled launch requires an explicit prefix shutdown before
+retry. A report checkbox prepares a completed editable draft; only its explicit
+approval submits via authenticated gh. Background CLI jobs use supported batch
+interfaces, new workspaces and private logs; closing the popup must not stop them.
+Test automatic popup/deduplication, all-checkbox actions, consent, issue cancellation
+and approval, background lifecycle, missing tools and prefix changes. Run the actual
+GUI with existing read-only mounts; never start real agents or submit real reports
+as part of verification.
+
+Pre-launch recovery preferences: ask before each manual launch unless the user
+remembers import/report/background AI choices; Settings edits the same stored
+choices. Retries inherit the original choices. AI consent explicitly covers future
+loader/path provenance; issue/PR drafts always require their own completed-draft
+approval. Never start a different agent if the remembered one is unavailable.
+
+Mounted-source gating: match the selected canonical source against readable usable
+mount candidates. Hide macOS import options without a verified mount and offer the
+existing explicit mount/source chooser. Selecting that chooser cancels a pending
+launch. Refresh popup availability when paths/mounts change; preserve import errors
+across mount refresh. Verify synthetic mount loss, remembered automatic copy/retry,
+pre-launch confirmation, fake background agents and issue approval. Use the actual
+read-only p2 System mount and owned temporary Calculator prefix for desktop checks.

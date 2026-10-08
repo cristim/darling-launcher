@@ -2,12 +2,14 @@
 #pragma once
 #include "core.h"
 #include "sources.h"
+#include "troubleshooting.h"
 #include <functional>
 #include <QJsonArray>
 #include <QMainWindow>
 #include <QMap>
 #include <QProcess>
 #include <QSet>
+#include <QPointer>
 
 class QComboBox;
 class QCloseEvent;
@@ -24,6 +26,7 @@ class ImportedBrowser;
 class QDialog;
 class QSplitter;
 class PrefixDialog;
+class TroubleshootingDialog;
 
 class Window : public QMainWindow {
 public:
@@ -53,13 +56,18 @@ private:
     QList<LauncherCore::TrashReceipt> trashedApps;
     QLabel *trashNotice;
     QPushButton *undoTrash;
-    QTextEdit *log = nullptr;
-    QWidget *contributionPanel;
-    QLabel *contributionMessage;
-    QPushButton *libraryRetry;
+    QMap<QString, QPointer<TroubleshootingDialog>> recoveryDialogs;
     QPushButton *troubleshoot = nullptr;
-    QLabel *failureSummary;
-    QPushButton *showDetails;
+    QMap<QString, RecoveryChoices> launchChoices;
+    QMap<QString, QString> recoveryOutcomes;
+    QMap<QString, QSet<QString>> recoveryActions;
+    void dispatchRecovery(const QString &key);
+    bool confirmLaunch(const QString &key);
+    bool hasMountedSource() const;
+    QJsonObject diagnostic(const QString &key) const;
+    void showRecovery(const QString &key);
+    void updateRecovery(const QString &key, const QString &result = {});
+    void importDependency(const QString &key, const QString &source, const QString &destination);
     void openTroubleshooting();
     QProgressBar *progress;
     MountDialog *mountDialog = nullptr;
@@ -79,7 +87,7 @@ private:
     void importBundles(const QStringList &names);
     void load();
     void persist();
-    void launch(const QString &key);
+    void launch(const QString &key, bool retry = false);
     void runCommand(const QString &label, const QStringList &args, const QString &key = {});
     QString selectedKey() const;
     void setBusy(bool busy, const QString &message);

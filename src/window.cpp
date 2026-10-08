@@ -134,7 +134,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         const QString path = prefixChoices->itemData(index).toString();
         if (path.isEmpty() || path == prefix->text()) return;
         if (activeProcesses > 0 || importRunning) { statusBar()->showMessage("Finish imports and stop this prefix’s processes before switching prefixes."); updatePrefixChoices(); return; }
-        prefix->setText(path); pending.clear(); failedApps.clear(); outputs.clear(); detectPaths(); load();
+        prefix->setText(path); pending.clear(); failedApps.clear(); outputs.clear(); recoveryOutcomes.clear(); launchChoices.clear(); recoveryActions.clear(); detectPaths(); load();
         QSettings settings("cristim", "darling-launcher"); settings.setValue("prefix", path); settings.setValue("darling", darling->text()); settings.setValue("runtimeRoot", runtimeRoot->text());
         updatePrefixChoices();
     });
@@ -150,12 +150,20 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     int actionCount = 0, settingsActionCount = 0;
     auto add = [&](const QString &title, auto callback) {
         auto *button = new QPushButton(title == "Create prefix" ? "Build and deploy Darling…" : title); button->setObjectName(title);
-        bool setting = title == "Detect paths" || title == "Create prefix" || title == "Initialize selected prefix" || title == "Detect mounted macOS volumes" || title == "Mount macOS source…" || title == "Apply settings";
+        bool setting = title == "Detect paths" || title == "Create prefix" || title == "Initialize selected prefix" || title == "Detect mounted macOS volumes" || title == "Mount macOS source…" || title == "Apply settings" || title == "Stop background agents" || title == "Launch recovery preferences…";
         int &count = setting ? settingsActionCount : actionCount;
         (setting ? settingsToolbar : toolbar)->addWidget(button, count / 3, count % 3); ++count;
         connect(button, &QPushButton::clicked, this, callback);
         return button;
     };
+    add("Launch recovery preferences…", [this] {
+        LaunchChoicesDialog choices("future apps", hasMountedSource(), settingsDialog);
+        connect(&choices, &LaunchChoicesDialog::mountRequested, this, [this] { findChild<QPushButton *>("Mount macOS source…")->click(); });
+        connect(volume, &QLineEdit::textChanged, &choices, [this, &choices] { choices.setMounted(hasMountedSource()); });
+        if (choices.exec() == QDialog::Accepted) LauncherTroubleshooting::saveRecoveryChoices(choices.choices());
+    });
+    connect(volume, &QLineEdit::textChanged, this, [this] { for (const auto &key : recoveryDialogs.keys()) updateRecovery(key); });
+    add("Stop background agents", [this] { for (auto *job : findChildren<BackgroundFix *>()) if (job->isRunning()) job->stop(); });
     add("Detect paths", [this, detectPaths] { detectPaths(); updateSourceChoices(); refresh(); load(); });
     add("Apply settings", [this] {
         QSettings settings("cristim", "darling-launcher");
@@ -207,45 +215,6 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     add("Launch selected", [this] { for (const auto &key : apps->selectedBundles()) launch(key); });
     add("Stop selected prefix processes", [this] { runCommand("Stop prefix", {"shutdown"}); });
     troubleshoot = add("Troubleshoot failed app…", [this] { openTroubleshooting(); }); troubleshoot->hide();
-    libraryRetry = add("Import needed library and retry", [this] {
-        QString key = selectedKey();
-        if (!pending.contains(key)) { QMessageBox::information(this, "Diagnosis", "Select an app with a missing loader dependency."); return; }
-        if (runningApps.contains(key)) { QMessageBox::information(this, "Diagnosis", "The launch process is still running after the loader error. Choose Stop selected prefix processes, then retry. This stops all apps in this prefix."); return; }
-        if (importRunning) { statusBar()->showMessage("An import is already in progress."); return; }
-        const auto missing = pending.value(key);
-        const QString source = volume->text(), destination = prefix->text();
-        QJsonObject step{{"symbol", missing.symbol}, {"failure", missing.missingLibrary ? "missing library" : "missing symbol"}, {"library", missing.expectedIn}, {"referencedFrom", missing.referencedFrom}, {"action", "imported from selected volume"}, {"loaderOutput", outputs.value(key)}};
-        step.insert("sourceVolume", source); step.insert("sourceLibrary", source + missing.expectedIn); step.insert("destinationPrefix", destination);
-        auto *watcher = new QFutureWatcher<QString>(this);
-        importRunning = true; setBusy(true, "Importing library: " + missing.expectedIn);
-        connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, key, step, destination] {
-            QString error = watcher->result(); watcher->deleteLater(); importRunning = false;
-            if (!error.isEmpty()) {
-                setBusy(activeProcesses > 0, "Library import failed: " + error);
-                QMessageBox::warning(this, "Library import", error); return;
-            }
-            auto catalog = LauncherCore::loadCatalog(destination); auto records = catalog.value("apps").toArray();
-            QJsonArray recordedChain; bool found = false;
-            for (int index = 0; index < records.size(); ++index) {
-                auto record = records[index].toObject();
-                if (record.value("bundle").toString() != key) continue;
-                recordedChain = record.value("chain").toArray(); recordedChain.append(step);
-                record.insert("chain", recordedChain); records[index] = record; found = true; break;
-            }
-            catalog.insert("apps", records);
-            if (!found || !LauncherCore::saveCatalog(destination, catalog, &error)) {
-                setBusy(activeProcesses > 0, "Library copied, but dependency recording failed: " + error); return;
-            }
-            if (prefix->text() != destination) {
-                setBusy(activeProcesses > 0, "Library imported and recorded in " + destination + ". Select that prefix to retry."); return;
-            }
-            chains[key] = recordedChain; pending.remove(key); updateContribution(); launch(key);
-        });
-        watcher->setFuture(QtConcurrent::run([source, destination, missing] {
-            QString error; LauncherCore::importLibrary(source, destination, missing.expectedIn, &error); return error;
-        }));
-    });
-    libraryRetry->setToolTip("Copy the diagnosed library from the selected macOS source into this private prefix, record provenance and retry. No upload or source fix occurs.");
     add("Install Brewfile", [this] {
         QString source = QFileDialog::getOpenFileName(this, "Select Brewfile"); if (source.isEmpty()) return;
         QString p = prefix->text();
@@ -316,38 +285,12 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     split->addWidget(sourcePane); split->addWidget(importPane); split->setStretchFactor(1, 2);
     layout->addWidget(split);
     split->restoreState(settings.value("splitterState").toByteArray());
-    contributionPanel = new QWidget; contributionPanel->setObjectName("contributionPanel");
-    auto *contributionLayout = new QVBoxLayout(contributionPanel);
-    contributionMessage = new QLabel; contributionMessage->setObjectName("contributionMessage"); contributionMessage->setWordWrap(true); contributionMessage->setTextFormat(Qt::PlainText);
-    contributionLayout->addWidget(contributionMessage);
-    auto *bottom = new QHBoxLayout;
-    auto *draft = new QPushButton("Save proposed issue"); draft->setObjectName("saveProposedIssue"); bottom->addWidget(draft);
-    connect(draft, &QPushButton::clicked, this, [this] {
-        QString key = selectedKey(); if (!entries.contains(key) || chains.value(key).isEmpty()) return;
-        QString path = prefix->text() + "/.darling-launcher/proposed-vibedarling-issue.md";
-        QSaveFile file(path);
-        if (!file.open(QIODevice::WriteOnly)) { QMessageBox::warning(this, "Draft", file.errorString()); return; }
-        file.write(LauncherCore::issueDraft(entries.value(key), chains.value(key), outputs.value(key), volume->text(), prefix->text(), darling->text(), runtimeRoot->text()).toUtf8());
-        if (!file.commit()) { QMessageBox::warning(this, "Draft", file.errorString()); return; }
-        QMessageBox::information(this, "Draft saved", path + "\nReview and approve before any submission.");
-    });
-    auto *fix = new QPushButton("Opt in: source fix workflow"); fix->setObjectName("sourceFixWorkflow"); bottom->addWidget(fix);
-    connect(fix, &QPushButton::clicked, this, [this] {
-        if (chains.value(selectedKey()).isEmpty()) return;
-        openTroubleshooting();
-    });
-    contributionLayout->addLayout(bottom); layout->addWidget(contributionPanel);
-    contributionPanel->hide(); libraryRetry->hide();
     connect(apps, &QListWidget::itemSelectionChanged, this, &Window::updateContribution);
     progress = new QProgressBar; progress->setRange(0, 1); progress->setValue(0); progress->hide(); layout->addWidget(progress);
-    failureSummary = new QLabel; failureSummary->setObjectName("failureSummary"); failureSummary->setWordWrap(true); failureSummary->setTextFormat(Qt::PlainText); failureSummary->hide(); layout->addWidget(failureSummary);
-    showDetails = new QPushButton("Show details"); showDetails->setObjectName("showFailureDetails"); showDetails->setCheckable(true); showDetails->hide(); layout->addWidget(showDetails);
-    connect(showDetails, &QPushButton::toggled, this, [this](bool checked) { log->setVisible(checked && failedApps.contains(selectedKey())); showDetails->setText(checked ? "Hide details" : "Show details"); });
-    log = new QTextEdit; log->setObjectName("failureLog"); log->setReadOnly(true); layout->addWidget(log); log->hide();
     setCentralWidget(central);
     updateSourceChoices(); load();
     statusBar()->showMessage(sourceSummary->text());
-    connect(prefix, &QLineEdit::textChanged, this, [this] { pending.clear(); failedApps.clear(); outputs.clear(); updatePrefixChoices(); updateContribution(); });
+    connect(prefix, &QLineEdit::textChanged, this, [this] { pending.clear(); failedApps.clear(); outputs.clear(); recoveryOutcomes.clear(); launchChoices.clear(); recoveryActions.clear(); for (auto dialog : recoveryDialogs) if (dialog) dialog->close(); recoveryDialogs.clear(); updatePrefixChoices(); updateContribution(); });
     auto *mountRefresh = new QTimer(this); mountRefresh->setInterval(3000);
     connect(mountRefresh, &QTimer::timeout, this, &Window::updateSourceChoices); mountRefresh->start();
     if (mountAll) QTimer::singleShot(0, this, [this] {
@@ -393,38 +336,13 @@ void Window::updateSourceChoices() {
     QString updated = signature.join('\n');
     if (!sourceChoicesInitialized || chosen != previous || updated != sourceSignature) refresh();
     sourceChoicesInitialized = true; sourceSignature = updated;
+    for (const auto &key : recoveryDialogs.keys()) updateRecovery(key);
 }
 
 void Window::updateContribution() {
     const QString key = selectedKey();
-    if (log) {
-        const bool failed = failedApps.contains(key);
-        failureSummary->setVisible(failed); showDetails->setVisible(failed);
-        log->setVisible(failed && showDetails->isChecked());
-        if (failed) {
-            const auto missing = pending.value(key);
-            QString libraryName = QFileInfo(missing.expectedIn).fileName();
-            for (const auto &part : missing.expectedIn.split('/')) if (part.endsWith(".framework")) { libraryName = part; break; }
-            failureSummary->setText(missing.valid() ? entries.value(key).name + " needs " + libraryName + (missing.symbol.isEmpty() ? QString() : " (symbol " + missing.symbol + ")") + ". Import the dependency from your selected macOS volume, or prepare a contribution." : entries.value(key).name + " could not run successfully. Review details or choose Troubleshoot failed app.");
-            log->setPlainText(outputs.value(key));
-        }
-    }
-    if (troubleshoot) troubleshoot->setVisible(failedApps.contains(key));
-    libraryRetry->setVisible(pending.contains(key));
-    const auto chain = chains.value(key);
-    contributionPanel->setVisible(entries.contains(key) && !chain.isEmpty());
-    if (chain.isEmpty()) return;
-    QStringList libraries;
-    for (const auto &step : chain) libraries << step.toObject().value("library").toString();
-    QString result;
-    result = apps->status(key);
-    contributionMessage->setText(entries.value(key).name + " failed to launch because a loader dependency was missing. "
-        "At your request, we copied these libraries from your macOS volume into this private prefix and retried: "
-        + libraries.join(", ") + ".\nCurrent result: " + result + ".\n"
-        "This is a local workaround using Apple libraries. You can help VibeDarling implement the missing functionality "
-        "by reviewing a proposed issue with the reproduction steps, loader error and dependency chain. "
-        "A source fix is a separate opt-in contribution using published sources, headers and documented behavior. "
-        "Libraries remain private; nothing is submitted until you approve a completed draft.");
+    if (troubleshoot) troubleshoot->setVisible(failedApps.contains(key) || !chains.value(key).isEmpty());
+    updateRecovery(key);
 }
 
 void Window::setBusy(bool busy, const QString &message) { busy = busy || importRunning; progress->setRange(0, busy ? 0 : 1); if (!busy) progress->setValue(1); progress->setVisible(busy); statusBar()->showMessage(message); }
@@ -449,6 +367,45 @@ void Window::refresh() {
         }
         return previews;
     }));
+}
+void Window::importDependency(const QString &key, const QString &source, const QString &destination) {
+    if (prefix->text() != destination || volume->text() != source) { statusBar()->showMessage("The dependency popup belongs to a different source or prefix. Reopen it for the current selection."); return; }
+
+    if (!pending.contains(key)) { QMessageBox::information(this, "Diagnosis", "Select an app with a missing loader dependency."); return; }
+    if (runningApps.contains(key)) { QMessageBox::information(this, "Diagnosis", "The launch process is still running after the loader error. Choose Stop selected prefix processes, then retry. This stops all apps in this prefix."); return; }
+    if (importRunning) { statusBar()->showMessage("An import is already in progress."); return; }
+    const auto missing = pending.value(key);
+    QJsonObject step{{"symbol", missing.symbol}, {"failure", missing.missingLibrary ? "missing library" : "missing symbol"}, {"library", missing.expectedIn}, {"referencedFrom", missing.referencedFrom}, {"action", "imported from selected volume"}, {"loaderOutput", outputs.value(key)}};
+    step.insert("sourceVolume", source); step.insert("sourceLibrary", source + missing.expectedIn); step.insert("destinationPrefix", destination);
+    auto *watcher = new QFutureWatcher<QString>(this);
+    importRunning = true; setBusy(true, "Importing library…"); updateRecovery(key, "Importing the selected dependency…");
+    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, key, step, destination] {
+        QString error = watcher->result(); watcher->deleteLater(); importRunning = false;
+        if (!error.isEmpty()) {
+            setBusy(activeProcesses > 0, "Library import failed: see the dependency popup.");
+            updateRecovery(key, error); return;
+        }
+        auto catalog = LauncherCore::loadCatalog(destination); auto records = catalog.value("apps").toArray();
+        QJsonArray recordedChain; bool found = false;
+        for (int index = 0; index < records.size(); ++index) {
+            auto record = records[index].toObject();
+            if (record.value("bundle").toString() != key) continue;
+            recordedChain = record.value("chain").toArray(); recordedChain.append(step);
+            record.insert("chain", recordedChain); records[index] = record; found = true; break;
+        }
+        catalog.insert("apps", records);
+        if (!found || !LauncherCore::saveCatalog(destination, catalog, &error)) {
+            setBusy(activeProcesses > 0, "Library copied, but dependency recording failed; see popup."); updateRecovery(key, error); return;
+        }
+        if (prefix->text() != destination) {
+            setBusy(activeProcesses > 0, "Library imported and recorded in " + destination + ". Select that prefix to retry."); return;
+        }
+        chains[key] = recordedChain; pending.remove(key); updateContribution(); launch(key, true);
+    });
+    watcher->setFuture(QtConcurrent::run([source, destination, missing] {
+        QString error; LauncherCore::importLibrary(source, destination, missing.expectedIn, &error); return error;
+    }));
+
 }
 void Window::importBundles(const QStringList &names) {
     if (names.isEmpty()) return;
@@ -519,12 +476,24 @@ void Window::persist() {
     if (!LauncherCore::saveCatalog(prefix->text(), QJsonObject{{"apps", array}}, &error)) QMessageBox::warning(this, "Catalog", error);
 }
 QString Window::selectedKey() const { return apps->currentItem() ? apps->currentItem()->data(Qt::UserRole).toString() : QString(); }
-void Window::launch(const QString &key) {
+bool Window::confirmLaunch(const QString &key) {
+    auto saved = LauncherTroubleshooting::recoveryChoices();
+    if (!saved.remember) {
+        LaunchChoicesDialog choices(entries.value(key).name, hasMountedSource(), this);
+        connect(&choices, &LaunchChoicesDialog::mountRequested, this, [this] { findChild<QPushButton *>("Mount macOS source…")->click(); });
+        connect(volume, &QLineEdit::textChanged, &choices, [this, &choices] { choices.setMounted(hasMountedSource()); });
+        if (choices.exec() != QDialog::Accepted) return false;
+        saved = choices.choices(); LauncherTroubleshooting::saveRecoveryChoices(saved);
+    }
+    launchChoices[key] = saved; recoveryActions[key].clear(); return true;
+}
+void Window::launch(const QString &key, bool retry) {
     if (!entries.contains(key)) return;
     if (runningApps.contains(key)) { setBusy(true, "This app already has a running launch process."); return; }
+    if (!retry && !confirmLaunch(key)) return;
     pending.remove(key);
     const AppEntry app = entries.value(key);
-    outputs[key].clear();
+    outputs[key].clear(); recoveryOutcomes.remove(key);
     failedApps.remove(key); apps->setActivity(key, AppBrowser::State::Launching);
     updateContribution();
     runCommand(app.name, {"exec", "/" + app.relativeBundle + "/Contents/MacOS/" + app.executable}, key);
@@ -551,7 +520,7 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     connect(process, &QProcess::started, this, [this, key, p] { if (!key.isEmpty() && prefix->text() == p) apps->setActivity(key, AppBrowser::State::Running); });
     connect(process, &QProcess::readyReadStandardOutput, this, [this, process, key, p] {
         QString text = QString::fromLocal8Bit(process->readAllStandardOutput());
-        if (!key.isEmpty() && prefix->text() == p) { outputs[key] += text; diagnoseOutput(key); if (key == selectedKey() && failedApps.contains(key)) { log->setPlainText(outputs.value(key)); log->ensureCursorVisible(); } }
+        if (!key.isEmpty() && prefix->text() == p) { outputs[key] += text; diagnoseOutput(key); updateRecovery(key); }
     });
     connect(process, &QProcess::finished, this, [this, process, key, label, p](int code, QProcess::ExitStatus) {
         --activeProcesses;
@@ -568,10 +537,10 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
                 apps->setStatus(key, code == 0 ? "Exited successfully" : "Exited " + QString::number(code));
                 if (code != 0) failedApps.insert(key);
                 if (code == 0 && !chains.value(key).isEmpty())
-                    setBusy(activeProcesses > 0, label + " succeeded after importing macOS libraries. Review the contribution offer below to help VibeDarling.");
+                    setBusy(activeProcesses > 0, label + " succeeded after importing macOS libraries. Review the dependency popup to help VibeDarling.");
             }
         }
-        updateContribution();
+        updateContribution(); updateRecovery(key, apps->status(key));
         process->deleteLater();
     });
     connect(process, &QProcess::errorOccurred, this, [this, process, label, key, p](QProcess::ProcessError error) {
@@ -585,20 +554,69 @@ void Window::diagnoseOutput(const QString &key) {
     const auto missing = LauncherCore::diagnose(outputs.value(key));
     if (!missing.valid()) return;
     pending.insert(key, missing);
-    const QString description = missing.missingLibrary ? "Library not loaded: " + missing.expectedIn : "Missing " + missing.symbol + " in " + missing.expectedIn;
     failedApps.insert(key); apps->setActivity(key, AppBrowser::State::Failed); apps->setStatus(key, missing.missingLibrary ? "Needs " + QFileInfo(missing.expectedIn).fileName() : "Missing " + missing.symbol);
-    setBusy(activeProcesses > 0, description + ". Import needed library and retry; stop the selected prefix first if its launch process is still running.");
+    setBusy(activeProcesses > 0, "Launch needs a dependency. Choose recovery actions in the popup.");
     updateContribution();
+    QTimer::singleShot(0, this, [this, key] { if (pending.contains(key)) showRecovery(key); });
 }
 
+bool Window::hasMountedSource() const {
+    const QString selected = QFileInfo(volume->text()).canonicalFilePath();
+    if (selected.isEmpty()) return false;
+    for (const auto &candidate : LauncherSources::candidates(mountProvider()))
+        if (candidate.usable() && QFileInfo(candidate.root).canonicalFilePath() == selected) return true;
+    return false;
+}
+QJsonObject Window::diagnostic(const QString &key) const {
+    const auto app = entries.value(key); const auto missing = pending.value(key);
+    return QJsonObject{{"app", app.name}, {"bundle", key}, {"executable", app.executable}, {"sourceBundle", app.sourceRelative}, {"prefix", prefix->text()}, {"sourceVolume", volume->text()}, {"sourceMounted", hasMountedSource()}, {"launcher", darling->text()}, {"runtime", runtimeRoot->text()}, {"loaderOutput", outputs.value(key)}, {"dependencyChain", chains.value(key)}, {"missingLibrary", missing.expectedIn}, {"missingSymbol", missing.symbol}};
+}
+void Window::updateRecovery(const QString &key, const QString &result) {
+    auto *dialog = recoveryDialogs.value(key).data(); if (!dialog || !entries.contains(key)) return;
+    const auto missing = pending.value(key);
+    const bool running = runningApps.contains(key);
+    const bool source = hasMountedSource();
+    if (!result.isEmpty()) recoveryOutcomes[key] = result;
+    QString outcome = recoveryOutcomes.value(key);
+    if (!chains.value(key).isEmpty()) outcome = "Copied macOS libraries into this private prefix and recorded their source and loader provenance. " + (outcome.isEmpty() ? apps->status(key) : outcome) + ". A local workaround helps reproduce the missing functionality; a source fix remains separate.";
+    dialog->updateDiagnostic(diagnostic(key), missing.valid() && source && !running && !importRunning, running, outcome);
+    QTimer::singleShot(0, this, [this, key] { dispatchRecovery(key); });
+}
+void Window::dispatchRecovery(const QString &key) {
+    auto *dialog = recoveryDialogs.value(key).data();
+    if (!dialog || !pending.value(key).valid()) return;
+    const auto preferences = launchChoices.value(key); auto &done = recoveryActions[key];
+    const QString library = "import:" + pending.value(key).expectedIn;
+    const bool copy = preferences.importLibrary && !done.contains(library) && hasMountedSource() && !runningApps.contains(key) && !importRunning;
+    const bool report = preferences.report && !done.contains("report");
+    const bool ai = preferences.ai && !done.contains("ai");
+    if (copy) done.insert(library); if (report) done.insert("report"); if (ai) done.insert("ai");
+    if (copy || report || ai) dialog->chooseActions(copy, report, ai, preferences.agent);
+}
+void Window::showRecovery(const QString &key) {
+    if (!entries.contains(key)) return;
+    auto *dialog = recoveryDialogs.value(key).data();
+    if (!dialog) {
+        dialog = new TroubleshootingDialog(diagnostic(key), this); dialog->setAttribute(Qt::WA_DeleteOnClose); recoveryDialogs[key] = dialog;
+        const QString destination = prefix->text();
+        connect(dialog, &TroubleshootingDialog::importRequested, this, [this, key, destination] { if (hasMountedSource()) importDependency(key, volume->text(), destination); });
+        connect(dialog, &TroubleshootingDialog::mountRequested, this, [this] {
+            for (auto *button : findChildren<QPushButton *>()) if (button->text() == "Mount macOS source…") { button->click(); break; }
+        });
+        connect(dialog, &TroubleshootingDialog::stopRequested, this, [this, destination] { if (prefix->text() == destination) runCommand("Stop prefix", {"shutdown"}); });
+    }
+    updateRecovery(key); dialog->show(); dialog->raise();
+}
 void Window::openTroubleshooting() {
     const QString key = selectedKey();
     if (!entries.contains(key) || (!failedApps.contains(key) && chains.value(key).isEmpty())) return;
-    const QJsonObject data{{"app", entries.value(key).name}, {"bundle", key}, {"executable", entries.value(key).executable}, {"sourceBundle", entries.value(key).sourceRelative}, {"prefix", prefix->text()}, {"sourceVolume", volume->text()}, {"launcher", darling->text()}, {"runtime", runtimeRoot->text()}, {"loaderOutput", outputs.value(key)}, {"dependencyChain", chains.value(key)}};
-    auto *dialog = new TroubleshootingDialog(data, this); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->show();
+    showRecovery(key);
 }
 
 void Window::closeEvent(QCloseEvent *event) {
+    for (auto *dialog : findChildren<QDialog *>("issueApprovalDialog"))
+        for (auto *process : dialog->findChildren<QProcess *>()) if (process->state() != QProcess::NotRunning) { statusBar()->showMessage("Wait for the approved issue submission to finish before closing."); event->ignore(); return; }
+    for (auto *job : findChildren<BackgroundFix *>()) if (job->isRunning()) { statusBar()->showMessage("A source-fix agent is running. Finish it or use Settings → Stop background agents before closing."); event->ignore(); return; }
     if (importRunning) { statusBar()->showMessage("Finish the current import and catalog update before closing the launcher."); event->ignore(); return; }
     if (mountDialog && mountDialog->isMounting()) {
         statusBar()->showMessage("Complete or dismiss the authentication prompt before closing the launcher.");

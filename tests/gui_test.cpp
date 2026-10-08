@@ -3,6 +3,8 @@
 #include "appbrowser.h"
 #include "prefixdialog.h"
 #include "mountdialog.h"
+#include "troubleshooting.h"
+#include <QCheckBox>
 #include <QSplitter>
 #include <QApplication>
 #include <QFile>
@@ -35,7 +37,7 @@ class GuiTest : public QObject {
     Q_OBJECT
 private slots:
     void workspacePreferencesAndEmptyStates() {
-        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         QSettings settings("cristim", "darling-launcher"); settings.clear();
         const QString first = temporary.path() + "/one", second = temporary.path() + "/two";
         QVERIFY(QDir().mkpath(first)); QVERIFY(QDir().mkpath(second)); settings.setValue("prefix", first); settings.setValue("knownPrefixes", QStringList{first, second});
@@ -58,8 +60,30 @@ private slots:
         QCOMPARE(settings.value("splitterState").toByteArray(), splitter); QVERIFY(restored.findChild<QSplitter *>("browserSplitter")->restoreState(splitter));
         QVERIFY(!restored.findChild<QDialog *>("settingsDialog")->isVisible());
     }
-    void invalidRuntimeShowsFailedState() {
+    void rememberedImportRetriesAndMountLossHidesAction() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        QSettings("cristim", "darling-launcher").clear();
+        const QString source = temporary.path() + "/source", prefix = temporary.path() + "/prefix", runtime = temporary.path() + "/darling";
+        QVERIFY(QDir().mkpath(source + "/usr/lib")); QVERIFY(QDir().mkpath(prefix));
+        QFile library(source + "/usr/lib/fixture.dylib"); QVERIFY(library.open(QIODevice::WriteOnly)); library.write("synthetic fixture"); library.close();
+        QFile executable(runtime); QVERIFY(executable.open(QIODevice::WriteOnly)); executable.write("#!/bin/sh\nif [ -f \"$DPREFIX/usr/lib/fixture.dylib\" ]; then echo launched; exit 0; fi\nprintf 'Library not loaded: /usr/lib/fixture.dylib\\n  Referenced from: /Applications/Fixture.app/Contents/MacOS/Fixture\\n  Reason: image not found\\n'\nexit 1\n"); executable.close(); QVERIFY(executable.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        QString error; QVERIFY(LauncherCore::saveCatalog(prefix, QJsonObject{{"apps", QJsonArray{QJsonObject{{"name", "Fixture"}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}}}}}, &error));
+        QSettings settings("cristim", "darling-launcher"); settings.setValue("prefix", prefix); settings.setValue("darling", runtime); settings.setValue("volume", source);
+        LauncherTroubleshooting::saveRecoveryChoices({true, false, false, true, {}});
+        QList<SourceMount> mounts{{source, "/dev/synthetic", "fuse", true}};
+        Window window({}, false, [&mounts] { return mounts; }); window.show(); window.findChild<QLineEdit *>("runtimeRootField")->clear();
+        auto *apps = window.findChild<ImportedBrowser *>("importedApps"); apps->setCurrentRow(0); window.findChild<QPushButton *>("Launch selected")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(apps->status("Applications/Fixture.app").contains("Exited"), 5000);
+        QVERIFY(QFileInfo::exists(prefix + "/usr/lib/fixture.dylib"));
+        QCOMPARE(LauncherCore::loadCatalog(prefix).value("apps").toArray().first().toObject().value("chain").toArray().size(), 1);
+        QVERIFY(!window.findChild<LaunchChoicesDialog *>());
+        auto *popup = window.findChild<TroubleshootingDialog *>(); QVERIFY(popup); QVERIFY(popup->findChild<QCheckBox *>("importDependencyOption")->isVisible());
+        mounts.clear(); window.findChild<QPushButton *>("Detect mounted macOS volumes")->click();
+        QVERIFY(!popup->findChild<QCheckBox *>("importDependencyOption")->isVisible()); QVERIFY(popup->findChild<QPushButton *>("mountDependencySource")->isVisible());
+    }
+
+    void invalidRuntimeShowsFailedState() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         const QString prefix = temporary.path() + "/prefix"; QVERIFY(QDir().mkpath(prefix)); QString error;
         QVERIFY(LauncherCore::saveCatalog(prefix, QJsonObject{{"apps", QJsonArray{QJsonObject{{"name", "Fixture"}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}}}}}, &error));
         QSettings("cristim", "darling-launcher").setValue("prefix", prefix);
@@ -68,8 +92,9 @@ private slots:
         auto *apps = window.findChild<ImportedBrowser *>("importedApps"); apps->setCurrentRow(0);
         QTimer::singleShot(0, &window, [] { for (auto *widget : QApplication::topLevelWidgets()) if (auto *box = qobject_cast<QMessageBox *>(widget)) box->accept(); });
         window.findChild<QPushButton *>("Launch selected")->click(); QCOMPARE(apps->status("Applications/Fixture.app"), "Failed to start");
-        QVERIFY(window.findChild<QLabel *>("failureSummary")->isVisible()); QVERIFY(!window.findChild<QTextEdit *>("failureLog")->isVisible());
-        window.findChild<QPushButton *>("showFailureDetails")->click(); QVERIFY(window.findChild<QTextEdit *>("failureLog")->toPlainText().contains("Select an executable"));
+        QVERIFY(!window.findChild<QTextEdit *>("failureLog")); QVERIFY(!window.findChild<QLabel *>("failureSummary"));
+        window.findChild<QPushButton *>("Troubleshoot failed app…")->click(); auto *popup = window.findChild<TroubleshootingDialog *>(); QVERIFY(popup);
+        popup->findChild<QPushButton *>("showDependencyDetails")->click(); QVERIFY(popup->findChild<QTextEdit *>("troubleshootingData")->toPlainText().contains("Select an executable"));
         window.findChild<QComboBox *>("appFilter")->setCurrentIndex(1); QVERIFY(apps->item(0)->isHidden()); window.findChild<QComboBox *>("appFilter")->setCurrentIndex(2); QVERIFY(!apps->item(0)->isHidden());
     }
     void browserActivityAndSort() {
@@ -94,7 +119,7 @@ private slots:
 
     void unsuitableMountsExplainDisabledChoices() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
-        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         QString mount = temporary.path() + "/recovery"; QVERIFY(QDir().mkpath(mount + "/root/Firmware"));
         Window window({}, false, [mount] { return QList<SourceMount>{{mount, "/dev/synthetic", "fuse", true}}; });
         auto *choices = window.findChild<QComboBox *>("mountedSourceChoices"); QVERIFY(choices); QCOMPARE(choices->count(), 2);
@@ -104,7 +129,7 @@ private slots:
     }
     void runtimeDetectionRefresh() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
-        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         QString install = temporary.path() + "/runtime";
         QVERIFY(QDir().mkpath(install + "/bin"));
         QFile executable(install + "/bin/darling"); QVERIFY(executable.open(QIODevice::WriteOnly)); executable.close();
@@ -145,7 +170,7 @@ private slots:
     }
     void reuseMountedPartitionAndImport() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
-        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         QString first = temporary.path() + "/mounted one", second = temporary.path() + "/mounted two", prefix = temporary.path() + "/prefix";
         QVERIFY(QDir().mkpath(first + "/System/Applications/Utilities/Fixture.app/Contents/MacOS"));
         QVERIFY(QDir().mkpath(first + "/System/Library")); QVERIFY(QDir().mkpath(second + "/usr/lib")); QVERIFY(QDir().mkpath(prefix));
@@ -183,14 +208,14 @@ private slots:
     }
     void settingsAreSeparate() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
-        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         Window window; window.show();
         auto *settings = window.findChild<QDialog *>("settingsDialog"); QVERIFY(settings); QVERIFY(!settings->isVisible());
         QVERIFY(settings->isAncestorOf(window.findChild<QLineEdit *>("volumeField")));
         QVERIFY(settings->isAncestorOf(window.findChild<QPushButton *>("Create prefix")));
         QVERIFY(window.findChild<QListWidget *>("availableApps")->isVisible());
-        QVERIFY(!window.findChild<QTextEdit *>("failureLog")->isVisible());
-        QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
+        QVERIFY(!window.findChild<QTextEdit *>("failureLog"));
+        QVERIFY(!window.findChild<QWidget *>("contributionPanel"));
         window.findChild<QPushButton *>("openSettings")->click(); QVERIFY(settings->isVisible());
         QVERIFY(window.findChild<QLineEdit *>("volumeField")->isVisible());
         window.findChild<QPushButton *>("Apply settings")->click(); QVERIFY(!settings->isVisible());
@@ -213,7 +238,7 @@ private slots:
         QFETCH(bool, wrapperStaysRunning);
         QFETCH(bool, prefixChanges);
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
-        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         QString volume = temporary.path() + "/volume", prefix = temporary.path() + "/prefix";
         QString app = volume + "/System/Applications/Test.app";
         QVERIFY(QDir().mkpath(app + "/Contents/MacOS"));
@@ -238,7 +263,7 @@ private slots:
             fake.write("#!/bin/sh\nif [ \"$1\" = shutdown ]; then touch \"$DPREFIX/stopped\"; exit 0; fi\nif [ -f \"$DPREFIX/usr/lib/libExample.dylib\" ]; then echo launched; exit 0; fi\nprintf 'Library not loaded: /usr/lib/libExample.dylib\\n  Referenced from: /Applications/Test.app/Contents/MacOS/Test\\n  Reason: image not found\\n'\nwhile [ ! -f \"$DPREFIX/stopped\" ]; do sleep 0.05; done\nexit 1\n");
         }
         fake.close(); QVERIFY(QFile::setPermissions(fakePath, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
-        Window window; window.show();
+        Window window({}, false, [volume] { return QList<SourceMount>{{volume, "/dev/synthetic", "fuse", true}}; }); window.show();
         window.findChild<QLineEdit *>("volumeField")->setText(volume);
         window.findChild<QLineEdit *>("prefixField")->setText(prefix);
         window.findChild<QLineEdit *>("darlingField")->setText(fakePath);
@@ -262,24 +287,42 @@ private slots:
         QCOMPARE(apps->item(0)->data(Qt::UserRole).toString(), "Applications/Test.app");
         apps->setCurrentRow(0);
         QTest::mouseClick(apps->viewport(), Qt::LeftButton, Qt::NoModifier, apps->visualItemRect(apps->item(0)).center());
+        LauncherTroubleshooting::saveRecoveryChoices({false, false, false, false, {}});
+        int confirmations = 0;
+        QTimer confirmation;
+        connect(&confirmation, &QTimer::timeout, [&] {
+            if (auto *dialog = window.findChild<LaunchChoicesDialog *>("launchChoicesDialog")) {
+                ++confirmations;
+                dialog->findChild<QCheckBox *>("rememberLaunchChoices")->setChecked(true);
+                dialog->accept();
+            }
+        }); confirmation.start(20);
         QTest::mouseDClick(apps->viewport(), Qt::LeftButton, Qt::NoModifier, apps->visualItemRect(apps->item(0)).center());
+        confirmation.stop(); QCOMPARE(confirmations, 1); QVERIFY(LauncherTroubleshooting::recoveryChoices().remember);
         QTRY_VERIFY_WITH_TIMEOUT(apps->status("Applications/Test.app").contains(missingLibrary ? "Needs libExample.dylib" : "Missing _Example"), 5000);
-        QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
-        QVERIFY(window.findChild<QLabel *>("failureSummary")->isVisible()); QVERIFY(!window.findChild<QTextEdit *>("failureLog")->isVisible());
-        window.findChild<QPushButton *>("showFailureDetails")->click(); QVERIFY(window.findChild<QTextEdit *>("failureLog")->isVisible());
-        QVERIFY(window.findChild<QTextEdit *>("failureLog")->toPlainText().contains("Example"));
-        QVERIFY(window.findChild<QPushButton *>("Import needed library and retry")->isVisible());
+        QVERIFY(!window.findChild<QWidget *>("contributionPanel"));
+        QTRY_VERIFY(window.findChild<TroubleshootingDialog *>("troubleshootingDialog"));
+        auto *popup = window.findChild<TroubleshootingDialog *>("troubleshootingDialog"); QVERIFY(popup->isVisible());
+        QCOMPARE(window.findChildren<TroubleshootingDialog *>().size(), 1);
+        QVERIFY(popup->findChild<QLabel *>("dependencySummary")->text().contains("libExample.dylib"));
+        QVERIFY(!popup->findChild<QTextEdit *>("troubleshootingData")->isVisible()); popup->findChild<QPushButton *>("showDependencyDetails")->click();
+        QVERIFY(popup->findChild<QTextEdit *>("troubleshootingData")->isVisible()); QVERIFY(popup->findChild<QTextEdit *>("troubleshootingData")->toPlainText().contains("Example"));
+        QVERIFY(!popup->findChild<QCheckBox *>("importDependencyOption")->isChecked()); QVERIFY(!popup->findChild<QCheckBox *>("reportIssueOption")->isChecked()); QVERIFY(!popup->findChild<QCheckBox *>("aiFixOption")->isChecked());
+        auto requestImport = [&] { if (auto *current = window.findChild<TroubleshootingDialog *>("troubleshootingDialog")) { current->findChild<QCheckBox *>("importDependencyOption")->setChecked(true); current->findChild<QPushButton *>("runDependencyActions")->click(); } };
         if (wrapperStaysRunning) {
-            window.findChild<QPushButton *>("Import needed library and retry")->click();
-            QVERIFY(!QFileInfo::exists(prefix + "/usr/lib/libExample.dylib"));
-            window.findChild<QPushButton *>("Stop selected prefix processes")->click();
-            QTRY_VERIFY(window.statusBar()->currentMessage().contains("Test exited with status 1"));
+            QVERIFY(!popup->findChild<QCheckBox *>("importDependencyOption")->isEnabled()); QVERIFY(!QFileInfo::exists(prefix + "/usr/lib/libExample.dylib"));
+            popup->findChild<QPushButton *>("stopDependencyPrefix")->click();
+            QTRY_VERIFY(QFileInfo::exists(prefix + "/stopped")); QTRY_VERIFY(popup->findChild<QCheckBox *>("importDependencyOption")->isEnabled());
         }
         QVERIFY(QFile::rename(volume + "/usr/lib/libExample.dylib", volume + "/usr/lib/temporarily-unavailable"));
-        window.findChild<QPushButton *>("Import needed library and retry")->click();
+        requestImport();
         QCOMPARE(window.findChild<QProgressBar *>()->maximum(), 0); QVERIFY(window.findChild<QProgressBar *>()->isVisible());
         QTRY_VERIFY(window.statusBar()->currentMessage().contains("Library import failed:"));
-        QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
+        const QString importError = popup->findChild<QLabel *>("dependencyOutcome")->text();
+        window.findChild<QPushButton *>("Detect mounted macOS volumes")->click();
+        QCOMPARE(popup->findChild<QLabel *>("dependencyOutcome")->text(), importError);
+        window.findChild<QDialog *>("settingsDialog")->hide();
+        QVERIFY(!window.findChild<QWidget *>("contributionPanel"));
         QVERIFY(QFile::rename(volume + "/usr/lib/temporarily-unavailable", volume + "/usr/lib/libExample.dylib"));
         if (prefixChanges) {
             const QString other = temporary.path() + "/other-prefix"; QVERIFY(QDir().mkpath(other));
@@ -288,7 +331,7 @@ private slots:
             auto blocked = QtConcurrent::run([&] { started.release(); release.acquire(); });
             auto unblock = qScopeGuard([&] { release.release(); blocked.waitForFinished(); pool->setMaxThreadCount(maximum); });
             QVERIFY(started.tryAcquire(1, 2000));
-            window.findChild<QPushButton *>("Import needed library and retry")->click();
+            requestImport();
             window.close(); QVERIFY(window.isVisible());
             window.findChild<QLineEdit *>("prefixField")->setText(other);
             release.release(); blocked.waitForFinished();
@@ -298,29 +341,27 @@ private slots:
             window.findChild<QLineEdit *>("prefixField")->setText(prefix);
             window.findChild<QPushButton *>("Scan volume")->click(); apps->setCurrentRow(0);
             window.findChild<QPushButton *>("Launch selected")->click();
-        } else window.findChild<QPushButton *>("Import needed library and retry")->click();
+        } else requestImport();
         QTRY_COMPARE_WITH_TIMEOUT(apps->status("Applications/Test.app"), retrySuccess ? QString("Exited successfully") : QString("Exited 2"), 5000);
         QVERIFY(QFileInfo::exists(prefix + "/usr/lib/libExample.dylib"));
         auto catalog = LauncherCore::loadCatalog(prefix);
         QCOMPARE(catalog.value("apps").toArray().first().toObject().value("chain").toArray().size(), 1);
         QCOMPARE(catalog.value("apps").toArray().first().toObject().value("chain").toArray().first().toObject().value("sourceLibrary").toString(), volume + "/usr/lib/libExample.dylib");
         if (retrySuccess) QVERIFY(window.statusBar()->currentMessage().contains("succeeded after importing macOS libraries"));
-        QVERIFY(window.findChild<QWidget *>("contributionPanel")->isVisible());
-        QString explanation = window.findChild<QLabel *>("contributionMessage")->text();
-        QVERIFY(explanation.contains("libExample.dylib")); QVERIFY(explanation.contains("nothing is submitted"));
-        QVERIFY(!window.findChild<QPushButton *>("Import needed library and retry")->isVisible());
-        QVERIFY(!QFileInfo::exists(prefix + "/.darling-launcher/proposed-vibedarling-issue.md"));
-        window.findChild<QPushButton *>("saveProposedIssue")->click();
-        QFile draft(prefix + "/.darling-launcher/proposed-vibedarling-issue.md"); QVERIFY(draft.open(QIODevice::ReadOnly));
-        QVERIFY(draft.readAll().contains(missingLibrary ? "Library not loaded: /usr/lib/libExample.dylib" : "Symbol not found: _Example"));
+        window.findChild<QPushButton *>("Troubleshoot failed app…")->click(); popup = window.findChild<TroubleshootingDialog *>("troubleshootingDialog"); QVERIFY(popup);
+        QString explanation = popup->findChild<QLabel *>("dependencyOutcome")->text(); QVERIFY(explanation.contains("Copied macOS libraries"));
+        if (auto *option = popup->findChild<QCheckBox *>("importDependencyOption")) QVERIFY(!option->isEnabled());
+        popup->reviewIssue(); auto *issueBody = popup->findChild<QTextEdit *>("issueBody"); QVERIFY(issueBody);
+        QVERIFY(issueBody->toPlainText().contains(missingLibrary ? "Library not loaded: /usr/lib/libExample.dylib" : "Symbol not found: _Example"));
+        popup->findChild<QDialog *>("issueApprovalDialog")->reject();
         auto savedApps = catalog.value("apps").toArray(); auto savedApp = savedApps.first().toObject();
         savedApp.insert("chain", QJsonArray{}); savedApps[0] = savedApp; catalog.insert("apps", savedApps);
         QString error; QVERIFY(LauncherCore::saveCatalog(prefix, catalog, &error));
         window.findChild<QPushButton *>("Scan volume")->click(); apps->setCurrentRow(0);
         window.findChild<QPushButton *>("Launch selected")->click();
         QTRY_COMPARE_WITH_TIMEOUT(apps->status("Applications/Test.app"), retrySuccess ? QString("Exited successfully") : QString("Exited 2"), 5000);
-        QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
-        if (retrySuccess) QVERIFY(!window.findChild<QTextEdit *>("failureLog")->isVisible());
+        QVERIFY(!window.findChild<QWidget *>("contributionPanel"));
+        QVERIFY(!window.findChild<QTextEdit *>("failureLog"));
         auto *trash = window.findChild<TrashTarget *>("appTrash"); QVERIFY(trash);
         QMimeData removed; removed.setData("application/x-darling-imported-bundles", QJsonDocument(QJsonArray{"Applications/Test.app"}).toJson());
         QDragEnterEvent trashEnter(QPoint(10, 10), Qt::CopyAction, &removed, Qt::LeftButton, Qt::NoModifier); QApplication::sendEvent(trash, &trashEnter); QVERIFY(trashEnter.isAccepted());
@@ -331,7 +372,7 @@ private slots:
     }
     void oneAuthorizationGuiAndCloseGuard() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
-        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         QFile lsblk(temporary.path() + "/lsblk"); QVERIFY(lsblk.open(QIODevice::WriteOnly));
         lsblk.write("#!/bin/sh\nprintf '%s' '{\"blockdevices\":[{\"path\":\"/dev/synthetic\",\"fstype\":\"apfs\",\"mountpoints\":[]}]}'\n"); lsblk.close();
         QVERIFY(lsblk.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
@@ -352,7 +393,7 @@ private slots:
     }
     void explicitMountBatchStartup() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
-        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         QFile lsblk(temporary.path() + "/lsblk"); QVERIFY(lsblk.open(QIODevice::WriteOnly));
         lsblk.write("#!/bin/sh\nprintf '%s' '{\"blockdevices\":[]}'\n"); lsblk.close();
         QVERIFY(lsblk.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
@@ -366,7 +407,7 @@ private slots:
     }
     void cloneThenBuildAndDeploy() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
-        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         QString fakeGit = temporary.path() + "/git";
         QFile git(fakeGit); QVERIFY(git.open(QIODevice::WriteOnly));
         git.write("#!/bin/sh\nif [ \"$1\" = clone ]; then mkdir -p \"$5\"; echo cloned fixture; exit 0; fi\nexit 1\n"); git.close();
@@ -386,7 +427,7 @@ private slots:
     }
     void prefixBuilderRuntimeSelection() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
-        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         QString source = temporary.path() + "/source", workspace = temporary.path() + "/workspace"; QVERIFY(QDir().mkpath(source));
         Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py"); window.show();
         window.findChild<QLineEdit *>("volumeField")->clear();
