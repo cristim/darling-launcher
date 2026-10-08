@@ -10,17 +10,40 @@ class QCheckBox;
 class QComboBox;
 class QLineEdit;
 class QTextEdit;
+struct FixVerification {
+    bool verified = false;
+    QString reason;
+};
+class FixVerifier : public QObject {
+    Q_OBJECT
+public:
+    FixVerifier(const QString &workspace, const QJsonObject &diagnostic, int stableSeconds, QObject *parent = nullptr);
+    void start();
+    bool isRunning() const { return running; }
+signals:
+    void finished(const FixVerification &result);
+private:
+    void finish(bool verified, const QString &reason);
+    QString workspace, launcher, runtimeRoot, proposalCommit;
+    QJsonObject diagnostic;
+    int stableSeconds;
+    QProcess process;
+    QString output;
+    bool running = false;
+};
 class BackgroundFix : public QObject {
     Q_OBJECT
 public:
-    BackgroundFix(const QString &agent, const QStringList &args, const QString &workspace, QObject *parent);
+    BackgroundFix(const QString &agent, const QStringList &args, const QString &workspace, QObject *parent, const QJsonObject &diagnostic = {});
     ~BackgroundFix() override;
     bool isRunning() const;
 public slots:
     void stop();
 signals:
     void statusChanged(const QString &message);
+    void verified(const QString &proposalFile);
 private:
+    FixVerifier *verifier = nullptr;
     QProcess process;
     bool waiting = true;
 };

@@ -137,3 +137,11 @@ have Darling"). Apps dropped meanwhile are queued, shown grayed out, and import 
 prefix is ready; a desktop notification (notify-send) and the window reappear when done or
 failed. Scan/Stop/Brewfile buttons sit below the panels; the app lists have a Size column and
 clickable Name/Size headers (replacing the sort dropdown).
+
+Fix verification before PR: after a background agent finishes, the launcher runs the failed app
+in the imported prefix with the patched launcher/runtime the agent declared in
+verification.json (confined to the agent workspace). The app must stay up 20 s with no loader
+error, or exit 0. The result is saved as LAUNCHER-VERIFICATION.json with the patch commit;
+reviewProposal refuses a proposal that is unverified or whose commit changed. Only a verified
+fix triggers the "review the PR draft now?" offer; submission still needs approval of the
+completed draft.

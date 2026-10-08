@@ -15,6 +15,7 @@
 #include <QTimer>
 #include <QPointer>
 #include <QtTest>
+Q_DECLARE_METATYPE(FixVerification)
 class TroubleshootingTest : public QObject {
     Q_OBJECT
     QTemporaryDir isolatedHome;
@@ -94,6 +95,31 @@ private slots:
         refresh->click(); QVERIFY(body->toPlainText().contains("/usr/lib/b.dylib")); QVERIFY(approve->isEnabled());
     }
 
+    void verifierRunsTheFailedAppWithThePatchedRuntime_data() {
+        QTest::addColumn<QString>("mode"); QTest::addColumn<bool>("verified"); QTest::addColumn<QString>("reason");
+        QTest::newRow("stays-running") << "stays-running" << true << "stayed running";
+        QTest::newRow("crashes") << "crashes" << false << "139";
+        QTest::newRow("loader-error") << "loader-error" << false << "still fails to load";
+        QTest::newRow("no-declaration") << "no-declaration" << false << "verification.json";
+    }
+    void verifierRunsTheFailedAppWithThePatchedRuntime() {
+        QFETCH(QString, mode); QFETCH(bool, verified); QFETCH(QString, reason);
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const auto previousPath = qgetenv("PATH"); const auto restore = qScopeGuard([=] { qputenv("PATH", previousPath); });
+        auto write = [&](const QString &path, const QByteArray &contents) { QDir().mkpath(QFileInfo(path).absolutePath()); QFile file(path); if (!file.open(QIODevice::WriteOnly)) return false; file.write(contents); file.close(); return file.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner); };
+        QVERIFY(write(temporary.path() + "/bin/git", "#!/bin/sh\necho patched-sha\n")); qputenv("PATH", (temporary.path() + "/bin:" + QString::fromLocal8Bit(previousPath)).toLocal8Bit());
+        const QString workspace = temporary.path() + "/work", prefix = temporary.path() + "/prefix"; QVERIFY(QDir().mkpath(prefix)); QVERIFY(QDir().mkpath(workspace + "/image"));
+        const QString body = mode == "stays-running" ? "if [ \"$1\" = shutdown ]; then touch \"$DPREFIX/stopped\"; exit 0; fi\nexec sleep 30" : mode == "crashes" ? "exit 139" : "printf 'Library not loaded: /usr/lib/x.dylib\\n  Referenced from: /Applications/Fixture.app/Contents/MacOS/Fixture\\n  Reason: image not found\\n'\nexit 1";
+        QVERIFY(write(workspace + "/build/darling", ("#!/bin/sh\n" + body + "\n").toUtf8()));
+        QVERIFY(write(workspace + "/proposal.json", QJsonDocument(QJsonObject{{"source", workspace + "/clone"}}).toJson()));
+        if (mode != "no-declaration") QVERIFY(write(workspace + "/verification.json", QJsonDocument(QJsonObject{{"launcher", workspace + "/build/darling"}, {"runtimeRoot", workspace + "/image"}}).toJson()));
+        FixVerifier verifier(workspace, QJsonObject{{"prefix", prefix}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}}, 1);
+        QSignalSpy spy(&verifier, &FixVerifier::finished); verifier.start(); QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 8000);
+        const auto result = spy.first().first().value<FixVerification>(); QCOMPARE(result.verified, verified); QVERIFY2(result.reason.contains(reason), qPrintable(result.reason));
+        QFile report(workspace + "/LAUNCHER-VERIFICATION.json"); QVERIFY(report.open(QIODevice::ReadOnly)); const auto saved = QJsonDocument::fromJson(report.readAll()).object();
+        QCOMPARE(saved.value("verified").toBool(), verified); if (verified) QCOMPARE(saved.value("proposalCommit").toString(), "patched-sha");
+        if (mode == "stays-running") QTRY_VERIFY(QFileInfo::exists(prefix + "/stopped"));
+    }
     void troubleshootingApprovalBoundaries() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         const auto previousPath = qgetenv("PATH"); const auto restore = qScopeGuard([=] { qputenv("PATH", previousPath); });
@@ -120,6 +146,10 @@ private slots:
         QVERIFY(QDir().mkpath(workspace + "/clone/.git"));
         const QJsonObject proposal{{"source", workspace + "/clone"}, {"repo", "VibeDarling/fixture"}, {"base", "main"}, {"head", "test:fix-fixture"}, {"title", "fixture: repair missing behavior"}, {"body", "Completed synthetic proposal"}};
         QFile proposalFile(workspace + "/proposal.json"); QVERIFY(proposalFile.open(QIODevice::WriteOnly)); proposalFile.write(QJsonDocument(proposal).toJson()); proposalFile.close();
+        QVERIFY(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).error.contains("until the fix is verified"));
+        QFile verification(workspace + "/LAUNCHER-VERIFICATION.json"); QVERIFY(verification.open(QIODevice::WriteOnly)); verification.write(QJsonDocument(QJsonObject{{"verified", true}, {"proposalCommit", "stale-sha"}}).toJson()); verification.close();
+        QVERIFY(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).error.contains("changed after it was verified"));
+        QVERIFY(verification.open(QIODevice::WriteOnly)); verification.write(QJsonDocument(QJsonObject{{"verified", true}, {"proposalCommit", "reviewed-sha"}}).toJson()); verification.close();
         QVERIFY2(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).valid(), qPrintable(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).error));
         auto *timer = new QTimer(&dialog); timer->setInterval(10); bool approved = false;
         connect(timer, &QTimer::timeout, &dialog, [&] { if (auto *approval = dialog.findChild<QDialog *>("prApprovalDialog")) { timer->stop(); if (approved) approval->findChild<QPushButton *>("approveCompletedPr")->click(); else approval->reject(); } });
