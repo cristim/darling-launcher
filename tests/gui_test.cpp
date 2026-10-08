@@ -137,11 +137,14 @@ private slots:
     }
     void importDiagnoseRetry_data() {
         QTest::addColumn<bool>("retrySuccess");
-        QTest::newRow("workaround-succeeds") << true;
-        QTest::newRow("workaround-still-fails") << false;
+        QTest::addColumn<bool>("missingLibrary");
+        QTest::newRow("workaround-succeeds") << true << false;
+        QTest::newRow("workaround-still-fails") << false << false;
+        QTest::newRow("missing-library-workaround") << true << true;
     }
     void importDiagnoseRetry() {
         QFETCH(bool, retrySuccess);
+        QFETCH(bool, missingLibrary);
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
         QString volume = temporary.path() + "/volume", prefix = temporary.path() + "/prefix";
@@ -159,6 +162,10 @@ private slots:
                    "printf 'Symbol not found: _Example\\n  Referenced from: /Applications/Test.app/Contents/MacOS/Test\\n  Expected in: /usr/lib/libExample.dylib\\n'\nexit 1\n");
         if (!retrySuccess) { fake.resize(0); fake.seek(0); fake.write("#!/bin/sh\nif [ -f \"$DPREFIX/usr/lib/libExample.dylib\" ]; then echo unrelated failure; exit 2; fi\n"
             "printf 'Symbol not found: _Example\\n  Referenced from: /Applications/Test.app/Contents/MacOS/Test\\n  Expected in: /usr/lib/libExample.dylib\\n'\nexit 1\n"); }
+        if (missingLibrary) {
+            fake.resize(0); fake.seek(0);
+            fake.write("#!/bin/sh\nif [ -f \"$DPREFIX/usr/lib/libExample.dylib\" ]; then echo launched; exit 0; fi\nprintf 'Library not loaded: /usr/lib/libExample.dylib\\n  Referenced from: /Applications/Test.app/Contents/MacOS/Test\\n  Reason: image not found\\n'\nexit 1\n");
+        }
         fake.close(); QVERIFY(QFile::setPermissions(fakePath, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         Window window; window.show();
         window.findChild<QLineEdit *>("volumeField")->setText(volume);
@@ -184,7 +191,7 @@ private slots:
         QCOMPARE(apps->item(0, 1)->text(), "Applications/Test.app");
         apps->selectRow(0);
         window.findChild<QPushButton *>("Launch selected")->click();
-        QTRY_VERIFY_WITH_TIMEOUT(apps->item(0, 2)->text().contains("Missing _Example"), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(apps->item(0, 2)->text().contains(missingLibrary ? "Library not loaded:" : "Missing _Example"), 5000);
         QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
         QVERIFY(window.findChild<QPushButton *>("Import needed library and retry")->isVisible());
         QVERIFY(QFile::rename(volume + "/usr/lib/libExample.dylib", volume + "/usr/lib/temporarily-unavailable"));
@@ -203,7 +210,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(prefix + "/.darling-launcher/proposed-vibedarling-issue.md"));
         window.findChild<QPushButton *>("saveProposedIssue")->click();
         QFile draft(prefix + "/.darling-launcher/proposed-vibedarling-issue.md"); QVERIFY(draft.open(QIODevice::ReadOnly));
-        QVERIFY(draft.readAll().contains("Symbol not found: _Example"));
+        QVERIFY(draft.readAll().contains(missingLibrary ? "Library not loaded: /usr/lib/libExample.dylib" : "Symbol not found: _Example"));
         auto savedApps = catalog.value("apps").toArray(); auto savedApp = savedApps.first().toObject();
         savedApp.insert("chain", QJsonArray{}); savedApps[0] = savedApp; catalog.insert("apps", savedApps);
         QString error; QVERIFY(LauncherCore::saveCatalog(prefix, catalog, &error));

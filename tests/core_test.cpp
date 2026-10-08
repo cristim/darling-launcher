@@ -57,6 +57,10 @@ private slots:
         QCOMPARE(result.symbol, "_Example");
         QCOMPARE(result.expectedIn, "/System/Library/Frameworks/Example.framework/Versions/A/Example");
         QVERIFY(!LauncherCore::diagnose("unrelated crash").valid());
+        auto library = LauncherCore::diagnose("dyld: Library not loaded: /System/Library/PrivateFrameworks/Calculate.framework/Versions/A/Calculate\n  Referenced from: /Applications/Calculator.app/Contents/MacOS/Calculator\n  Reason: image not found\n");
+        QVERIFY(library.valid()); QVERIFY(library.missingLibrary); QVERIFY(library.symbol.isEmpty());
+        QCOMPARE(library.expectedIn, "/System/Library/PrivateFrameworks/Calculate.framework/Versions/A/Calculate");
+        QVERIFY(!LauncherCore::diagnose("Library not loaded: /usr/lib/test\nReferenced from: /Applications/Test\nReason: incompatible architecture").valid());
     }
     void mountLayout() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());

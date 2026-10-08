@@ -191,12 +191,12 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     add("Launch selected", [this] { QString key = selectedKey(); if (!key.isEmpty()) launch(key); });
     libraryRetry = add("Import needed library and retry", [this] {
         QString key = selectedKey();
-        if (!pending.contains(key)) { QMessageBox::information(this, "Diagnosis", "Select an app with a loader symbol failure."); return; }
+        if (!pending.contains(key)) { QMessageBox::information(this, "Diagnosis", "Select an app with a missing loader dependency."); return; }
         QString error; auto missing = pending.value(key);
         if (!LauncherCore::importLibrary(volume->text(), prefix->text(), missing.expectedIn, &error)) {
             QMessageBox::warning(this, "Library import", error); return;
         }
-        QJsonObject step{{"symbol", missing.symbol}, {"library", missing.expectedIn}, {"referencedFrom", missing.referencedFrom}, {"action", "imported from selected volume"}, {"loaderOutput", outputs.value(key)}};
+        QJsonObject step{{"symbol", missing.symbol}, {"failure", missing.missingLibrary ? "missing library" : "missing symbol"}, {"library", missing.expectedIn}, {"referencedFrom", missing.referencedFrom}, {"action", "imported from selected volume"}, {"loaderOutput", outputs.value(key)}};
         chains[key].append(step); persist(); pending.remove(key); updateContribution(); launch(key);
     });
     add("Install Brewfile", [this] {
@@ -417,8 +417,9 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
             int row = -1; for (int i = 0; i < apps->rowCount(); ++i) if (apps->item(i, 1)->text() == key) row = i;
             if (missing.valid() && code != 0) {
                 pending.insert(key, missing);
-                if (row >= 0) apps->item(row, 2)->setText("Missing " + missing.symbol + " in " + missing.expectedIn);
-                QMessageBox::warning(this, "Library needed", missing.symbol + "\nExpected in: " + missing.expectedIn + "\nSelect the app and choose Import needed library and retry.");
+                QString description = missing.missingLibrary ? "Library not loaded: " + missing.expectedIn : "Missing " + missing.symbol + " in " + missing.expectedIn;
+                if (row >= 0) apps->item(row, 2)->setText(description);
+                QMessageBox::warning(this, "Library needed", description + "\nSelect the app and choose Import needed library and retry.");
             } else if (row >= 0) {
                 apps->item(row, 2)->setText(code == 0 ? "Exited successfully" : "Exited " + QString::number(code));
                 if (code == 0 && !chains.value(key).isEmpty())

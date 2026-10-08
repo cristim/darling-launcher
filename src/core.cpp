@@ -195,7 +195,12 @@ bool importLibrary(const QString &volume, const QString &prefix, const QString &
 MissingSymbol diagnose(const QString &output) {
     QRegularExpression expression(R"(Symbol not found:\s*([^\s]+)\s+Referenced from:\s*([^\n]+)\n\s*Expected in:\s*(/[^\s]+))");
     auto match = expression.match(output);
-    if (!match.hasMatch()) return {};
+    if (!match.hasMatch()) {
+        QRegularExpression library(R"(Library not loaded:\s*(/[^\s]+)\s+Referenced from:\s*([^\n]+)\n\s*Reason:\s*image not found)");
+        auto missing = library.match(output);
+        if (!missing.hasMatch()) return {};
+        return {{}, missing.captured(2).trimmed(), missing.captured(1), true};
+    }
     return {match.captured(1), match.captured(2).trimmed(), match.captured(3)};
 }
 
@@ -247,7 +252,7 @@ QString issueDraft(const AppEntry &app, const QJsonArray &chain, const QString &
     text += "## Dependency chain (loader interface output)\n";
     for (const auto &entry : chain) {
         auto item = entry.toObject();
-        text += "- " + item.value("symbol").toString() + " expected in " + item.value("library").toString() + "; action: " + item.value("action").toString() + "\n";
+        text += "- " + (item.value("symbol").toString().isEmpty() ? "Library not loaded: " : item.value("symbol").toString() + " expected in ") + item.value("library").toString() + "; action: " + item.value("action").toString() + "\n";
         if (!item.value("loaderOutput").toString().isEmpty()) text += "\n```text\n" + item.value("loaderOutput").toString().left(8000) + "\n```\n";
     }
     text += "\n## Latest loader output\n```text\n" + output.left(8000) + "\n```\n\n";

@@ -22,7 +22,8 @@ struct MissingSymbol {
     QString symbol;
     QString referencedFrom;
     QString expectedIn;
-    bool valid() const { return !symbol.isEmpty() && expectedIn.startsWith('/'); }
+    bool missingLibrary = false;
+    bool valid() const { return (missingLibrary || !symbol.isEmpty()) && expectedIn.startsWith('/'); }
 };
 
 namespace LauncherCore {
