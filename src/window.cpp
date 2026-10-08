@@ -189,9 +189,11 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     });
     add("Import selected apps", [this] { importBundles(available->selectedBundles()); });
     add("Launch selected", [this] { QString key = selectedKey(); if (!key.isEmpty()) launch(key); });
+    add("Stop selected prefix processes", [this] { runCommand("Stop prefix", {"shutdown"}); });
     libraryRetry = add("Import needed library and retry", [this] {
         QString key = selectedKey();
         if (!pending.contains(key)) { QMessageBox::information(this, "Diagnosis", "Select an app with a missing loader dependency."); return; }
+        if (runningApps.contains(key)) { QMessageBox::information(this, "Diagnosis", "The launch process is still running after the loader error. Choose Stop selected prefix processes, then retry. This stops all apps in this prefix."); return; }
         QString error; auto missing = pending.value(key);
         if (!LauncherCore::importLibrary(volume->text(), prefix->text(), missing.expectedIn, &error)) {
             QMessageBox::warning(this, "Library import", error); return;
@@ -300,7 +302,7 @@ void Window::updateContribution() {
     QString result;
     const int row = apps->currentRow();
     if (row >= 0 && apps->item(row, 2)) result = apps->item(row, 2)->text();
-    contributionMessage->setText(entries.value(key).name + " failed to launch because a library symbol was missing. "
+    contributionMessage->setText(entries.value(key).name + " failed to launch because a loader dependency was missing. "
         "At your request, we copied these libraries from your macOS volume into this private prefix and retried: "
         + libraries.join(", ") + ".\nCurrent result: " + result + ".\n"
         "This is a local workaround using Apple libraries. You can help VibeDarling implement the missing functionality "
@@ -384,6 +386,7 @@ void Window::persist() {
 QString Window::selectedKey() const { int row = apps->currentRow(); return row < 0 || !apps->item(row, 1) ? QString() : apps->item(row, 1)->text(); }
 void Window::launch(const QString &key) {
     if (!entries.contains(key)) return;
+    if (runningApps.contains(key)) { setBusy(true, "This app already has a running launch process."); return; }
     const AppEntry app = entries.value(key);
     outputs[key].clear();
     for (int row = 0; row < apps->rowCount(); ++row) if (apps->item(row, 1)->text() == key) apps->item(row, 2)->setText("Launching…");
@@ -403,23 +406,22 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     env.insert("DPREFIX", p);
     process->setProcessEnvironment(env); process->setProcessChannelMode(QProcess::MergedChannels);
     ++activeProcesses;
+    if (!key.isEmpty()) runningApps.insert(key);
     setBusy(true, "Running " + label);
     connect(process, &QProcess::readyReadStandardOutput, this, [this, process, key] {
         QString text = QString::fromLocal8Bit(process->readAllStandardOutput()); log->insertPlainText(text); log->ensureCursorVisible();
-        if (!key.isEmpty()) outputs[key] += text;
+        if (!key.isEmpty()) { outputs[key] += text; diagnoseOutput(key); }
     });
     connect(process, &QProcess::finished, this, [this, process, key, label](int code, QProcess::ExitStatus) {
         --activeProcesses;
+        runningApps.remove(key);
         setBusy(activeProcesses > 0, label + " exited with status " + QString::number(code));
         if (!key.isEmpty()) {
             outputs[key] += QString::fromLocal8Bit(process->readAllStandardOutput());
             MissingSymbol missing = LauncherCore::diagnose(outputs.value(key));
             int row = -1; for (int i = 0; i < apps->rowCount(); ++i) if (apps->item(i, 1)->text() == key) row = i;
             if (missing.valid() && code != 0) {
-                pending.insert(key, missing);
-                QString description = missing.missingLibrary ? "Library not loaded: " + missing.expectedIn : "Missing " + missing.symbol + " in " + missing.expectedIn;
-                if (row >= 0) apps->item(row, 2)->setText(description);
-                QMessageBox::warning(this, "Library needed", description + "\nSelect the app and choose Import needed library and retry.");
+                diagnoseOutput(key);
             } else if (row >= 0) {
                 apps->item(row, 2)->setText(code == 0 ? "Exited successfully" : "Exited " + QString::number(code));
                 if (code == 0 && !chains.value(key).isEmpty())
@@ -429,10 +431,21 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
         updateContribution();
         process->deleteLater();
     });
-    connect(process, &QProcess::errorOccurred, this, [this, process, label](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart) { --activeProcesses; setBusy(activeProcesses > 0, label + ": " + process->errorString()); process->deleteLater(); }
+    connect(process, &QProcess::errorOccurred, this, [this, process, label, key](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) { --activeProcesses; runningApps.remove(key); setBusy(activeProcesses > 0, label + ": " + process->errorString()); process->deleteLater(); }
     });
     process->start(darling->text(), args);
+}
+
+void Window::diagnoseOutput(const QString &key) {
+    if (pending.contains(key)) return;
+    const auto missing = LauncherCore::diagnose(outputs.value(key));
+    if (!missing.valid()) return;
+    pending.insert(key, missing);
+    const QString description = missing.missingLibrary ? "Library not loaded: " + missing.expectedIn : "Missing " + missing.symbol + " in " + missing.expectedIn;
+    for (int row = 0; row < apps->rowCount(); ++row) if (apps->item(row, 1)->text() == key) apps->item(row, 2)->setText(description);
+    setBusy(activeProcesses > 0, description + ". Import needed library and retry; stop the selected prefix first if its launch process is still running.");
+    updateContribution();
 }
 
 void Window::closeEvent(QCloseEvent *event) {

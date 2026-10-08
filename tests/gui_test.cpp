@@ -138,13 +138,16 @@ private slots:
     void importDiagnoseRetry_data() {
         QTest::addColumn<bool>("retrySuccess");
         QTest::addColumn<bool>("missingLibrary");
-        QTest::newRow("workaround-succeeds") << true << false;
-        QTest::newRow("workaround-still-fails") << false << false;
-        QTest::newRow("missing-library-workaround") << true << true;
+        QTest::addColumn<bool>("wrapperStaysRunning");
+        QTest::newRow("workaround-succeeds") << true << false << false;
+        QTest::newRow("workaround-still-fails") << false << false << false;
+        QTest::newRow("missing-library-workaround") << true << true << false;
+        QTest::newRow("loader-error-before-wrapper-exit") << true << true << true;
     }
     void importDiagnoseRetry() {
         QFETCH(bool, retrySuccess);
         QFETCH(bool, missingLibrary);
+        QFETCH(bool, wrapperStaysRunning);
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
         QString volume = temporary.path() + "/volume", prefix = temporary.path() + "/prefix";
@@ -165,6 +168,10 @@ private slots:
         if (missingLibrary) {
             fake.resize(0); fake.seek(0);
             fake.write("#!/bin/sh\nif [ -f \"$DPREFIX/usr/lib/libExample.dylib\" ]; then echo launched; exit 0; fi\nprintf 'Library not loaded: /usr/lib/libExample.dylib\\n  Referenced from: /Applications/Test.app/Contents/MacOS/Test\\n  Reason: image not found\\n'\nexit 1\n");
+        }
+        if (wrapperStaysRunning) {
+            fake.resize(0); fake.seek(0);
+            fake.write("#!/bin/sh\nif [ \"$1\" = shutdown ]; then touch \"$DPREFIX/stopped\"; exit 0; fi\nif [ -f \"$DPREFIX/usr/lib/libExample.dylib\" ]; then echo launched; exit 0; fi\nprintf 'Library not loaded: /usr/lib/libExample.dylib\\n  Referenced from: /Applications/Test.app/Contents/MacOS/Test\\n  Reason: image not found\\n'\nwhile [ ! -f \"$DPREFIX/stopped\" ]; do sleep 0.05; done\nexit 1\n");
         }
         fake.close(); QVERIFY(QFile::setPermissions(fakePath, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         Window window; window.show();
@@ -194,6 +201,12 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(apps->item(0, 2)->text().contains(missingLibrary ? "Library not loaded:" : "Missing _Example"), 5000);
         QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
         QVERIFY(window.findChild<QPushButton *>("Import needed library and retry")->isVisible());
+        if (wrapperStaysRunning) {
+            window.findChild<QPushButton *>("Import needed library and retry")->click();
+            QVERIFY(!QFileInfo::exists(prefix + "/usr/lib/libExample.dylib"));
+            window.findChild<QPushButton *>("Stop selected prefix processes")->click();
+            QTRY_VERIFY(window.findChild<QTextEdit *>()->toPlainText().contains("Test exited with status 1"));
+        }
         QVERIFY(QFile::rename(volume + "/usr/lib/libExample.dylib", volume + "/usr/lib/temporarily-unavailable"));
         window.findChild<QPushButton *>("Import needed library and retry")->click();
         QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());

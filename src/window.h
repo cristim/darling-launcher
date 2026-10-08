@@ -7,6 +7,7 @@
 #include <QMainWindow>
 #include <QMap>
 #include <QProcess>
+#include <QSet>
 
 class QComboBox;
 class QCloseEvent;
@@ -55,6 +56,8 @@ private:
     QMap<QString, QJsonArray> chains;
     QMap<QString, QString> outputs;
     QMap<QString, MissingSymbol> pending;
+    QSet<QString> runningApps;
+    void diagnoseOutput(const QString &key);
     void updateSourceChoices();
     void updateContribution();
     void refresh();
