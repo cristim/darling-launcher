@@ -59,7 +59,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     rootLayout->addWidget(appsPage);
     auto *layout = new QVBoxLayout(appsPage);
     auto *settingsLayout = new QVBoxLayout(settingsPage);
-    settingsLayout->addWidget(new QLabel("Choose your macOS source and isolated Darling runtime. Paths are detected where possible."));
+    settingsLayout->addWidget(new QLabel("The macOS source is detected automatically. Choose a different mounted volume here if needed."));
     auto *form = new QFormLayout;
     auto locationRow = [&](const QString &label, QLineEdit *&field, bool file) {
         auto *row = new QWidget;
@@ -74,9 +74,8 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         form->addRow(label, row);
     };
     locationRow("Mounted macOS volume", volume, false);
-    locationRow("Darling prefix", prefix, false);
-    locationRow("Darling executable", darling, true);
-    locationRow("Runtime install root (optional)", runtimeRoot, false);
+    prefix = new QLineEdit(this); darling = new QLineEdit(this); runtimeRoot = new QLineEdit(this);
+    for (QLineEdit *internal : {prefix, darling, runtimeRoot}) internal->hide();
     runtimeRoot->setObjectName("runtimeRootField");
     volume->setObjectName("volumeField"); prefix->setObjectName("prefixField"); darling->setObjectName("darlingField");
     sourceChoices = new QComboBox; sourceChoices->setObjectName("mountedSourceChoices"); form->addRow("Existing mounted volumes", sourceChoices);
@@ -97,21 +96,8 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     const QString dataRoot = LauncherDiscovery::dataRoot();
     if (prefix->text().isEmpty()) prefix->setText(LauncherDiscovery::managedPrefix(dataRoot));
     volume->setPlaceholderText("Select a mounted source with apps or libraries");
-    auto *runtimeChoices = new QComboBox; runtimeChoices->setObjectName("detectedRuntimes");
-    runtimeChoices->addItem("Select a detected runtime…");
-    form->addRow("Detected runtimes", runtimeChoices);
-    connect(runtimeChoices, &QComboBox::activated, this, [this, runtimeChoices](int index) {
-        if (index <= 0) return;
-        darling->setText(runtimeChoices->itemData(index).toString()); runtimeRoot->setText(runtimeChoices->itemData(index, Qt::UserRole + 1).toString());
-    });
-    auto detectPaths = [this, runtimeChoices] {
+    auto detectPaths = [this] {
         const auto detectedRuntimes = LauncherDiscovery::runtimes(LauncherDiscovery::roots(), QStandardPaths::findExecutable("darling"));
-        QSignalBlocker blocker(runtimeChoices); runtimeChoices->clear();
-        runtimeChoices->addItem(detectedRuntimes.isEmpty() ? "No usable runtime found — build or select one" : "Choose a detected runtime…");
-        for (const auto &runtime : detectedRuntimes) {
-            runtimeChoices->addItem(runtime.launcher + " — " + runtime.installRoot, runtime.launcher);
-            runtimeChoices->setItemData(runtimeChoices->count() - 1, runtime.installRoot, Qt::UserRole + 1);
-        }
         volume->setText(LauncherSources::automaticSource(LauncherSources::candidates(mountProvider()), volume->text()));
         if ((darling->text().isEmpty() || !QFileInfo(darling->text()).isExecutable()) && !detectedRuntimes.isEmpty()) {
             darling->setText(detectedRuntimes.first().launcher); runtimeRoot->setText(detectedRuntimes.first().installRoot);
@@ -126,9 +112,8 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
             if (QFileInfo(launcher).isExecutable()) darling->setText(launcher);
             if (QFileInfo(runtime).isDir()) runtimeRoot->setText(runtime);
         }
-        for (int index = 1; index < runtimeChoices->count(); ++index)
-            if (runtimeChoices->itemData(index).toString() == darling->text() && runtimeChoices->itemData(index, Qt::UserRole + 1).toString() == runtimeRoot->text()) { runtimeChoices->setCurrentIndex(index); break; }
     };
+    detectRuntime = detectPaths;
     detectPaths();
     updatePrefixChoices();
     connect(prefixChoices, &QComboBox::activated, this, [this, detectPaths](int index) {
@@ -151,7 +136,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     int actionCount = 0, settingsActionCount = 0;
     auto add = [&](const QString &title, auto callback) {
         auto *button = new QPushButton(title == "Create prefix" ? "Build and deploy Darling…" : title); button->setObjectName(title);
-        bool setting = title == "Detect paths" || title == "Create prefix" || title == "Initialize selected prefix" || title == "Detect mounted macOS volumes" || title == "Mount macOS source…" || title == "Apply settings" || title == "Stop background agents" || title == "Launch recovery preferences…";
+        bool setting = title == "Create prefix" || title == "Initialize selected prefix" || title == "Detect mounted macOS volumes" || title == "Mount macOS source…" || title == "Stop background agents" || title == "Launch recovery preferences…";
         int &count = setting ? settingsActionCount : actionCount;
         (setting ? settingsToolbar : toolbar)->addWidget(button, count / 3, count % 3); ++count;
         connect(button, &QPushButton::clicked, this, callback);
@@ -166,13 +151,6 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     });
     connect(volume, &QLineEdit::textChanged, this, [this] { for (const auto &key : recoveryDialogs.keys()) updateRecovery(key); });
     add("Stop background agents", [this] { for (auto *job : findChildren<BackgroundFix *>()) if (job->isRunning()) job->stop(); });
-    add("Detect paths", [this, detectPaths] { detectPaths(); updateSourceChoices(); refresh(); load(); });
-    add("Apply settings", [this] {
-        QSettings settings("cristim", "darling-launcher");
-        settings.setValue("volume", volume->text()); settings.setValue("prefix", prefix->text());
-        settings.setValue("darling", darling->text()); settings.setValue("runtimeRoot", runtimeRoot->text());
-        refresh(); load(); settingsDialog->hide();
-    });
     add("Create prefix", [this] { openRuntimeBuilder(); });
     add("Initialize selected prefix", [this] {
         QString path = prefix->text();
@@ -317,7 +295,15 @@ void Window::offerRuntimeSetup() {
         if (!source.isEmpty() && (path == source || path.startsWith(source + '/'))) { result->setText("The launcher folder " + path + " is inside the mounted macOS source."); return; }
         dialog->close(); openRuntimeBuilder(true);
     });
-    auto *select = new QPushButton("Select an existing runtime…"); select->setObjectName("setupSelectRuntime"); layout->addWidget(select); connect(select, &QPushButton::clicked, this, [this, dialog] { dialog->close(); settingsDialog->show(); settingsDialog->raise(); });
+    auto *select = new QPushButton("Select an existing runtime…"); select->setObjectName("setupSelectRuntime"); layout->addWidget(select); connect(select, &QPushButton::clicked, this, [this, dialog] {
+        const QString launcher = QFileDialog::getOpenFileName(dialog, "Select the darling executable of an installed runtime");
+        if (launcher.isEmpty()) return;
+        QDir install(QFileInfo(launcher).absolutePath()); install.cdUp();
+        if (!QFileInfo(launcher).isExecutable() || !QFileInfo(install.absolutePath() + "/libexec/darling/private/etc").isDir()) { QMessageBox::warning(dialog, "Darling runtime", "That file is not the darling executable of a usable runtime."); return; }
+        darling->setText(launcher); runtimeRoot->setText(install.absolutePath());
+        QSettings settings("cristim", "darling-launcher"); settings.setValue("darling", launcher); settings.setValue("runtimeRoot", install.absolutePath());
+        dialog->close(); load();
+    });
     auto *later = new QPushButton("Set up later"); later->setObjectName("setupLater"); layout->addWidget(later); connect(later, &QPushButton::clicked, dialog, &QDialog::reject);
     dialog->show(); dialog->raise();
 }

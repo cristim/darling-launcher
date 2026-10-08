@@ -209,14 +209,12 @@ private slots:
         auto previousPath = qgetenv("PATH"); auto restore = qScopeGuard([=] { qputenv("PATH", previousPath); });
         qputenv("PATH", (install + "/bin").toUtf8());
         Window window; window.show();
-        auto *runtimes = window.findChild<QComboBox *>("detectedRuntimes"); QVERIFY(runtimes); QCOMPARE(runtimes->count(), 1);
+        QVERIFY(window.findChild<QLineEdit *>("darlingField")->text().isEmpty());
         QVERIFY(QDir().mkpath(install + "/libexec/darling/private/etc"));
-        window.findChild<QPushButton *>("Detect paths")->click();
-        QCOMPARE(runtimes->count(), 2); QCOMPARE(runtimes->currentIndex(), 1);
+        window.detectRuntime();
         QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), executable.fileName());
         QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), install);
-        QVERIFY(QDir(install + "/libexec/darling/private/etc").removeRecursively());
-        window.findChild<QPushButton *>("Detect paths")->click(); QCOMPARE(runtimes->count(), 1); QCOMPARE(runtimes->currentIndex(), 0);
+        QVERIFY(!window.findChild<QWidget *>("Detect paths"));
     }
     void iconViewsAndSelection() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
@@ -290,7 +288,7 @@ private slots:
         QVERIFY(!window.findChild<QWidget *>("contributionPanel"));
         window.findChild<QPushButton *>("openSettings")->click(); QVERIFY(settings->isVisible());
         QVERIFY(window.findChild<QLineEdit *>("volumeField")->isVisible());
-        window.findChild<QPushButton *>("Apply settings")->click(); QVERIFY(!settings->isVisible());
+        QVERIFY(!window.findChild<QWidget *>("Apply settings"));
 
     }
     void importDiagnoseRetry_data() {

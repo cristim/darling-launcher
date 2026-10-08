@@ -33,6 +33,7 @@ public:
     explicit Window(const QString &builderScript = {}, bool mountAll = false, std::function<QList<SourceMount>()> mountProvider = LauncherSources::mounts);
     ~Window() override;
     void offerRuntimeSetup();
+    std::function<void()> detectRuntime;
 protected:
     void closeEvent(QCloseEvent *event) override;
 private:

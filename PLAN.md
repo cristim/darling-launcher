@@ -109,3 +109,10 @@ Create prefix has no script/source/workspace fields: source clone is
 bundled snapshot. Removed the dataRoot setting, the --prefix-builder CLI option and the
 tool/source detection and browse buttons. Pending: builder script moves into VibeDarling
 upstream via a PR from its author; the launcher will fetch it from that PR until merged.
+
+Settings simplification: Settings keeps only the mounted macOS volume (auto-detected,
+with a chooser for several mounted volumes), mount/detect buttons, recovery preferences
+and stop-agents. Prefix, Darling executable, runtime root and detected-runtime fields
+are internal state (auto-detected, or set by build/first-run "Select an existing
+runtime" file dialog). Mount dialog: APFS helper paths, batch root and mount directory
+are automatic. Agent source-fix workspace is generated, not edited.

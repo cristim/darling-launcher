@@ -31,19 +31,13 @@
 MountDialog::MountDialog(QWidget *parent, std::function<QList<SourceMount>()> provider) : QDialog(parent), mountProvider(std::move(provider)) {
     setWindowTitle("Mount macOS source — read-only"); resize(650, 440);
     auto *layout = new QVBoxLayout(this);
-    layout->addWidget(new QLabel("Select a partition to reuse its existing mounted volumes.\nFor a new mount, choose an empty directory; pkexec requests authorization for a read-only mount."));
+    layout->addWidget(new QLabel("Select a partition to reuse its existing mounted volumes.\npkexec requests authorization for a read-only mount under your launcher folder."));
     auto *form = new QFormLayout;
     partitions = new QComboBox; partitions->setObjectName("mountPartitions"); form->addRow("Partition", partitions);
     backend = new QComboBox; backend->addItems({"Kernel filesystem driver", "APFS FUSE"}); form->addRow("Driver", backend);
     volumeIndex = new QSpinBox; volumeIndex->setRange(-1, 2147483647); volumeIndex->setValue(-1); volumeIndex->setSpecialValueText("Select a volume index"); form->addRow("APFS volume index", volumeIndex);
     directory = new QLineEdit; directory->setObjectName("mountDirectory");
-    auto *row = new QHBoxLayout; row->addWidget(directory);
-    auto *browse = new QPushButton("Browse…"); row->addWidget(browse);
-    connect(browse, &QPushButton::clicked, this, [this] {
-        QString path = QFileDialog::getExistingDirectory(this, "Choose an empty mount directory");
-        if (!path.isEmpty()) directory->setText(path);
-    });
-    form->addRow("Mount directory", row);
+    directory->setParent(this); directory->hide();
     ownedMountChoices = new QComboBox; form->addRow("Session mounts (select to unmount)", ownedMountChoices);
     connect(ownedMountChoices, &QComboBox::activated, this, [this](int index) {
         ownedMount = ownedMountChoices->itemText(index); ownedDevice = ownedMountChoices->itemData(index).toByteArray(); unmountButton->setEnabled(!ownedMount.isEmpty());
@@ -63,7 +57,7 @@ MountDialog::MountDialog(QWidget *parent, std::function<QList<SourceMount>()> pr
     auto *utilityPath = new QLineEdit(QSettings("cristim", "darling-launcher").value("apfsUtil", LauncherDiscovery::helperExecutable(LauncherDiscovery::roots(), "apfsutil")).toString());
     fusePath->setObjectName("apfsFuseField"); utilityPath->setObjectName("apfsUtilField");
     auto *batchRoot = new QLineEdit(LauncherDiscovery::dataRoot() + "/mounts");
-    form->addRow("APFS FUSE executable", fusePath); form->addRow("APFS metadata utility", utilityPath); form->addRow("Batch mount root", batchRoot);
+    for (QLineEdit *internal : {fusePath, utilityPath, batchRoot}) { internal->setParent(this); internal->hide(); }
     connect(fusePath, &QLineEdit::editingFinished, this, [=] { QSettings("cristim", "darling-launcher").setValue("apfsFuse", fusePath->text()); });
     connect(utilityPath, &QLineEdit::editingFinished, this, [=] { QSettings("cristim", "darling-launcher").setValue("apfsUtil", utilityPath->text()); });
     layout->addWidget(new QLabel("Kernel APFS requires an installed APFS module; FUSE requires apfs-fuse.\nEncrypted APFS volumes require an external unlock workflow."));
@@ -187,6 +181,8 @@ void MountDialog::mountSelected() {
         }
     struct stat deviceStatus {};
     if (::stat(QFile::encodeName(partition.device).constData(), &deviceStatus) != 0 || !S_ISBLK(deviceStatus.st_mode)) { output->append("Selected device is not a block device."); return; }
+    directory->setText(LauncherDiscovery::dataRoot() + "/mounts/" + QFileInfo(partition.device).fileName() + "-manual");
+    if (!QDir().mkpath(directory->text())) { output->append("Cannot create " + directory->text()); return; }
     QStorageInfo storage(directory->text()); storage.refresh();
     if (storage.rootPath() == QFileInfo(directory->text()).canonicalFilePath()) { output->append("The mount directory is already a mount point."); return; }
     MountBackend driver = backend->currentIndex() == 1 ? MountBackend::ApfsFuse : MountBackend::Kernel;
