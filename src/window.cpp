@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "window.h"
 #include "log.h"
+#include <cstring>
 #include "mountdialog.h"
 #include "appbrowser.h"
 #include "prefixdialog.h"
@@ -636,7 +637,10 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     });
     connect(process, &QProcess::finished, this, [this, process, key, label, p](int code, QProcess::ExitStatus exit) {
         const bool success = code == 0 && exit == QProcess::NormalExit;
-        LauncherLog::write("launch", label + (exit == QProcess::NormalExit ? " exited with status " + QString::number(code) : QString(" crashed")));
+        const int signalNumber = exit == QProcess::CrashExit ? code : code > 128 ? code - 128 : 0;
+        const QString signalName = signalNumber > 0 ? QString::fromLocal8Bit(strsignal(signalNumber)) : QString();
+        if (!key.isEmpty()) exitInfo.insert(key, QJsonObject{{"exitCode", code}, {"crashed", exit == QProcess::CrashExit}, {"signal", signalNumber}, {"signalName", signalName}});
+        LauncherLog::write("launch", label + (exit == QProcess::NormalExit ? " exited with status " + QString::number(code) : QString(" crashed")) + (signalNumber > 0 ? " (" + signalName + "; the guest process was killed by a signal, see `coredumpctl list` for a core dump)" : QString()));
         --activeProcesses;
         runningApps.remove(key);
         setBusy(activeProcesses > 0, label + " exited with status " + QString::number(code));
@@ -723,7 +727,7 @@ bool Window::hasMountedSource() const {
 }
 QJsonObject Window::diagnostic(const QString &key) const {
     const auto app = entries.value(key); const auto missing = pending.value(key);
-    return QJsonObject{{"app", app.name}, {"bundle", key}, {"executable", app.executable}, {"sourceBundle", app.sourceRelative}, {"prefix", prefix->text()}, {"sourceVolume", volume->text()}, {"sourceMounted", hasMountedSource()}, {"sourceAvailable", hasPossibleMacOSSource()}, {"launcher", darling->text()}, {"runtime", runtimeRoot->text()}, {"loaderOutput", outputs.value(key)}, {"dependencyChain", chains.value(key)}, {"missingLibrary", missing.expectedIn}, {"missingSymbol", missing.symbol}};
+    return QJsonObject{{"app", app.name}, {"bundle", key}, {"executable", app.executable}, {"sourceBundle", app.sourceRelative}, {"prefix", prefix->text()}, {"sourceVolume", volume->text()}, {"sourceMounted", hasMountedSource()}, {"sourceAvailable", hasPossibleMacOSSource()}, {"launcher", darling->text()}, {"runtime", runtimeRoot->text()}, {"loaderOutput", outputs.value(key)}, {"exit", exitInfo.value(key)}, {"dependencyChain", chains.value(key)}, {"missingLibrary", missing.expectedIn}, {"missingSymbol", missing.symbol}};
 }
 void Window::updateRecovery(const QString &key, const QString &result) {
     auto *dialog = recoveryDialogs.value(key).data(); if (!dialog || !entries.contains(key)) return;

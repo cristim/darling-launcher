@@ -49,6 +49,7 @@ private:
     void notifyDesktop(const QString &title, const QString &body);
     void showQueuedImports();
     QStringList queuedImports;
+    QHash<QString, QJsonObject> exitInfo;
     QWidget *setupBanner = nullptr;
     QLabel *setupStatus = nullptr;
     QLineEdit *volume;
