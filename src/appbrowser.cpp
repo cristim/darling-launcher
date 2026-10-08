@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QLocale>
 #include <QMimeData>
+#include <QUrl>
 #include <QStyledItemDelegate>
 #include <QStyleOptionViewItem>
 #include <QStyle>
@@ -209,13 +210,20 @@ QStringList AppBrowser::mimeTypes() const { return {dragMimeType()}; }
 ImportedBrowser::ImportedBrowser(QWidget *parent) : AppBrowser(parent) {
     setAcceptDrops(true); setDragDropMode(QAbstractItemView::DragDrop);
 }
+static bool acceptsDrop(const QMimeData *mime) { return mime->hasFormat(bundleMime) || mime->hasUrls(); }
 void ImportedBrowser::dragEnterEvent(QDragEnterEvent *event) {
-    if (event->mimeData()->hasFormat(bundleMime)) event->acceptProposedAction();
+    if (acceptsDrop(event->mimeData())) event->acceptProposedAction();
 }
 void ImportedBrowser::dragMoveEvent(QDragMoveEvent *event) {
-    if (event->mimeData()->hasFormat(bundleMime)) event->acceptProposedAction();
+    if (acceptsDrop(event->mimeData())) event->acceptProposedAction();
 }
 void ImportedBrowser::dropEvent(QDropEvent *event) {
+    if (!event->mimeData()->hasFormat(bundleMime) && event->mimeData()->hasUrls()) {
+        QStringList paths;
+        for (const QUrl &url : event->mimeData()->urls()) if (url.isLocalFile()) paths << url.toLocalFile();
+        if (!paths.isEmpty()) { event->acceptProposedAction(); emit pathsDropped(paths); }
+        return;
+    }
     if (!event->mimeData()->hasFormat(bundleMime)) return;
     auto document = QJsonDocument::fromJson(event->mimeData()->data(bundleMime));
     if (!document.isArray()) return;

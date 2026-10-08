@@ -13,6 +13,7 @@
 #include <QComboBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QUrl>
 #include <QImage>
 #include <QJsonDocument>
 #include <QLineEdit>
@@ -258,6 +259,25 @@ private slots:
         QTest::mouseMove(browser.viewport(), start + QPoint(30, 30)); QTest::mouseMove(browser.viewport(), start + QPoint(60, 60));
         QVERIFY(browser.dragged); QCOMPARE(browser.selectedAtDrag, 3);
         QTest::mouseRelease(browser.viewport(), Qt::LeftButton, Qt::NoModifier, start + QPoint(60, 60));
+    }
+    void fileManagerDropsImportBundlesFromTheMountedVolume() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear();
+        const QString volume = temporary.path() + "/volume", prefix = temporary.path() + "/prefix", app = volume + "/Applications/Fixture.app", outside = temporary.path() + "/Elsewhere.app";
+        QVERIFY(QDir().mkpath(app + "/Contents/MacOS")); QVERIFY(QDir().mkpath(prefix)); QVERIFY(QDir().mkpath(outside));
+        QFile plist(app + "/Contents/Info.plist"); QVERIFY(plist.open(QIODevice::WriteOnly)); plist.write("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>"); plist.close();
+        QFile executable(app + "/Contents/MacOS/Fixture"); QVERIFY(executable.open(QIODevice::WriteOnly)); executable.write("fixture"); executable.close();
+        Window window({}, false, [volume] { return QList<SourceMount>{{volume, "/dev/synthetic", "fuse", true}}; }); window.show();
+        window.findChild<QLineEdit *>("volumeField")->setText(volume); window.findChild<QLineEdit *>("prefixField")->setText(prefix);
+        auto *apps = window.findChild<ImportedBrowser *>("importedApps");
+        QMimeData outsideMime; outsideMime.setUrls({QUrl::fromLocalFile(outside)});
+        QDragEnterEvent outsideEnter(QPoint(10, 10), Qt::CopyAction, &outsideMime, Qt::LeftButton, Qt::NoModifier); QApplication::sendEvent(apps->viewport(), &outsideEnter);
+        QDropEvent rejected(QPointF(10, 10), Qt::CopyAction, &outsideMime, Qt::LeftButton, Qt::NoModifier); QApplication::sendEvent(apps->viewport(), &rejected); QVERIFY(rejected.isAccepted());
+        QVERIFY(window.statusBar()->currentMessage().contains("Elsewhere.app")); QCOMPARE(apps->count(), 0);
+        QMimeData mime; mime.setUrls({QUrl::fromLocalFile(app)});
+        QDragEnterEvent enter(QPoint(10, 10), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier); QApplication::sendEvent(apps->viewport(), &enter); QVERIFY(enter.isAccepted());
+        QDropEvent drop(QPointF(10, 10), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier); QApplication::sendEvent(apps->viewport(), &drop); QVERIFY(drop.isAccepted());
+        QTRY_COMPARE_WITH_TIMEOUT(apps->count(), 1, 5000); QCOMPARE(apps->item(0)->data(Qt::UserRole).toString(), "Applications/Fixture.app");
     }
     void iconViewsAndSelection() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());

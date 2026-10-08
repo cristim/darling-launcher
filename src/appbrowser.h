@@ -54,6 +54,7 @@ public:
     QString status(const QString &bundle) const;
 signals:
     void bundlesDropped(const QStringList &bundles);
+    void pathsDropped(const QStringList &localPaths);
 protected:
     QString dragMimeType() const override;
     void dragEnterEvent(QDragEnterEvent *event) override;

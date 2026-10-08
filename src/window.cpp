@@ -232,6 +232,18 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     connect(appSearch, &QLineEdit::textChanged, apps, &AppBrowser::setSearch);
     connect(appFilter, &QComboBox::currentIndexChanged, this, [this](int index) { apps->setFilter(index == 1 ? AppBrowser::Filter::Running : index == 2 ? AppBrowser::Filter::Failed : AppBrowser::Filter::All); });
     connect(apps, &ImportedBrowser::bundlesDropped, this, &Window::importBundles);
+    connect(apps, &ImportedBrowser::pathsDropped, this, [this](const QStringList &paths) {
+        const QString root = QFileInfo(volume->text()).canonicalFilePath();
+        QStringList bundles; QStringList rejected;
+        for (const QString &path : paths) {
+            const QString canonical = QFileInfo(path).canonicalFilePath();
+            if (!root.isEmpty() && canonical.startsWith(root + '/') && canonical.endsWith(".app") && QFileInfo(canonical).isDir()) bundles << canonical.mid(root.size() + 1);
+            else rejected << QFileInfo(path).fileName();
+        }
+        LauncherLog::write("import", "file manager drop: " + paths.join(", ") + (rejected.isEmpty() ? QString() : " (rejected: " + rejected.join(", ") + ")"));
+        if (!rejected.isEmpty()) statusBar()->showMessage("Only .app folders from the selected macOS volume can be imported: " + rejected.join(", "));
+        if (!bundles.isEmpty()) importBundles(bundles);
+    });
     connect(apps, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) { launch(item->data(Qt::UserRole).toString()); });
     importLayout->addWidget(apps);
     connect(sort, &QComboBox::currentIndexChanged, this, [this](int index) { available->setSorting(index >= 2, index % 2); apps->setSorting(index >= 2, index % 2); QSettings("cristim", "darling-launcher").setValue("appSort", index); });

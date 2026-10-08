@@ -125,3 +125,8 @@ Diagnostic log: ~/.darling-launcher/logs/launcher.log (build output, launch comm
 loader output, agent output, Qt messages), path shown in Settings, README documents it.
 First run: "I already have a Darling checkout and prefix..." takes a checkout root (must
 contain build/src/startup/darling and a runtime image) and an optional existing prefix.
+
+Drag selection: presses on an app icon/name keep the selection and start a drag after the
+drag distance (selection is not redone); presses on blank space rubber-band. Double-click
+is handled explicitly. File-manager drops: URL drops of .app folders under the selected
+macOS volume import by their volume-relative path; anything else is refused with a message.
