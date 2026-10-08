@@ -163,6 +163,7 @@ void AppBrowser::setGridView(bool grid) {
     setGridSize(grid ? QSize(128, 128) : QSize());
     setWordWrap(grid); setSpacing(grid ? 8 : 2); setWrapping(grid);
     setMovement(QListView::Static); setResizeMode(QListView::Adjust);
+    setDragEnabled(true); viewport()->setAcceptDrops(acceptDrops());
     viewport()->update();
 }
 void AppBrowser::showPreviews(const QList<AppPreview> &previews) {

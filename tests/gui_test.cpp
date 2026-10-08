@@ -13,6 +13,7 @@
 #include <QComboBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QToolButton>
 #include <QUrl>
 #include <QImage>
 #include <QJsonDocument>
@@ -56,7 +57,7 @@ private slots:
             window.findChild<QPushButton *>("emptyChooseSource")->click(); QVERIFY(window.findChild<QDialog *>("settingsDialog")->isVisible()); window.findChild<QDialog *>("settingsDialog")->hide();
             auto *choices = window.findChild<QComboBox *>("prefixChoices"); QCOMPARE(choices->count(), 2); choices->setCurrentIndex(choices->findData(second)); QVERIFY(QMetaObject::invokeMethod(choices, "activated", Q_ARG(int, choices->currentIndex())));
             QCOMPARE(window.findChild<QLineEdit *>("prefixField")->text(), second); QCOMPARE(choices->toolTip(), second);
-            window.findChild<QPushButton *>("gridView")->click(); window.findChild<SortHeader *>("availableSortHeader")->setSort(true, true);
+            window.findChild<QToolButton *>("GridView")->click(); window.findChild<QToolButton *>("importedGridView")->click(); window.findChild<SortHeader *>("availableSortHeader")->setSort(true, true); window.findChild<SortHeader *>("importedSortHeader")->setSort(false, true);
             window.resize(1150, 800); window.findChild<QSplitter *>("browserSplitter")->setSizes({300, 650});
             window.close(); geometry = settings.value("windowGeometry").toByteArray(); splitter = settings.value("splitterState").toByteArray(); QVERIFY(!geometry.isEmpty()); QVERIFY(!splitter.isEmpty());
         }
@@ -64,7 +65,7 @@ private slots:
         QCOMPARE(restored.findChild<QComboBox *>("prefixChoices")->currentData().toString(), second);
         QCOMPARE(restored.findChild<AppBrowser *>("availableApps")->viewMode(), QListView::IconMode);
         QCOMPARE(restored.findChild<ImportedBrowser *>("importedApps")->iconSize(), QSize(64, 64));
-        QVERIFY(restored.findChild<SortHeader *>("importedSortHeader")->bySize()); QVERIFY(restored.findChild<SortHeader *>("importedSortHeader")->descending()); QWidget reference; QVERIFY(reference.restoreGeometry(geometry)); QCOMPARE(restored.size(), reference.size().expandedTo(restored.minimumSize()));
+        QVERIFY(restored.findChild<SortHeader *>("availableSortHeader")->bySize()); QVERIFY(restored.findChild<SortHeader *>("availableSortHeader")->descending()); QVERIFY(!restored.findChild<SortHeader *>("importedSortHeader")->bySize()); QVERIFY(restored.findChild<SortHeader *>("importedSortHeader")->descending()); QWidget reference; QVERIFY(reference.restoreGeometry(geometry)); QCOMPARE(restored.size(), reference.size().expandedTo(restored.minimumSize()));
         QCOMPARE(settings.value("splitterState").toByteArray(), splitter); QVERIFY(restored.findChild<QSplitter *>("browserSplitter")->restoreState(splitter));
         QVERIFY(!restored.findChild<QDialog *>("settingsDialog")->isVisible());
     }
@@ -305,6 +306,12 @@ private slots:
         header.findChild<QPushButton *>("sortByName")->click(); QCOMPARE(spy.takeLast(), (QList<QVariant>{false, true}));
         AppBrowser browser; browser.showPreviews({{"Applications/A.app", "Alpha", {}, 300}, {"Applications/B.app", "Beta", {}, 100}}); browser.setSorting(true, false);
         QCOMPARE(browser.item(0)->data(Qt::UserRole).toString(), "Applications/B.app");
+    }
+    void switchingViewModesKeepsTheImportedPaneAcceptingDrops() {
+        ImportedBrowser browser; QVERIFY(browser.viewport()->acceptDrops());
+        browser.setGridView(true); QVERIFY(browser.viewport()->acceptDrops()); QVERIFY(browser.dragEnabled());
+        browser.setGridView(false); QVERIFY(browser.viewport()->acceptDrops()); QVERIFY(browser.dragEnabled());
+        AppBrowser source; source.setGridView(true); QVERIFY(!source.viewport()->acceptDrops()); QVERIFY(source.dragEnabled());
     }
     void iconViewsAndSelection() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
