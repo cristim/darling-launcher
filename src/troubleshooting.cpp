@@ -184,7 +184,7 @@ LauncherTroubleshooting::AgentTools LauncherTroubleshooting::prepareAgentTools(c
         return path;
     };
     tools.run = write("run-in-prefix.sh", "export DPREFIX=" + q + prefix + q + " DARLING_INSTALL_PREFIX=" + q + runtime + q + "\nexec timeout 60 " + q + launcher + q + " exec " + q + "/" + bundle + "/Contents/MacOS/" + executable + q + "\n");
-    tools.build = write("build.sh", "case \"${1:-}\" in\n configure) exec cmake -S " + q + workspace + "/darling" + q + " -B " + q + workspace + "/build" + q + " -G Ninja ;;\n build) exec flock -w 600 " + q + lock + q + " cmake --build " + q + workspace + "/build" + q + " --parallel ;;\n *) echo 'usage: build.sh configure|build' >&2; exit 2 ;;\nesac\n");
+    tools.build = write("build.sh", "case \"${1:-}\" in\n configure) exec cmake -S " + q + workspace + "/darling" + q + " -B " + q + workspace + "/build" + q + " -G Ninja ;;\n build) exec flock -w 1800 " + q + lock + q + " cmake --build " + q + workspace + "/build" + q + " --parallel 1 ;;\n *) echo 'usage: build.sh configure|build' >&2; exit 2 ;;\nesac\n");
     tools.deploy = write("deploy.sh", "[ $# -eq 2 ] || { echo 'usage: deploy.sh <file inside workspace> <relative path inside prefix>' >&2; exit 2; }\n"
         "src=$(realpath -e -- \"$1\"); rel=$2; pfx=$(realpath -m -- " + q + prefix + q + ")\n"
         "case \"$rel\" in /*|*..*) echo 'use a plain relative path inside the prefix' >&2; exit 2;; esac\n"
