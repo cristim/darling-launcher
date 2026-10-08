@@ -47,7 +47,15 @@ public:
     }
 };
 QString query(const QString &program, const QStringList &args, bool *ok = nullptr) {
-    QProcess process; process.start(program, args);
+    QProcess process;
+    if (QFileInfo(program).fileName() == "git") {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        const QStringList safe{"core.fsmonitor", "false", "core.hooksPath", "/dev/null", "diff.external", "", "core.pager", "cat", "core.sshCommand", "false"};
+        env.insert("GIT_CONFIG_COUNT", QString::number(safe.size() / 2)); env.remove("GIT_EXTERNAL_DIFF");
+        for (int i = 0; i < safe.size() / 2; ++i) { env.insert("GIT_CONFIG_KEY_" + QString::number(i), safe[2 * i]); env.insert("GIT_CONFIG_VALUE_" + QString::number(i), safe[2 * i + 1]); }
+        process.setProcessEnvironment(env);
+    }
+    process.start(program, args);
     const bool success = process.waitForFinished(3000) && process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
     if (ok) *ok = success;
     return success ? QString::fromUtf8(process.readAllStandardOutput()).trimmed() : QString();
@@ -92,20 +100,14 @@ void FixVerifier::finish(bool verified, const QString &reason) {
 }
 void FixVerifier::start() {
     running = true;
-    const QString root = QFileInfo(workspace).canonicalFilePath() + '/';
-    QFile input(workspace + "/verification.json");
-    if (input.open(QIODevice::ReadOnly)) {
-        const auto declared = QJsonDocument::fromJson(input.readAll()).object();
-        launcher = QFileInfo(declared.value("launcher").toString()).canonicalFilePath(); runtimeRoot = QFileInfo(declared.value("runtimeRoot").toString()).canonicalFilePath();
-        if (!launcher.startsWith(root) || !runtimeRoot.startsWith(root) || !QFileInfo(launcher).isExecutable() || !QFileInfo(runtimeRoot).isDir()) { finish(false, "verification.json must name an executable launcher and a runtime built inside the agent workspace."); return; }
-    } else {
-        launcher = diagnostic.value("launcher").toString(); runtimeRoot = diagnostic.value("runtime").toString();
-        if (!QFileInfo(launcher).isExecutable()) { finish(false, "No usable launcher is configured to run the app in the prefix."); return; }
-    }
+    launcher = diagnostic.value("launcher").toString(); runtimeRoot = diagnostic.value("runtime").toString();
+    if (!QFileInfo(launcher).isExecutable()) { finish(false, "No usable launcher is configured to run the app in the prefix."); return; }
     QFile proposal(workspace + "/proposal.json"); QJsonObject fields;
     if (proposal.open(QIODevice::ReadOnly)) fields = QJsonDocument::fromJson(proposal.readAll()).object();
     bool ok = false;
-    proposalCommit = query(QStandardPaths::findExecutable("git"), {"-C", fields.value("source").toString(), "rev-parse", "HEAD"}, &ok);
+    const QString source = LauncherTroubleshooting::trustedWorktree(workspace, fields.value("source").toString());
+    if (source.isEmpty()) { finish(false, "proposal.json must name the agent's worktree of the cloned source inside the workspace."); return; }
+    proposalCommit = query(QStandardPaths::findExecutable("git"), {"-C", source, "rev-parse", "HEAD"}, &ok);
     if (!ok) { finish(false, "The agent produced no committed proposal.json patch to verify."); return; }
     const QString prefix = diagnostic.value("prefix").toString(), bundle = diagnostic.value("bundle").toString(), executable = diagnostic.value("executable").toString();
     if (!QFileInfo(prefix).isDir() || bundle.isEmpty() || executable.isEmpty()) { finish(false, "The failed app or its prefix is no longer available."); return; }
@@ -184,17 +186,39 @@ LauncherTroubleshooting::AgentTools LauncherTroubleshooting::prepareAgentTools(c
     tools.run = write("run-in-prefix.sh", "export DPREFIX=" + q + prefix + q + " DARLING_INSTALL_PREFIX=" + q + runtime + q + "\nexec timeout 60 " + q + launcher + q + " exec " + q + "/" + bundle + "/Contents/MacOS/" + executable + q + "\n");
     tools.build = write("build.sh", "case \"${1:-}\" in\n configure) exec cmake -S " + q + workspace + "/darling" + q + " -B " + q + workspace + "/build" + q + " -G Ninja ;;\n build) exec flock -w 600 " + q + lock + q + " cmake --build " + q + workspace + "/build" + q + " --parallel ;;\n *) echo 'usage: build.sh configure|build' >&2; exit 2 ;;\nesac\n");
     tools.deploy = write("deploy.sh", "[ $# -eq 2 ] || { echo 'usage: deploy.sh <file inside workspace> <relative path inside prefix>' >&2; exit 2; }\n"
-        "src=$(realpath -e -- \"$1\"); rel=$2\n"
-        "case \"$rel\" in /*|*..*|.darling-launcher*) echo 'use a plain relative path inside the prefix' >&2; exit 2;; esac\n"
+        "src=$(realpath -e -- \"$1\"); rel=$2; pfx=$(realpath -m -- " + q + prefix + q + ")\n"
+        "case \"$rel\" in /*|*..*) echo 'use a plain relative path inside the prefix' >&2; exit 2;; esac\n"
         "case \"$src\" in " + q + workspace + q + "/*) ;; *) echo 'source must be inside the agent workspace' >&2; exit 2;; esac\n"
-        "dest=" + q + prefix + q + "/\"$rel\"; parent=$(realpath -m -- \"$(dirname -- \"$dest\")\")\n"
-        "case \"$parent\" in " + q + prefix + q + "|" + q + prefix + q + "/*) ;; *) echo 'destination escapes the prefix' >&2; exit 2;; esac\n"
-        "backup=" + q + backups + q + "/\"$rel\"\n"
-        "if [ -e \"$dest\" ] && [ ! -e \"$backup\" ]; then mkdir -p -- \"$(dirname -- \"$backup\")\"; cp -a -- \"$dest\" \"$backup\"; fi\n"
-        "mkdir -p -- \"$parent\"; [ ! -L \"$dest\" ] || rm -f -- \"$dest\"\n"
-        "cp -a --remove-destination -- \"$src\" \"$dest\"\nprintf '%s\\n' \"$rel\" >> " + q + workspace + "/PREFIX-CHANGES.txt" + q + "\n");
-    if (tools.error.isEmpty() && (tools.run.isEmpty() || tools.build.isEmpty() || tools.deploy.isEmpty())) tools.error = "Cannot prepare the agent tools.";
+        "dest=\"$pfx/$rel\"; parent=$(realpath -m -- \"$(dirname -- \"$dest\")\"); full=\"$parent/$(basename -- \"$dest\")\"\n"
+        "case \"$parent\" in \"$pfx\"|\"$pfx\"/*) ;; *) echo 'destination escapes the prefix' >&2; exit 2;; esac\n"
+        "case \"$full\" in \"$pfx/.darling-launcher\"|\"$pfx/.darling-launcher/\"*|\"$pfx\"/" + q + bundle + q + "/Contents/MacOS/" + q + executable + q + ") echo 'refusing to replace launcher metadata or the failing app itself' >&2; exit 2;; esac\n"
+        "backup=\"$pfx/.darling-launcher/backups/" + QFileInfo(workspace).fileName() + "/$rel\"\n"
+        "if [ -e \"$full\" ] && [ ! -e \"$backup\" ]; then mkdir -p -- \"$(dirname -- \"$backup\")\"; cp -a -- \"$full\" \"$backup\"; fi\n"
+        "mkdir -p -- \"$parent\"; [ ! -L \"$full\" ] || rm -f -- \"$full\"\n"
+        "cp -a --remove-destination -- \"$src\" \"$full\"\nprintf '%s\\n' \"$rel\" >> " + q + workspace + "/PREFIX-CHANGES.txt" + q + "\n");
+    tools.git = write("git.sh", "export GIT_CONFIG_COUNT=4 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false GIT_CONFIG_KEY_2=core.pager GIT_CONFIG_VALUE_2=cat GIT_CONFIG_KEY_3=diff.external GIT_CONFIG_VALUE_3=\n"
+        "unset GIT_EXTERNAL_DIFF GIT_DIR GIT_WORK_TREE GIT_CONFIG_GLOBAL\n"
+        "[ $# -ge 1 ] || { echo 'usage: git.sh init-worktree | status|diff|log|show|add|rm|mv|commit|ls-files|rev-parse|branch|restore ...' >&2; exit 2; }\n"
+        "sub=$1; shift\n"
+        "if [ \"$sub\" = init-worktree ]; then exec git -C " + q + clone + q + " worktree add -b fix/" + QFileInfo(workspace).fileName().left(8) + " " + q + workspace + "/darling" + q + "; fi\n"
+        "for a in \"$@\"; do case \"$a\" in -c*|-C*|--git-dir*|--work-tree*|--exec-path*|--output*|--ext-diff|--textconv|--no-index|--upload-pack*|--receive-pack*|--open-files-in-pager*|--template*) echo \"refused option: $a\" >&2; exit 2;; esac; done\n"
+        "case \"$sub\" in status|diff|log|show|add|rm|mv|commit|ls-files|rev-parse|branch|restore) ;; *) echo \"refused git subcommand: $sub\" >&2; exit 2;; esac\n"
+        "cd " + q + workspace + "/darling" + q + " && exec git \"$sub\" \"$@\"\n");
+    if (tools.error.isEmpty() && (tools.run.isEmpty() || tools.build.isEmpty() || tools.deploy.isEmpty() || tools.git.isEmpty())) tools.error = "Cannot prepare the agent tools.";
     return tools;
+}
+QString LauncherTroubleshooting::trustedWorktree(const QString &workspace, const QString &candidate) {
+    const QString root = QFileInfo(workspace).canonicalFilePath(), source = QFileInfo(candidate).canonicalFilePath();
+    if (root.isEmpty() || source.isEmpty() || !source.startsWith(root + '/')) return {};
+    const QFileInfo dotGit(source + "/.git");
+    if (dotGit.isSymLink()) return {};
+    if (dotGit.isDir()) return source;
+    QFile pointer(dotGit.filePath());
+    if (!pointer.open(QIODevice::ReadOnly)) return {};
+    const QString line = QString::fromUtf8(pointer.readLine(4096)).trimmed();
+    if (!line.startsWith("gitdir: ")) return {};
+    const QString gitdir = QFileInfo(line.mid(8)).canonicalFilePath(), common = QFileInfo(LauncherDiscovery::dataRoot() + "/sources/vibedarling/.git/worktrees").canonicalFilePath();
+    return !gitdir.isEmpty() && !common.isEmpty() && gitdir.startsWith(common + '/') ? source : QString();
 }
 QString LauncherTroubleshooting::verificationMac(const QString &workspace, const QString &commit, bool verified) {
     const QString keyPath = LauncherDiscovery::dataRoot() + "/.verification-key";
@@ -219,9 +243,9 @@ PrProposal LauncherTroubleshooting::reviewProposal(const QString &file) {
     for (const QString &field : {"source", "repo", "base", "head", "title", "body"})
         if (result.fields.value(field).toString().trimmed().isEmpty()) { result.error = "Completed proposal requires source, repo, base, head, title and body."; return result; }
     const auto fields = result.fields;
-    const QString source = QFileInfo(fields.value("source").toString()).canonicalFilePath();
     const QString workspace = QFileInfo(file).absolutePath();
-    if (source.isEmpty() || !source.startsWith(QFileInfo(workspace).canonicalFilePath() + '/') || !QFileInfo(source + "/.git").isDir() || QFileInfo(source + "/.git").isSymLink()) { result.error = "Source must be an independent clone inside this proposal's workspace."; return result; }
+    const QString source = LauncherTroubleshooting::trustedWorktree(workspace, fields.value("source").toString());
+    if (source.isEmpty()) { result.error = "Source must be a worktree of the cloned Darling source inside this proposal's workspace."; return result; }
     QRegularExpression repo("^VibeDarling/[A-Za-z0-9_.-]+$"), head("^([A-Za-z0-9_.-]+):([A-Za-z0-9][A-Za-z0-9_./-]*)$"), branch("^[A-Za-z0-9][A-Za-z0-9_./-]*$");
     const auto selectedHead = head.match(fields.value("head").toString());
     if (!repo.match(fields.value("repo").toString()).hasMatch() || !selectedHead.hasMatch() || !branch.match(fields.value("base").toString()).hasMatch()) { result.error = "Use a VibeDarling target repository, an explicit base branch and owner:branch head."; return result; }
@@ -360,21 +384,21 @@ TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWi
         QSaveFile report(directory + "/TROUBLESHOOTING.json");
         if (!report.open(QIODevice::WriteOnly) || report.write(QJsonDocument(diagnostic).toJson()) < 0 || !report.commit()) { status->setText("Cannot save diagnostic report."); return; }
         const QString prefixPath = diagnostic.value("prefix").toString(), runtimePath = diagnostic.value("runtime").toString(), launcherPath = diagnostic.value("launcher").toString(), bundlePath = diagnostic.value("bundle").toString(), executableName = diagnostic.value("executable").toString();
-        const QString clone = LauncherDiscovery::dataRoot() + "/sources/vibedarling", slug = QFileInfo(directory).fileName().left(8);
+        const QString clone = LauncherDiscovery::dataRoot() + "/sources/vibedarling";
         const auto agentTools = LauncherTroubleshooting::prepareAgentTools(diagnostic, directory, clone);
         if (!agentTools.valid()) { status->setText(agentTools.error); return; }
         const QString instructions = "Use TROUBLESHOOTING.json (exit status, signal and loader output of the failed launch) to investigate and fix this Darling app failure. "
             "WORK IN THE IMPORTED PREFIX: the prefix is " + prefixPath + " and the failing app is /" + bundlePath + ". Reproduce the failure exactly as the launcher runs it with `" + agentTools.run + "` (it sets the prefix and runtime and applies a 60 second timeout). "
             "Fix it in place as far as you can WITHOUT IMPACTING OTHER APPS: prefer changes scoped to this app (app-local libraries, per-app environment); if a shared file in the prefix must change, first back up the original under " + prefixPath + "/.darling-launcher/backups/ keeping its relative path, and list every changed prefix path in " + directory + "/PREFIX-CHANGES.txt so it can be reverted. Never change /usr/local, the system runtime, other prefixes or other imported apps. "
-            "THE SOURCE IS ALREADY CLONED at " + clone + ". Do not clone it again and do not modify that checkout directly: create your own git worktree on it with `git -C " + clone + " worktree add -b fix/" + slug + " " + directory + "/darling` and make and commit your source changes there. Read its AGENTS.md. Configure and build with `" + agentTools.build + " configure` and `" + agentTools.build + " build` (it builds in " + directory + "/build under the shared heavy-build lock) and deploy built files back into the prefix one at a time with `" + agentTools.deploy + " <file inside the workspace> <relative path inside the prefix>`, which backs up the original and records the change. These three scripts and git on your two source paths are the only commands you may run. "
+            "THE SOURCE IS ALREADY CLONED at " + clone + ". Do not clone it again and do not modify that checkout directly: create your own git worktree on it with `" + agentTools.git + " init-worktree` and make and commit your source changes there with `" + agentTools.git + " <status|diff|log|show|add|rm|mv|commit|branch|restore> ...` (it works inside " + directory + "/darling only). Read its AGENTS.md. Configure and build with `" + agentTools.build + " configure` and `" + agentTools.build + " build` (it builds in " + directory + "/build under the shared heavy-build lock) and deploy built files back into the prefix one at a time with `" + agentTools.deploy + " <file inside the workspace> <relative path inside the prefix>`, which backs up the original and records the change. These four scripts are the only commands you may run. "
             "Work only from source, published APIs, headers, interface metadata, loader output and process exit status. Never disassemble, decompile, inspect machine code, dump Apple symbols or commit Apple apps/libraries; `coredumpctl info` module names are fine but do not open core dumps in a debugger. Do not inspect dyld cache implementation bytes. Do not unlock or change encrypted volumes. "
             "Add meaningful tests, prepare a completed local PR draft, and do not push or submit any issue or PR. If a fix cannot be specified without binary inspection, explain the blocker. "
             "Write proposal.json beside this report with string fields source (absolute worktree path " + directory + "/darling), repo (VibeDarling/repo), base (explicit branch), head (fork-owner:branch), title, body, and commit the reviewed patch on that branch. The branch must be published separately with explicit user approval before PR submission can succeed. "
-            "When done the launcher itself runs the app in the prefix for about 20 seconds; a PR is offered only if that run succeeds, so do not claim success you have not seen. Only if you deployed a patched runtime outside the prefix, also write verification.json with string fields launcher and runtimeRoot (inside this workspace).";
+            "When done the launcher itself runs the app in the prefix for about 20 seconds; a PR is offered only if that run succeeds, so do not claim success you have not seen.";
         QSaveFile prompt(directory + "/FIX-INSTRUCTIONS.txt");
         if (!prompt.open(QIODevice::WriteOnly) || prompt.write(instructions.toUtf8()) < 0 || !prompt.commit()) { status->setText("Cannot save agent instructions."); return; }
         const QString chosen = agents->currentText(), executable = QStandardPaths::findExecutable(chosen);
-        const auto arguments = background->isChecked() ? LauncherTroubleshooting::backgroundArguments(chosen, instructions, {{clone, prefixPath, directory}, {"Bash(git -C " + clone + ":*)", "Bash(git -C " + directory + "/darling:*)", "Bash(" + agentTools.run + ":*)", "Bash(" + agentTools.build + ":*)", "Bash(" + agentTools.deploy + ":*)"}}) : LauncherTroubleshooting::agentArguments(chosen, instructions);
+        const auto arguments = background->isChecked() ? LauncherTroubleshooting::backgroundArguments(chosen, instructions, {{prefixPath, directory}, {"Bash(" + agentTools.git + ":*)", "Bash(" + agentTools.run + ":*)", "Bash(" + agentTools.build + ":*)", "Bash(" + agentTools.deploy + ":*)"}}) : LauncherTroubleshooting::agentArguments(chosen, instructions);
         if (executable.isEmpty() || arguments.isEmpty()) { status->setText("Selected agent is no longer installed."); return; }
         if (background->isChecked()) {
             auto *job = new BackgroundFix(chosen, arguments, directory, parentWidget() ? parentWidget() : this, diagnostic);
@@ -383,7 +407,7 @@ TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWi
             if (auto *window = qobject_cast<QMainWindow *>(parentWidget())) connect(job, &BackgroundFix::statusChanged, window, [window](const QString &message) { window->statusBar()->showMessage(message); });
             const QJsonObject failure = diagnostic; QWidget *window = parentWidget();
             connect(job, &BackgroundFix::verificationOffered, job, [window, job] {
-                auto *box = new QMessageBox(QMessageBox::Question, "Try the agent's fix", "The agent finished working in " + job->property("workspace").toString() + ".\n\nTry its fix now? The launcher will run the app in your imported prefix for about 20 seconds (using an agent-built runtime if the agent declared one).", QMessageBox::Yes | QMessageBox::No, window);
+                auto *box = new QMessageBox(QMessageBox::Question, "Try the agent's fix", "The agent finished working in " + job->property("workspace").toString() + ".\n\nTry its fix now? The launcher will run the app in your imported prefix for about 20 seconds.", QMessageBox::Yes | QMessageBox::No, window);
                 box->setAttribute(Qt::WA_DeleteOnClose);
                 connect(box, &QDialog::finished, job, [window, job](int answer) {
                     if (answer == QMessageBox::Yes) job->verify(); else if (auto *main = qobject_cast<QMainWindow *>(window)) main->statusBar()->showMessage("Fix not tried; no PR is offered until it has been verified in the prefix.");

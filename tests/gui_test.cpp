@@ -663,6 +663,25 @@ private slots:
             return true;
         }(), 5000);
     }
+    void prefixMaintenanceButtons_data() { QTest::addColumn<bool>("repair"); QTest::addColumn<bool>("healthy"); QTest::newRow("verify-healthy") << false << true; QTest::newRow("verify-broken") << false << false; QTest::newRow("repair-healthy") << true << true; }
+    void prefixMaintenanceButtons() {
+        QFETCH(bool, repair); QFETCH(bool, healthy);
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        QSettings settings("cristim", "darling-launcher"); settings.clear();
+        const QString prefix = temporary.path() + "/prefix", runtime = temporary.path() + "/darling"; QVERIFY(QDir().mkpath(prefix));
+        QFile fake(runtime); QVERIFY(fake.open(QIODevice::WriteOnly));
+        fake.write(QByteArray("#!/bin/sh\ncase \"$1 $2\" in 'exec /usr/bin/uname') echo ") + (healthy ? "Darwin" : "Linux") + QByteArray(";; 'exec /bin/echo') echo launcher-check;; 'exec /bin/ls') echo \"$3\";; shutdown*) touch \"$DPREFIX/stopped\";; esac\nexit 0\n"));
+        fake.close(); QVERIFY(fake.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        settings.setValue("prefix", prefix);
+        Window window({}, false, [] { return QList<SourceMount>{}; }); window.show(); window.findChild<QLineEdit *>("darlingField")->setText(runtime); window.findChild<QLineEdit *>("runtimeRootField")->clear();
+        for (const char *name : {"Verify prefix", "Repair prefix", "Darling runtime…", "Stop selected prefix processes"}) { auto *button = window.findChild<QPushButton *>(name); QVERIFY(button); QVERIFY(button->isVisible()); QVERIFY(!button->toolTip().isEmpty()); }
+        window.findChild<QPushButton *>(repair ? "Repair prefix" : "Verify prefix")->click();
+        QMessageBox *box = nullptr; QTRY_VERIFY((box = window.findChild<QMessageBox *>("maintenanceResult")));
+        QCOMPARE(box->icon(), healthy ? QMessageBox::Information : QMessageBox::Warning);
+        QVERIFY(box->detailedText().contains(healthy ? "OK      System reports Darwin" : "FAILED  System reports Darwin"));
+        QCOMPARE(QFileInfo::exists(prefix + "/stopped"), repair);
+        box->accept();
+    }
     void closeDuringLaunch() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString prefix = temporary.path() + "/prefix"; QVERIFY(QDir().mkpath(prefix));

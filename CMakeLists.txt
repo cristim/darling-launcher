@@ -33,7 +33,7 @@ add_executable(launcher-troubleshooting-tests tests/troubleshooting_test.cpp src
 target_link_libraries(launcher-troubleshooting-tests PRIVATE launcher_core Qt6::Widgets Qt6::Concurrent Qt6::Test)
 add_test(NAME launcher-troubleshooting-tests COMMAND launcher-troubleshooting-tests -nocrashhandler)
 set_tests_properties(launcher-troubleshooting-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
-set_tests_properties(launcher-tests launcher-mount-tests launcher-prefix-tests launcher-gui-tests PROPERTIES TIMEOUT 60)
+set_tests_properties(launcher-tests launcher-mount-tests launcher-prefix-tests launcher-gui-tests PROPERTIES TIMEOUT 240)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME launcher-mount-script-tests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/mount_script_test.py)

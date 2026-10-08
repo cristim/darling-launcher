@@ -63,7 +63,8 @@ QString verificationMac(const QString &workspace, const QString &commit, bool ve
 QStringList agents();
 QStringList agentArguments(const QString &agent, const QString &prompt);
 struct AgentAccess { QStringList directories; QStringList tools; };
-struct AgentTools { QString directory, run, build, deploy, error; bool valid() const { return error.isEmpty(); } };
+struct AgentTools { QString directory, run, build, deploy, git, error; bool valid() const { return error.isEmpty(); } };
+QString trustedWorktree(const QString &workspace, const QString &candidate);
 AgentTools prepareAgentTools(const QJsonObject &diagnostic, const QString &workspace, const QString &clone);
 QStringList backgroundArguments(const QString &agent, const QString &prompt, const AgentAccess &access = {});
 PrProposal reviewProposal(const QString &file);

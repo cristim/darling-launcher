@@ -44,6 +44,7 @@ private:
     QString sourceSignature;
     bool sourceChoicesInitialized = false;
     QString prefixBuilderScript;
+    void runPrefixMaintenance(bool repair);
     void openRuntimeBuilder(bool fresh = false, bool automatic = false);
     void offerExistingDarling();
     void importQueued();
@@ -95,7 +96,7 @@ private:
     QMap<QString, AppEntry> entries;
     int activeProcesses = 0;
     int scanGeneration = 0;
-    bool importRunning = false;
+    bool importRunning = false, maintenanceRunning = false;
     QMap<QString, QJsonArray> chains;
     QMap<QString, QString> outputs;
     QMap<QString, MissingSymbol> pending;

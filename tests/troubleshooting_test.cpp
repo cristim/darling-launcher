@@ -103,8 +103,9 @@ private slots:
         QTest::newRow("stays-running") << "stays-running" << true << "stayed running";
         QTest::newRow("crashes") << "crashes" << false << "139";
         QTest::newRow("loader-error") << "loader-error" << false << "still fails to load";
-        QTest::newRow("no-declaration") << "no-declaration" << false << "No usable launcher";
-        QTest::newRow("default-runtime") << "default-runtime" << true << "stayed running";
+        QTest::newRow("no-launcher") << "no-launcher" << false << "No usable launcher";
+        QTest::newRow("agent-declared-launcher-ignored") << "agent-declared" << false << "No usable launcher";
+        QTest::newRow("outside-source") << "outside-source" << false << "worktree";
     }
     void verifierRunsTheFailedAppWithThePatchedRuntime() {
         QFETCH(QString, mode); QFETCH(bool, verified); QFETCH(QString, reason);
@@ -113,17 +114,48 @@ private slots:
         auto write = [&](const QString &path, const QByteArray &contents) { QDir().mkpath(QFileInfo(path).absolutePath()); QFile file(path); if (!file.open(QIODevice::WriteOnly)) return false; file.write(contents); file.close(); return file.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner); };
         QVERIFY(write(temporary.path() + "/bin/git", "#!/bin/sh\necho patched-sha\n")); qputenv("PATH", (temporary.path() + "/bin:" + QString::fromLocal8Bit(previousPath)).toLocal8Bit());
         const QString workspace = temporary.path() + "/work", prefix = temporary.path() + "/prefix"; QVERIFY(QDir().mkpath(prefix)); QVERIFY(QDir().mkpath(workspace + "/image"));
-        const QString body = mode == "stays-running" || mode == "default-runtime" ? "if [ \"$1\" = shutdown ]; then touch \"$DPREFIX/stopped\"; exit 0; fi\nexec sleep 30" : mode == "crashes" ? "exit 139" : "printf 'Library not loaded: /usr/lib/x.dylib\\n  Referenced from: /Applications/Fixture.app/Contents/MacOS/Fixture\\n  Reason: image not found\\n'\nexit 1";
+        const QString body = mode == "stays-running" ? "if [ \"$1\" = shutdown ]; then touch \"$DPREFIX/stopped\"; exit 0; fi\nexec sleep 30" : mode == "crashes" ? "exit 139" : "printf 'Library not loaded: /usr/lib/x.dylib\\n  Referenced from: /Applications/Fixture.app/Contents/MacOS/Fixture\\n  Reason: image not found\\n'\nexit 1";
         QVERIFY(write(workspace + "/build/darling", ("#!/bin/sh\n" + body + "\n").toUtf8()));
-        QVERIFY(write(workspace + "/proposal.json", QJsonDocument(QJsonObject{{"source", workspace + "/clone"}}).toJson()));
-        if (mode != "no-declaration" && mode != "default-runtime") QVERIFY(write(workspace + "/verification.json", QJsonDocument(QJsonObject{{"launcher", workspace + "/build/darling"}, {"runtimeRoot", workspace + "/image"}}).toJson()));
-        QJsonObject diagnostic{{"prefix", prefix}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}}; if (mode == "default-runtime") { diagnostic.insert("launcher", workspace + "/build/darling"); diagnostic.insert("runtime", workspace + "/image"); }
+        QVERIFY(QDir().mkpath(workspace + "/clone/.git")); QVERIFY(QDir().mkpath(temporary.path() + "/elsewhere/.git"));
+        QVERIFY(write(workspace + "/proposal.json", QJsonDocument(QJsonObject{{"source", mode == "outside-source" ? temporary.path() + "/elsewhere" : workspace + "/clone"}}).toJson()));
+        if (mode == "agent-declared") QVERIFY(write(workspace + "/verification.json", QJsonDocument(QJsonObject{{"launcher", workspace + "/build/darling"}, {"runtimeRoot", workspace + "/image"}}).toJson()));
+        QJsonObject diagnostic{{"prefix", prefix}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}};
+        if (mode != "no-launcher" && mode != "agent-declared") { diagnostic.insert("launcher", workspace + "/build/darling"); diagnostic.insert("runtime", workspace + "/image"); }
         FixVerifier verifier(workspace, diagnostic, 1);
         QSignalSpy spy(&verifier, &FixVerifier::finished); verifier.start(); QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 8000);
         const auto result = spy.first().first().value<FixVerification>(); QCOMPARE(result.verified, verified); QVERIFY2(result.reason.contains(reason), qPrintable(result.reason));
         QFile report(workspace + "/LAUNCHER-VERIFICATION.json"); QVERIFY(report.open(QIODevice::ReadOnly)); const auto saved = QJsonDocument::fromJson(report.readAll()).object();
         QCOMPARE(saved.value("verified").toBool(), verified); if (verified) QCOMPARE(saved.value("proposalCommit").toString(), "patched-sha");
         if (mode == "stays-running") QTRY_VERIFY(QFileInfo::exists(prefix + "/stopped"));
+    }
+    void agentScriptsRefuseHostileInput() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("HOME", temporary.path().toUtf8());
+        const QString prefix = temporary.path() + "/prefix", workspace = temporary.path() + "/ws", clone = temporary.path() + "/clone";
+        QVERIFY(QDir().mkpath(prefix + "/Applications/Fixture.app/Contents/MacOS")); QVERIFY(QDir().mkpath(prefix + "/.darling-launcher")); QVERIFY(QDir().mkpath(workspace)); QVERIFY(QDir().mkpath(clone));
+        auto touch = [](const QString &path) { QDir().mkpath(QFileInfo(path).absolutePath()); QFile f(path); return f.open(QIODevice::WriteOnly) && f.write("x") == 1; };
+        QVERIFY(touch(workspace + "/payload")); QVERIFY(touch(temporary.path() + "/outside")); QVERIFY(touch(prefix + "/Applications/Fixture.app/Contents/MacOS/Fixture"));
+        QVERIFY(QFile::link(temporary.path() + "/outside", workspace + "/link"));
+        const QJsonObject diagnostic{{"prefix", prefix}, {"runtime", temporary.path()}, {"launcher", temporary.path() + "/darling"}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}};
+        const auto tools = LauncherTroubleshooting::prepareAgentTools(diagnostic, workspace, clone); QVERIFY2(tools.valid(), qPrintable(tools.error));
+        auto status = [](const QString &script, const QStringList &args) { QProcess p; p.start(script, args); p.waitForFinished(10000); return p.exitCode(); };
+        QCOMPARE(status(tools.deploy, {workspace + "/payload", "lib/ok.dylib"}), 0); QVERIFY(QFileInfo::exists(prefix + "/lib/ok.dylib"));
+        for (const QString &bad : {"../escape", "/abs", "./.darling-launcher/key", ".darling-launcher/backups/x", "Applications/Fixture.app/Contents/MacOS/Fixture", "./Applications/Fixture.app/Contents/MacOS/Fixture"})
+            { QVERIFY2(status(tools.deploy, {workspace + "/payload", bad}) != 0, qPrintable(bad)); }
+        QVERIFY(!QFileInfo::exists(prefix + "/.darling-launcher/key")); QCOMPARE(QFileInfo(prefix + "/Applications/Fixture.app/Contents/MacOS/Fixture").size(), qint64(1));
+        QVERIFY(status(tools.deploy, {workspace + "/link", "lib/link.dylib"}) != 0); QVERIFY(status(tools.deploy, {temporary.path() + "/outside", "lib/outside.dylib"}) != 0);
+        QVERIFY(QFile::link(temporary.path(), prefix + "/hop")); QVERIFY(status(tools.deploy, {workspace + "/payload", "hop/escaped"}) != 0); QVERIFY(!QFileInfo::exists(temporary.path() + "/escaped"));
+        for (const QString &bad : {"-c", "config", "push", "clone", "fetch", "worktree", "checkout"}) QVERIFY2(status(tools.git, {bad}) != 0, qPrintable(bad));
+        QVERIFY(status(tools.git, {"commit", "-c", "core.hooksPath=/tmp"}) != 0); QVERIFY(status(tools.git, {"diff", "--no-index", "/dev/null", "/etc/passwd"}) != 0); QVERIFY(status(tools.git, {"log", "--output=/tmp/x"}) != 0);
+    }
+    void worktreeTrustFollowsTheLauncherClone() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("HOME", temporary.path().toUtf8());
+        const QString data = temporary.path() + "/.darling-launcher", workspace = temporary.path() + "/ws";
+        QVERIFY(QDir().mkpath(data + "/sources/vibedarling/.git/worktrees/fix")); QVERIFY(QDir().mkpath(workspace + "/darling")); QVERIFY(QDir().mkpath(workspace + "/other")); QVERIFY(QDir().mkpath(temporary.path() + "/foreign/.git/worktrees/x"));
+        auto point = [](const QString &file, const QString &target) { QFile f(file); return f.open(QIODevice::WriteOnly) && f.write(("gitdir: " + target + "\n").toUtf8()) > 0; };
+        QVERIFY(point(workspace + "/darling/.git", data + "/sources/vibedarling/.git/worktrees/fix")); QVERIFY(point(workspace + "/other/.git", temporary.path() + "/foreign/.git/worktrees/x"));
+        QCOMPARE(LauncherTroubleshooting::trustedWorktree(workspace, workspace + "/darling"), QFileInfo(workspace + "/darling").canonicalFilePath());
+        QVERIFY(LauncherTroubleshooting::trustedWorktree(workspace, workspace + "/other").isEmpty()); QVERIFY(LauncherTroubleshooting::trustedWorktree(workspace, temporary.path() + "/foreign").isEmpty());
+        QVERIFY(LauncherTroubleshooting::trustedWorktree(workspace, workspace + "/missing").isEmpty());
     }
     void troubleshootingApprovalBoundaries() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());

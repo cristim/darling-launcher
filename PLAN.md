@@ -139,8 +139,8 @@ failed. Scan/Stop/Brewfile buttons sit below the panels; the app lists have a Si
 clickable Name/Size headers (replacing the sort dropdown).
 
 Fix verification before PR: after a background agent finishes, the launcher runs the failed app
-in the imported prefix with the patched launcher/runtime the agent declared in
-verification.json (confined to the agent workspace). The app must stay up 20 s with no loader
+in the imported prefix with the launcher's own runtime (the agent cannot name its own
+launcher; it deploys fixes into the prefix through deploy.sh). The app must stay up 20 s with no loader
 error, or exit 0. The result is saved as LAUNCHER-VERIFICATION.json with the patch commit;
 reviewProposal refuses a proposal that is unverified or whose commit changed. Only a verified
 fix triggers the "review the PR draft now?" offer; submission still needs approval of the
@@ -153,3 +153,13 @@ Agent access: the agent works in the imported prefix through launcher-written sc
 source is a git worktree on <data>/sources/vibedarling; Claude gets a narrow tool allowlist.
 Verification records carry an HMAC with a launcher-private key. Tests use an isolated lock
 directory (DARLING_LAUNCHER_LOCK_DIR) so they never wait on other sessions' builds.
+
+Prefix maintenance: Verify, Repair and Darling icon buttons sit beside the Stop and Trash buttons.
+Verify runs basic checks inside the prefix (shell, CLI tools, uname, core libraries); Repair stops
+the prefix, re-initialises it and verifies; Darling opens the runtime builder. Results are logged.
+
+Agent hardening: git runs through a launcher-written git.sh (fixed subcommands, no -c/-C/--no-index,
+hooks and fsmonitor disabled); the cloned source is not writable by the agent, only its worktree
+in the workspace; the launcher runs its own git with config overrides and only on a worktree whose
+gitdir points into the launcher's clone; deploy.sh refuses launcher metadata and the failing app's
+executable. Build scripts still execute worktree code (cmake), which the user's consent covers.

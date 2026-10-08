@@ -145,8 +145,8 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     int actionCount = 0, settingsActionCount = 0;
     auto add = [&](const QString &title, auto callback) {
         auto *button = new QPushButton(title == "Create prefix" ? "Build and deploy Darling…" : title); button->setObjectName(title);
-        if (title == "Scan volume" || title == "Stop selected prefix processes" || title == "Troubleshoot failed app…") {
-            button->setText({}); button->setToolTip(title == "Scan volume" ? "Rescan the macOS volume" : title == "Stop selected prefix processes" ? "Stop all processes in this prefix" : "Troubleshoot this failed app"); button->setFixedSize(26, 26); button->setParent(this); button->hide();
+        if (title == "Scan volume" || title == "Stop selected prefix processes" || title == "Troubleshoot failed app…" || title == "Verify prefix" || title == "Repair prefix" || title == "Darling runtime…") {
+            button->setText({}); button->setToolTip(title == "Scan volume" ? "Rescan the macOS volume" : title == "Stop selected prefix processes" ? "Stop all processes in this prefix" : title == "Verify prefix" ? "Verify this prefix: run basic checks inside it" : title == "Repair prefix" ? "Repair this prefix: restart it, re-initialize it and verify it" : title == "Darling runtime…" ? "Build, update or choose the Darling runtime" : "Troubleshoot this failed app"); button->setFixedSize(26, 26); button->setParent(this); button->hide();
             connect(button, &QPushButton::clicked, this, callback);
             return button;
         }
@@ -196,6 +196,10 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         mountDialog->show(); mountDialog->raise(); mountDialog->activateWindow();
     });
     auto *stopButton = add("Stop selected prefix processes", [this] { runCommand("Stop prefix", {"shutdown"}); });
+    auto *verifyButton = add("Verify prefix", [this] { runPrefixMaintenance(false); });
+    auto *repairButton = add("Repair prefix", [this] { runPrefixMaintenance(true); });
+    auto *darlingButton = add("Darling runtime…", [this] { openRuntimeBuilder(true); });
+    verifyButton->setIcon(style()->standardIcon(QStyle::SP_DialogApplyButton)); repairButton->setIcon(style()->standardIcon(QStyle::SP_BrowserReload)); darlingButton->setIcon(style()->standardIcon(QStyle::SP_ComputerIcon));
     troubleshoot = add("Troubleshoot failed app…", [this] { openTroubleshooting(); });
     add("Install Brewfile", [this] {
         QString source = QFileDialog::getOpenFileName(this, "Select Brewfile"); if (source.isEmpty()) return;
@@ -302,7 +306,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     });
     trashRow->addStretch();
     { QPixmap cross(16, 16); cross.fill(Qt::transparent); QPainter painter(&cross); painter.setRenderHint(QPainter::Antialiasing); QPen pen(QColor(200, 65, 65), 2.5); painter.setPen(pen); painter.drawLine(3, 3, 13, 13); painter.drawLine(13, 3, 3, 13); stopButton->setIcon(QIcon(cross)); }
-    trashRow->addWidget(stopButton); stopButton->show();
+    for (auto *button : {verifyButton, repairButton, darlingButton, stopButton}) { trashRow->addWidget(button); button->show(); }
     auto *trash = new TrashTarget; trash->setObjectName("appTrash"); trashRow->addWidget(trash); importLayout->addLayout(trashRow);
     connect(trash, &TrashTarget::bundlesDropped, this, [this](const QStringList &bundles) {
         if (importRunning) { QMessageBox::warning(this, "Import in progress", "Finish the current import before removing apps."); return; }
@@ -328,6 +332,24 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         settingsDialog->show(); findChild<QPushButton *>("Mount macOS source…")->click();
         mountDialog->mountAllWhenReady();
     });
+}
+void Window::runPrefixMaintenance(bool repair) {
+    const QString label = repair ? "Repair prefix" : "Verify prefix", launcher = darling->text(), runtime = runtimeRoot->text(), path = prefix->text();
+    if (!QFileInfo(launcher).isExecutable() || !QDir::isAbsolutePath(path) || !QFileInfo(path).isDir()) { QMessageBox::warning(this, label, "Select an executable Darling launcher and an existing prefix first."); return; }
+    if (maintenanceRunning) return;
+    if (repair && (!runningApps.isEmpty() || activeProcesses > 0) && QMessageBox::question(this, label, "Repairing stops every process in this prefix, including running apps. Continue?") != QMessageBox::Yes) return;
+    maintenanceRunning = true; setBusy(true, label + ": running checks inside the prefix…");
+    auto *watcher = new QFutureWatcher<QList<LauncherCore::PrefixCheck>>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, label, repair] {
+        const auto checks = watcher->result(); watcher->deleteLater(); maintenanceRunning = false;
+        int failed = 0; QString text;
+        for (const auto &item : checks) { if (!item.ok) ++failed; text += (item.ok ? "OK      " : "FAILED  ") + item.name + (item.ok || item.detail.isEmpty() ? QString() : ": " + item.detail) + '\n'; }
+        LauncherLog::write("maintenance", label + (failed ? " found " + QString::number(failed) + " problem(s)\n" : " passed\n") + text);
+        setBusy(activeProcesses > 0, label + (failed ? ": " + QString::number(failed) + " check(s) failed" : ": all checks passed"));
+        auto *box = new QMessageBox(failed ? QMessageBox::Warning : QMessageBox::Information, label, failed ? QString::number(failed) + " check(s) failed." + (repair ? "" : " Use Repair prefix to restart and re-initialize it.") : "All checks passed.", QMessageBox::Ok, this);
+        box->setObjectName("maintenanceResult"); box->setDetailedText(text); box->setAttribute(Qt::WA_DeleteOnClose); box->open();
+    });
+    watcher->setFuture(QtConcurrent::run([repair, launcher, runtime, path] { return repair ? LauncherCore::repairPrefix(launcher, runtime, path) : LauncherCore::checkPrefix(launcher, runtime, path); }));
 }
 void Window::openRuntimeBuilder(bool fresh, bool automatic) {
     if (fresh && prefixDialog && !prefixDialog->isBusy()) { delete prefixDialog; prefixDialog = nullptr; }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "core.h"
 #include "sources.h"
+#include <QProcess>
 #include <functional>
 #include <QUuid>
 #include <QDir>
@@ -322,5 +323,41 @@ QString issueDraft(const AppEntry &app, const QJsonArray &chain, const QString &
     text += "\n## Latest loader output\n```text\n" + output.left(8000) + "\n```\n\n";
     text += "Provenance: user-selected mounted macOS volume; app and library payloads remain private in the local prefix. No binary implementation was inspected.\n";
     return text;
+}
+}
+
+namespace LauncherCore {
+namespace {
+struct GuestRun { bool ok; QString output; };
+GuestRun runInPrefix(const QString &launcher, const QString &runtimeRoot, const QString &prefix, const QStringList &args, int timeoutMs = 120000) {
+    QProcess process; QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    for (const auto &name : env.keys()) if (name.startsWith("DYLD_")) env.remove(name);
+    env.remove("DARLING_INSTALL_PREFIX"); if (!runtimeRoot.isEmpty()) env.insert("DARLING_INSTALL_PREFIX", runtimeRoot);
+    env.insert("DPREFIX", prefix);
+    process.setProcessEnvironment(env); process.setProcessChannelMode(QProcess::MergedChannels); process.start(launcher, args);
+    if (!process.waitForFinished(timeoutMs)) { process.kill(); process.waitForFinished(2000); return {false, "timed out after " + QString::number(timeoutMs / 1000) + " seconds"}; }
+    return {process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0, QString::fromLocal8Bit(process.readAll()).trimmed()};
+}
+}
+QList<PrefixCheck> checkPrefix(const QString &launcher, const QString &runtimeRoot, const QString &prefix) {
+    QList<PrefixCheck> checks;
+    auto check = [&](const QString &name, const QStringList &args, const QString &expected = {}) {
+        const auto run = runInPrefix(launcher, runtimeRoot, prefix, args);
+        checks << PrefixCheck{name, run.ok && (expected.isEmpty() || run.output.contains(expected)), run.output.left(300)};
+    };
+    check("Prefix starts and runs a shell", {"shell", "/usr/bin/true"});
+    check("Command-line tools run", {"exec", "/bin/echo", "launcher-check"}, "launcher-check");
+    check("System reports Darwin", {"exec", "/usr/bin/uname", "-s"}, "Darwin");
+    for (const QString &library : {"/usr/lib/libSystem.B.dylib", "/usr/lib/libc++.1.dylib", "/usr/lib/libobjc.A.dylib"})
+        check("Library present: " + library, {"exec", "/bin/ls", library}, library);
+    return checks;
+}
+QList<PrefixCheck> repairPrefix(const QString &launcher, const QString &runtimeRoot, const QString &prefix) {
+    QList<PrefixCheck> steps;
+    const auto stop = runInPrefix(launcher, runtimeRoot, prefix, {"shutdown"}, 30000);
+    steps << PrefixCheck{"Stop stale prefix processes", stop.ok, stop.output.left(300)};
+    const auto init = runInPrefix(launcher, runtimeRoot, prefix, {"shell", "/usr/bin/true"});
+    steps << PrefixCheck{"Re-initialize the prefix", init.ok, init.output.left(300)};
+    return steps + checkPrefix(launcher, runtimeRoot, prefix);
 }
 }

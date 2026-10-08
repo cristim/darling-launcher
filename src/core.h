@@ -38,6 +38,9 @@ struct TrashReceipt { QString prefix, bundle, trashedPath; QJsonObject record; }
 bool trashApp(const QString &prefix, const QString &bundle, QString *error, TrashReceipt *receipt = nullptr);
 bool restoreApp(const TrashReceipt &receipt, QString *error);
 MissingSymbol diagnose(const QString &output);
+struct PrefixCheck { QString name; bool ok; QString detail; };
+QList<PrefixCheck> checkPrefix(const QString &launcher, const QString &runtimeRoot, const QString &prefix);
+QList<PrefixCheck> repairPrefix(const QString &launcher, const QString &runtimeRoot, const QString &prefix);
 QString catalogPath(const QString &prefix);
 QJsonObject loadCatalog(const QString &prefix);
 bool saveCatalog(const QString &prefix, const QJsonObject &catalog, QString *error);
