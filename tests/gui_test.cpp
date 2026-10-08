@@ -82,6 +82,41 @@ private slots:
         QVERIFY(!popup->findChild<QCheckBox *>("importDependencyOption")->isVisible()); QVERIFY(popup->findChild<QPushButton *>("mountDependencySource")->isVisible());
     }
 
+    void failurePreferencesRepeatUntilRemembered_data() {
+        QTest::addColumn<QString>("mode");
+        for (const QString &mode : {"generic", "dependency", "invalid-runtime", "failed-to-start"}) QTest::newRow(qPrintable(mode)) << mode;
+    }
+    void failurePreferencesRepeatUntilRemembered() {
+        QFETCH(QString, mode);
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        QSettings settings("cristim", "darling-launcher"); settings.clear();
+        const QString prefix = temporary.path() + "/prefix", runtime = temporary.path() + "/darling";
+        QVERIFY(QDir().mkpath(prefix)); QString error;
+        QVERIFY(LauncherCore::saveCatalog(prefix, QJsonObject{{"apps", QJsonArray{QJsonObject{{"name", "Fixture"}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}}}}}, &error)); settings.setValue("prefix", prefix);
+        QFile executable(runtime); QVERIFY(executable.open(QIODevice::WriteOnly));
+        executable.write(mode == "failed-to-start" ? "#!/nonexistent/fixture-interpreter\n" : mode == "dependency" ? "#!/bin/sh\nprintf 'Library not loaded: /usr/lib/fixture.dylib\\n  Referenced from: /Applications/Fixture.app/Contents/MacOS/Fixture\\n  Reason: image not found\\n'\nexit 1\n" : "#!/bin/sh\necho unrelated failure\nexit 1\n"); executable.close(); QVERIFY(executable.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        QFile lsblk(temporary.path() + "/lsblk"); QVERIFY(lsblk.open(QIODevice::WriteOnly)); lsblk.write("#!/bin/sh\necho '{\"blockdevices\":[]}'\n"); lsblk.close(); QVERIFY(lsblk.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        const auto path = qgetenv("PATH"); auto restore = qScopeGuard([=] { qputenv("PATH", path); }); qputenv("PATH", temporary.path().toUtf8() + ':' + path);
+        Window window({}, false, [] { return QList<SourceMount>{}; }); window.show(); window.findChild<QLineEdit *>("darlingField")->setText(mode == "invalid-runtime" ? temporary.path() + "/absent" : runtime); window.findChild<QLineEdit *>("runtimeRootField")->clear();
+        auto *apps = window.findChild<ImportedBrowser *>("importedApps"); apps->setCurrentRow(0);
+        int before = 0, failures = 0; bool noMacDisabled = false;
+        QTimer approvals; connect(&approvals, &QTimer::timeout, [&] {
+            if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) box->accept();
+            if (auto *dialog = window.findChild<LaunchChoicesDialog *>()) {
+                if (dialog->property("failurePreferences").toBool()) {
+                    ++failures; auto *copy = dialog->findChild<QCheckBox *>("launchImportOption"); noMacDisabled = copy->isVisible() && !copy->isEnabled() && !dialog->findChild<QPushButton *>("launchMountSource")->isVisible();
+                    dialog->findChild<QCheckBox *>("rememberLaunchChoices")->setChecked(failures == 2);
+                } else ++before;
+                dialog->accept();
+            }
+        }); approvals.start(10);
+        QTest::qWait(100);
+        window.findChild<QPushButton *>("Launch selected")->click(); QTRY_COMPARE(failures, 1); QCOMPARE(before, 1); QVERIFY(noMacDisabled);
+        window.findChild<QPushButton *>("Launch selected")->click(); QTRY_COMPARE(failures, 2); QCOMPARE(before, 2); QVERIFY(LauncherTroubleshooting::recoveryChoices().remember);
+        window.findChild<QPushButton *>("Launch selected")->click(); QTest::qWait(200); QCOMPARE(failures, 2); QCOMPARE(before, 2);
+        QVERIFY(window.findChild<TroubleshootingDialog *>());
+    }
+
     void invalidRuntimeShowsFailedState() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         const QString prefix = temporary.path() + "/prefix"; QVERIFY(QDir().mkpath(prefix)); QString error;

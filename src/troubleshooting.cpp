@@ -121,10 +121,11 @@ void LauncherTroubleshooting::saveRecoveryChoices(const RecoveryChoices &choices
     settings.setValue("recovery/import", choices.importLibrary); settings.setValue("recovery/report", choices.report);
     settings.setValue("recovery/ai", choices.ai); settings.setValue("recovery/remember", choices.remember); settings.setValue("recovery/agent", choices.agent);
 }
-LaunchChoicesDialog::LaunchChoicesDialog(const QString &app, bool mounted, QWidget *parent) : QDialog(parent) {
+LaunchChoicesDialog::LaunchChoicesDialog(const QString &app, bool mounted, QWidget *parent, bool failed) : QDialog(parent) {
     setObjectName("launchChoicesDialog"); setWindowTitle("Launch recovery choices");
     auto *layout = new QVBoxLayout(this);
-    auto *notice = new QLabel("Before launching " + app + ", choose what to do if a dependency is missing. These choices are also available later in Settings."); notice->setWordWrap(true); notice->setTextFormat(Qt::PlainText); layout->addWidget(notice);
+    setProperty("failurePreferences", failed);
+    auto *notice = new QLabel((failed ? app + " failed to launch. Choose recovery actions for this failure." : "Before launching " + app + ", choose what to do if a dependency is missing.") + " These choices are also available later in Settings."); notice->setWordWrap(true); notice->setTextFormat(Qt::PlainText); layout->addWidget(notice);
     copy = new QCheckBox("Import missing libraries from mounted macOS into this private prefix and retry"); copy->setObjectName("launchImportOption"); layout->addWidget(copy);
     mount = new QPushButton("Mount or select macOS source…"); mount->setObjectName("launchMountSource"); layout->addWidget(mount); connect(mount, &QPushButton::clicked, this, [this] { reject(); emit mountRequested(); });
     report = new QCheckBox("Prepare an issue draft using my GitHub account; ask before submitting the completed draft"); report->setObjectName("launchReportOption"); layout->addWidget(report);
@@ -138,9 +139,24 @@ LaunchChoicesDialog::LaunchChoicesDialog(const QString &app, bool mounted, QWidg
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); layout->addWidget(buttons); connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 }
 RecoveryChoices LaunchChoicesDialog::choices() const { return {copy->isChecked(), report->isChecked(), ai->isChecked(), remember->isChecked(), agent->currentText()}; }
-void LaunchChoicesDialog::setMounted(bool mounted) { copy->setVisible(mounted); mount->setVisible(!mounted); }
+void LaunchChoicesDialog::setMounted(bool mounted) { setSourceAvailability(mounted, macOSPossible); }
+void LaunchChoicesDialog::setSourceAvailability(bool mounted, bool possible) {
+    macOSPossible = possible; copy->setVisible(mounted || !possible); copy->setEnabled(mounted);
+    copy->setToolTip(possible ? QString() : "No APFS/HFS partition or usable macOS mount detected on this system.");
+    mount->setVisible(!mounted && possible);
+}
 void TroubleshootingDialog::chooseActions(bool copy, bool report, bool ai, const QString &selectedAgent) {
-    if (!importOption) return;
+    if (!importOption) {
+        if (report) reviewIssue();
+        if (ai) {
+            auto *agents = findChild<QComboBox *>("agentChoices");
+            if (agents->findText(selectedAgent) >= 0) {
+                agents->setCurrentText(selectedAgent); findChild<QCheckBox *>("backgroundAgent")->setChecked(true); findChild<QCheckBox *>("approveAgentData")->setChecked(true);
+                findChild<QPushButton *>("startFixAgent")->click();
+            }
+        }
+        return;
+    }
     if (auto *agents = findChild<QComboBox *>("agentChoices")) {
         if (agents->findText(selectedAgent) >= 0) agents->setCurrentText(selectedAgent);
         else ai = false;
@@ -267,15 +283,16 @@ void TroubleshootingDialog::updateDiagnostic(const QJsonObject &data, bool canIm
     summary->setText(library.isEmpty() ? data.value("app").toString() + " troubleshooting" : data.value("app").toString() + " needs " + library + (symbol.isEmpty() ? QString() : "\nUnresolved symbol: " + symbol));
     outcome->setText(result);
     const bool mounted = data.value("sourceMounted").toBool();
-    if (mountSource) mountSource->setVisible(!mounted);
-    if (importOption) { importOption->setVisible(mounted); importOption->setEnabled(canImport && mounted); if (!canImport || !mounted) importOption->setChecked(false); importOption->setToolTip(launchRunning ? "Stop the stalled launch process explicitly before importing and retrying. This affects all apps in this prefix." : "Import the exact standalone library from the displayed macOS source into the displayed private prefix."); }
+    const bool possible = data.value("sourceAvailable").toBool(true);
+    if (mountSource) mountSource->setVisible(!mounted && possible);
+    if (importOption) { importOption->setVisible(mounted || !possible); importOption->setEnabled(canImport && mounted); if (!canImport || !mounted) importOption->setChecked(false); importOption->setToolTip(!possible ? "No APFS/HFS partition or usable macOS mount detected on this system." : launchRunning ? "Stop the stalled launch process explicitly before importing and retrying. This affects all apps in this prefix." : "Import the exact standalone library from the displayed macOS source into the displayed private prefix."); }
     if (stopPrefix) stopPrefix->setVisible(launchRunning);
 }
 void TroubleshootingDialog::reviewIssue() {
     auto *dialog = new IssueApprovalDialog(this); dialog->setObjectName("issueApprovalDialog"); dialog->setWindowTitle("Review completed issue draft"); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->resize(820, 650);
     auto *layout = new QVBoxLayout(dialog);
     auto *notice = new QLabel("Review the complete draft and redact local paths. Selecting Report prepares this draft; only approving this completed draft submits it."); notice->setWordWrap(true); layout->addWidget(notice);
-    auto *repo = new QLineEdit; repo->setObjectName("issueRepository"); repo->setPlaceholderText("Choose target repository: VibeDarling/<repository>"); layout->addWidget(repo);
+    auto *repo = new QLineEdit("VibeDarling/Darling"); repo->setObjectName("issueRepository"); repo->setReadOnly(true); layout->addWidget(repo);
     auto *title = new QLineEdit(diagnostic.value("app").toString() + " missing loader dependency"); title->setObjectName("issueTitle"); layout->addWidget(title);
     const AppEntry app{diagnostic.value("app").toString(), diagnostic.value("bundle").toString(), diagnostic.value("executable").toString(), diagnostic.value("sourceBundle").toString()};
     auto *body = new QTextEdit; body->setObjectName("issueBody"); body->setPlainText(LauncherCore::issueDraft(app, diagnostic.value("dependencyChain").toArray(), diagnostic.value("loaderOutput").toString(), diagnostic.value("sourceVolume").toString(), diagnostic.value("prefix").toString(), diagnostic.value("launcher").toString(), diagnostic.value("runtime").toString())); layout->addWidget(body);
@@ -286,12 +303,12 @@ void TroubleshootingDialog::reviewIssue() {
     if (!authenticated) result->setText("GitHub CLI is not authenticated. You can save the draft locally.");
     connect(approve, &QPushButton::clicked, dialog, [=] {
         if (!authenticated) return;
-        if (!QRegularExpression("^VibeDarling/[A-Za-z0-9_.-]+$").match(repo->text()).hasMatch() || title->text().trimmed().isEmpty() || body->toPlainText().trimmed().isEmpty()) { result->setText("Choose a VibeDarling repository and complete the title and body."); return; }
+        if (title->text().trimmed().isEmpty() || body->toPlainText().trimmed().isEmpty()) { result->setText("Complete the title and body for VibeDarling/Darling."); return; }
         auto *file = new QTemporaryFile(dialog); if (!file->open() || file->write(body->toPlainText().toUtf8()) < 0 || !file->flush()) { result->setText("Cannot prepare approved draft."); return; }
         auto *submit = new QProcess(dialog); approve->setEnabled(false); result->setText("Submitting approved issue…");
         connect(submit, &QProcess::finished, dialog, [=](int code, QProcess::ExitStatus exit) { result->setText(code == 0 && exit == QProcess::NormalExit ? "Issue submitted: " + QString::fromUtf8(submit->readAllStandardOutput()).trimmed() : "Issue submission failed: " + QString::fromUtf8(submit->readAllStandardError()).trimmed()); submit->deleteLater(); file->deleteLater(); });
         connect(submit, &QProcess::errorOccurred, dialog, [=](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) { result->setText("Cannot start GitHub CLI. No issue submitted."); submit->deleteLater(); file->deleteLater(); } });
-        submit->start(gh, {"issue", "create", "--repo", repo->text(), "--title", title->text(), "--body-file", file->fileName()});
+        submit->start(gh, {"issue", "create", "--repo", "VibeDarling/Darling", "--title", title->text(), "--body-file", file->fileName()});
     });
     auto *close = new QPushButton("Close"); layout->addWidget(close); connect(close, &QPushButton::clicked, dialog, &QDialog::reject); dialog->show();
 }

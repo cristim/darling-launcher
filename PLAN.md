@@ -69,3 +69,19 @@ launch. Refresh popup availability when paths/mounts change; preserve import err
 across mount refresh. Verify synthetic mount loss, remembered automatic copy/retry,
 pre-launch confirmation, fake background agents and issue approval. Use the actual
 read-only p2 System mount and owned temporary Calculator prefix for desktop checks.
+
+Failure preferences: show recovery choices once per failed launch attempt (including
+loader errors emitted before wrapper exit, generic failures, invalid runtime paths,
+and process startup errors), unless the user remembered preferences. Gate automatic
+actions until failure choices are accepted; deduplicate streaming/exit notifications.
+Preserve explicit completed-draft approval for every GitHub submission.
+
+No dual-boot source: asynchronously reuse the existing lsblk partition parser. If
+successful discovery finds no APFS/HFS partition and no usable macOS mount exists,
+show library import disabled with an explanation. If partitions exist but none are
+usable/mounted, offer the existing explicit mount chooser. Keep unknown discovery
+results distinct from confirmed absence. Mounted sources override absent disk results.
+
+Central triage: always target completed issue drafts and approved issue submissions
+at VibeDarling/Darling; display the target read-only. Verify exact target/body with
+fake gh and retain separate approval of completed issue and PR drafts.

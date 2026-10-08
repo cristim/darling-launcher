@@ -24,7 +24,9 @@ private slots:
         QVERIFY(!choices.findChild<QCheckBox *>("launchImportOption")->isVisible());
         QSignalSpy mount(&choices, &LaunchChoicesDialog::mountRequested); choices.findChild<QPushButton *>("launchMountSource")->click(); QCOMPARE(mount.count(), 1);
         QVERIFY(choices.findChild<QCheckBox *>("rememberLaunchChoices")->isChecked()); QVERIFY(choices.choices().report);
-        choices.show(); choices.setMounted(true); QVERIFY(choices.findChild<QCheckBox *>("launchImportOption")->isVisible()); QVERIFY(!choices.findChild<QPushButton *>("launchMountSource")->isVisible());
+        choices.show(); choices.setSourceAvailability(false, false);
+        QVERIFY(choices.findChild<QCheckBox *>("launchImportOption")->isVisible()); QVERIFY(!choices.findChild<QCheckBox *>("launchImportOption")->isEnabled()); QVERIFY(!choices.findChild<QPushButton *>("launchMountSource")->isVisible());
+        choices.setSourceAvailability(true, true); QVERIFY(choices.findChild<QCheckBox *>("launchImportOption")->isVisible()); QVERIFY(!choices.findChild<QPushButton *>("launchMountSource")->isVisible());
         choices.findChild<QCheckBox *>("rememberLaunchChoices")->setChecked(false); LauncherTroubleshooting::saveRecoveryChoices(choices.choices()); QVERIFY(!LauncherTroubleshooting::recoveryChoices().remember);
     }
 
@@ -39,6 +41,8 @@ private slots:
         QVERIFY(copy->isVisible()); QVERIFY(copy->isEnabled()); QVERIFY(!mount->isVisible());
         copy->setChecked(true); data.insert("sourceMounted", false); popup.updateDiagnostic(data, false, false);
         QVERIFY(!copy->isVisible()); QVERIFY(!copy->isChecked()); QVERIFY(mount->isVisible());
+        data.insert("sourceAvailable", false); popup.updateDiagnostic(data, false, false);
+        QVERIFY(copy->isVisible()); QVERIFY(!copy->isEnabled()); QVERIFY(!mount->isVisible()); QVERIFY(copy->toolTip().contains("No APFS/HFS"));
     }
 
     void missingDependencyChoicesAndBackgroundLifetime() {
@@ -64,9 +68,10 @@ private slots:
         QFile calls(temporary.path() + "/gh-calls"); QVERIFY(calls.open(QIODevice::ReadOnly)); QVERIFY(!calls.readAll().contains("issue create")); calls.close();
         auto *issue = popup->findChild<QDialog *>("issueApprovalDialog"); QVERIFY(issue); QVERIFY(issue->findChild<QTextEdit *>("issueBody")->toPlainText().contains("DPREFIX=")); issue->reject(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         popup->reviewIssue(); issue = popup->findChild<QDialog *>("issueApprovalDialog"); QVERIFY(issue);
-        issue->findChild<QLineEdit *>("issueRepository")->setText("wrong/repository"); issue->findChild<QPushButton *>("approveCompletedIssue")->click(); QVERIFY(issue->findChild<QLabel *>("issueSubmissionStatus")->text().contains("Choose a VibeDarling"));
-        issue->findChild<QLineEdit *>("issueRepository")->setText("VibeDarling/fixture"); const QString approved = "Exact reviewed draft\nLiteral $(echo secret) and `literal` remain text.\n"; issue->findChild<QTextEdit *>("issueBody")->setPlainText(approved); issue->findChild<QPushButton *>("approveCompletedIssue")->click();
+        QCOMPARE(issue->findChild<QLineEdit *>("issueRepository")->text(), QString("VibeDarling/Darling")); QVERIFY(issue->findChild<QLineEdit *>("issueRepository")->isReadOnly());
+        issue->findChild<QLineEdit *>("issueTitle")->clear(); issue->findChild<QPushButton *>("approveCompletedIssue")->click(); QVERIFY(issue->findChild<QLabel *>("issueSubmissionStatus")->text().contains("Complete the title")); issue->findChild<QLineEdit *>("issueTitle")->setText("Fixture missing dependency"); const QString approved = "Exact reviewed draft\nLiteral $(echo secret) and `literal` remain text.\n"; issue->findChild<QTextEdit *>("issueBody")->setPlainText(approved); issue->findChild<QPushButton *>("approveCompletedIssue")->click();
         QTRY_VERIFY(issue->findChild<QLabel *>("issueSubmissionStatus")->text().startsWith("Issue submitted:"));
+        QVERIFY(calls.open(QIODevice::ReadOnly)); QVERIFY(calls.readAll().contains("issue create --repo VibeDarling/Darling")); calls.close();
         QFile body(temporary.path() + "/approved-body"); QVERIFY(body.open(QIODevice::ReadOnly)); QCOMPARE(QString::fromUtf8(body.readAll()), approved);
         QPointer<TroubleshootingDialog> remaining(popup); popup->reject(); QTRY_VERIFY(remaining.isNull()); QVERIFY(job->isRunning()); QTRY_VERIFY(!job->isRunning());
         QFile log(temporary.path() + "/work/AGENT.log"); QVERIFY(log.open(QIODevice::ReadOnly)); QVERIFY(log.readAll().contains("finished"));

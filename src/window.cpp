@@ -134,7 +134,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         const QString path = prefixChoices->itemData(index).toString();
         if (path.isEmpty() || path == prefix->text()) return;
         if (activeProcesses > 0 || importRunning) { statusBar()->showMessage("Finish imports and stop this prefix’s processes before switching prefixes."); updatePrefixChoices(); return; }
-        prefix->setText(path); pending.clear(); failedApps.clear(); outputs.clear(); recoveryOutcomes.clear(); launchChoices.clear(); recoveryActions.clear(); detectPaths(); load();
+        prefix->setText(path); pending.clear(); failedApps.clear(); outputs.clear(); recoveryOutcomes.clear(); launchChoices.clear(); recoveryActions.clear(); failurePreferencesShown.clear(); recoveryReady.clear(); detectPaths(); load();
         QSettings settings("cristim", "darling-launcher"); settings.setValue("prefix", path); settings.setValue("darling", darling->text()); settings.setValue("runtimeRoot", runtimeRoot->text());
         updatePrefixChoices();
     });
@@ -158,8 +158,9 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     };
     add("Launch recovery preferences…", [this] {
         LaunchChoicesDialog choices("future apps", hasMountedSource(), settingsDialog);
+        choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource());
         connect(&choices, &LaunchChoicesDialog::mountRequested, this, [this] { findChild<QPushButton *>("Mount macOS source…")->click(); });
-        connect(volume, &QLineEdit::textChanged, &choices, [this, &choices] { choices.setMounted(hasMountedSource()); });
+        connect(volume, &QLineEdit::textChanged, &choices, [this, &choices] { choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource()); });
         if (choices.exec() == QDialog::Accepted) LauncherTroubleshooting::saveRecoveryChoices(choices.choices());
     });
     connect(volume, &QLineEdit::textChanged, this, [this] { for (const auto &key : recoveryDialogs.keys()) updateRecovery(key); });
@@ -198,7 +199,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         refresh(); load();
     });
     add("Detect mounted macOS volumes", [this] {
-        updateSourceChoices(); refresh(); settingsDialog->show();
+        discoverMacPartitions(); updateSourceChoices(); refresh(); settingsDialog->show();
         setBusy(false, sourceSummary->text());
     });
     add("Mount macOS source…", [this] {
@@ -288,9 +289,9 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     connect(apps, &QListWidget::itemSelectionChanged, this, &Window::updateContribution);
     progress = new QProgressBar; progress->setRange(0, 1); progress->setValue(0); progress->hide(); layout->addWidget(progress);
     setCentralWidget(central);
-    updateSourceChoices(); load();
+    discoverMacPartitions(); updateSourceChoices(); load();
     statusBar()->showMessage(sourceSummary->text());
-    connect(prefix, &QLineEdit::textChanged, this, [this] { pending.clear(); failedApps.clear(); outputs.clear(); recoveryOutcomes.clear(); launchChoices.clear(); recoveryActions.clear(); for (auto dialog : recoveryDialogs) if (dialog) dialog->close(); recoveryDialogs.clear(); updatePrefixChoices(); updateContribution(); });
+    connect(prefix, &QLineEdit::textChanged, this, [this] { pending.clear(); failedApps.clear(); outputs.clear(); recoveryOutcomes.clear(); launchChoices.clear(); recoveryActions.clear(); failurePreferencesShown.clear(); recoveryReady.clear(); for (auto dialog : recoveryDialogs) if (dialog) dialog->close(); recoveryDialogs.clear(); updatePrefixChoices(); updateContribution(); });
     auto *mountRefresh = new QTimer(this); mountRefresh->setInterval(3000);
     connect(mountRefresh, &QTimer::timeout, this, &Window::updateSourceChoices); mountRefresh->start();
     if (mountAll) QTimer::singleShot(0, this, [this] {
@@ -476,21 +477,27 @@ void Window::persist() {
     if (!LauncherCore::saveCatalog(prefix->text(), QJsonObject{{"apps", array}}, &error)) QMessageBox::warning(this, "Catalog", error);
 }
 QString Window::selectedKey() const { return apps->currentItem() ? apps->currentItem()->data(Qt::UserRole).toString() : QString(); }
-bool Window::confirmLaunch(const QString &key) {
+bool Window::confirmLaunch(const QString &key, bool failed) {
     auto saved = LauncherTroubleshooting::recoveryChoices();
     if (!saved.remember) {
-        LaunchChoicesDialog choices(entries.value(key).name, hasMountedSource(), this);
+        LaunchChoicesDialog choices(entries.value(key).name, hasMountedSource(), this, failed);
+        choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource());
         connect(&choices, &LaunchChoicesDialog::mountRequested, this, [this] { findChild<QPushButton *>("Mount macOS source…")->click(); });
-        connect(volume, &QLineEdit::textChanged, &choices, [this, &choices] { choices.setMounted(hasMountedSource()); });
+        connect(volume, &QLineEdit::textChanged, &choices, [this, &choices] { choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource()); });
         if (choices.exec() != QDialog::Accepted) return false;
         saved = choices.choices(); LauncherTroubleshooting::saveRecoveryChoices(saved);
     }
-    launchChoices[key] = saved; recoveryActions[key].clear(); return true;
+    launchChoices[key] = saved;
+    if (!failed) recoveryActions[key].clear();
+    if (failed || saved.remember) recoveryReady.insert(key); else recoveryReady.remove(key);
+    return true;
 }
 void Window::launch(const QString &key, bool retry) {
     if (!entries.contains(key)) return;
     if (runningApps.contains(key)) { setBusy(true, "This app already has a running launch process."); return; }
     if (!retry && !confirmLaunch(key)) return;
+    failurePreferencesShown.remove(key);
+    if (!LauncherTroubleshooting::recoveryChoices().remember) recoveryReady.remove(key);
     pending.remove(key);
     const AppEntry app = entries.value(key);
     outputs[key].clear(); recoveryOutcomes.remove(key);
@@ -502,6 +509,7 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     auto invalid = [this, label, key](const QString &error) {
         if (!key.isEmpty()) { outputs[key] = error; failedApps.insert(key); apps->setActivity(key, AppBrowser::State::Failed); apps->setStatus(key, "Failed to start"); updateContribution(); }
         setBusy(activeProcesses > 0, error); QMessageBox::warning(this, label, error);
+        if (!key.isEmpty()) recoverFailure(key);
     };
     if (!QFileInfo(darling->text()).isExecutable()) { invalid("Select an executable Darling host launcher."); return; }
     QString p = prefix->text();
@@ -522,7 +530,8 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
         QString text = QString::fromLocal8Bit(process->readAllStandardOutput());
         if (!key.isEmpty() && prefix->text() == p) { outputs[key] += text; diagnoseOutput(key); updateRecovery(key); }
     });
-    connect(process, &QProcess::finished, this, [this, process, key, label, p](int code, QProcess::ExitStatus) {
+    connect(process, &QProcess::finished, this, [this, process, key, label, p](int code, QProcess::ExitStatus exit) {
+        const bool success = code == 0 && exit == QProcess::NormalExit;
         --activeProcesses;
         runningApps.remove(key);
         setBusy(activeProcesses > 0, label + " exited with status " + QString::number(code));
@@ -530,21 +539,22 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
             outputs[key] += QString::fromLocal8Bit(process->readAllStandardOutput());
             MissingSymbol missing = LauncherCore::diagnose(outputs.value(key));
 
-            if (missing.valid() && code != 0) {
+            if (missing.valid() && !success) {
                 diagnoseOutput(key);
             } else {
-                apps->setActivity(key, code == 0 ? AppBrowser::State::Exited : AppBrowser::State::Failed);
-                apps->setStatus(key, code == 0 ? "Exited successfully" : "Exited " + QString::number(code));
-                if (code != 0) failedApps.insert(key);
-                if (code == 0 && !chains.value(key).isEmpty())
+                apps->setActivity(key, success ? AppBrowser::State::Exited : AppBrowser::State::Failed);
+                apps->setStatus(key, success ? "Exited successfully" : "Exited " + QString::number(code));
+                if (!success) failedApps.insert(key);
+                if (success && !chains.value(key).isEmpty())
                     setBusy(activeProcesses > 0, label + " succeeded after importing macOS libraries. Review the dependency popup to help VibeDarling.");
             }
         }
         updateContribution(); updateRecovery(key, apps->status(key));
+        if (!key.isEmpty() && prefix->text() == p && !success) recoverFailure(key);
         process->deleteLater();
     });
     connect(process, &QProcess::errorOccurred, this, [this, process, label, key, p](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart) { --activeProcesses; runningApps.remove(key); if (!key.isEmpty() && prefix->text() == p) { outputs[key] += process->errorString(); failedApps.insert(key); apps->setActivity(key, AppBrowser::State::Failed); apps->setStatus(key, "Failed to start"); } setBusy(activeProcesses > 0, label + ": " + process->errorString()); updateContribution(); process->deleteLater(); }
+        if (error == QProcess::FailedToStart) { --activeProcesses; runningApps.remove(key); if (!key.isEmpty() && prefix->text() == p) { outputs[key] += process->errorString(); failedApps.insert(key); apps->setActivity(key, AppBrowser::State::Failed); apps->setStatus(key, "Failed to start"); } setBusy(activeProcesses > 0, label + ": " + process->errorString()); updateContribution(); if (!key.isEmpty() && prefix->text() == p) recoverFailure(key); process->deleteLater(); }
     });
     process->start(darling->text(), args);
 }
@@ -557,7 +567,41 @@ void Window::diagnoseOutput(const QString &key) {
     failedApps.insert(key); apps->setActivity(key, AppBrowser::State::Failed); apps->setStatus(key, missing.missingLibrary ? "Needs " + QFileInfo(missing.expectedIn).fileName() : "Missing " + missing.symbol);
     setBusy(activeProcesses > 0, "Launch needs a dependency. Choose recovery actions in the popup.");
     updateContribution();
-    QTimer::singleShot(0, this, [this, key] { if (pending.contains(key)) showRecovery(key); });
+    recoverFailure(key);
+}
+
+void Window::recoverFailure(const QString &key) {
+    if (!entries.contains(key) || failurePreferencesShown.contains(key)) return;
+    failurePreferencesShown.insert(key);
+    const QString destination = prefix->text();
+    QTimer::singleShot(0, this, [this, key, destination] {
+        if (prefix->text() != destination || !failedApps.contains(key)) return;
+        if (!confirmLaunch(key, true)) return;
+        if (prefix->text() == destination && failedApps.contains(key)) showRecovery(key);
+    });
+}
+
+void Window::discoverMacPartitions() {
+    if (partitionDiscovery && partitionDiscovery->state() != QProcess::NotRunning) return;
+    const QString tool = QStandardPaths::findExecutable("lsblk"); if (tool.isEmpty()) return;
+    if (!partitionDiscovery) {
+        partitionDiscovery = new QProcess(this);
+        connect(partitionDiscovery, &QProcess::finished, this, [this](int code, QProcess::ExitStatus exit) {
+            QString error;
+            const auto partitions = LauncherMount::parsePartitions(partitionDiscovery->readAllStandardOutput(), &error);
+            if (code != 0 || exit != QProcess::NormalExit || !error.isEmpty()) return;
+            macPartitionsPossible = !partitions.isEmpty();
+            for (auto *dialog : findChildren<LaunchChoicesDialog *>()) dialog->setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource());
+            for (const auto &key : recoveryDialogs.keys()) updateRecovery(key);
+        });
+    }
+    partitionDiscovery->start(tool, {"--json", "--output", "PATH,FSTYPE,LABEL,MOUNTPOINTS"});
+    QTimer::singleShot(5000, partitionDiscovery, [this] { if (partitionDiscovery->state() != QProcess::NotRunning) partitionDiscovery->kill(); });
+}
+bool Window::hasPossibleMacOSSource() const {
+    if (macPartitionsPossible) return true;
+    for (const auto &candidate : LauncherSources::candidates(mountProvider())) if (candidate.usable()) return true;
+    return false;
 }
 
 bool Window::hasMountedSource() const {
@@ -569,7 +613,7 @@ bool Window::hasMountedSource() const {
 }
 QJsonObject Window::diagnostic(const QString &key) const {
     const auto app = entries.value(key); const auto missing = pending.value(key);
-    return QJsonObject{{"app", app.name}, {"bundle", key}, {"executable", app.executable}, {"sourceBundle", app.sourceRelative}, {"prefix", prefix->text()}, {"sourceVolume", volume->text()}, {"sourceMounted", hasMountedSource()}, {"launcher", darling->text()}, {"runtime", runtimeRoot->text()}, {"loaderOutput", outputs.value(key)}, {"dependencyChain", chains.value(key)}, {"missingLibrary", missing.expectedIn}, {"missingSymbol", missing.symbol}};
+    return QJsonObject{{"app", app.name}, {"bundle", key}, {"executable", app.executable}, {"sourceBundle", app.sourceRelative}, {"prefix", prefix->text()}, {"sourceVolume", volume->text()}, {"sourceMounted", hasMountedSource()}, {"sourceAvailable", hasPossibleMacOSSource()}, {"launcher", darling->text()}, {"runtime", runtimeRoot->text()}, {"loaderOutput", outputs.value(key)}, {"dependencyChain", chains.value(key)}, {"missingLibrary", missing.expectedIn}, {"missingSymbol", missing.symbol}};
 }
 void Window::updateRecovery(const QString &key, const QString &result) {
     auto *dialog = recoveryDialogs.value(key).data(); if (!dialog || !entries.contains(key)) return;
@@ -584,10 +628,10 @@ void Window::updateRecovery(const QString &key, const QString &result) {
 }
 void Window::dispatchRecovery(const QString &key) {
     auto *dialog = recoveryDialogs.value(key).data();
-    if (!dialog || !pending.value(key).valid()) return;
+    if (!dialog || !failedApps.contains(key) || !recoveryReady.contains(key)) return;
     const auto preferences = launchChoices.value(key); auto &done = recoveryActions[key];
     const QString library = "import:" + pending.value(key).expectedIn;
-    const bool copy = preferences.importLibrary && !done.contains(library) && hasMountedSource() && !runningApps.contains(key) && !importRunning;
+    const bool copy = pending.value(key).valid() && preferences.importLibrary && !done.contains(library) && hasMountedSource() && !runningApps.contains(key) && !importRunning;
     const bool report = preferences.report && !done.contains("report");
     const bool ai = preferences.ai && !done.contains("ai");
     if (copy) done.insert(library); if (report) done.insert("report"); if (ai) done.insert("ai");

@@ -102,11 +102,17 @@ session trash moves without overwriting an existing app; copies remain recoverab
 on disk after closing the launcher. The macOS source is never deleted.
 
 Before launching an app, choose recovery actions for missing dependencies: private
-macOS library imports, an issue draft, or a background AI source fix. The confirmation
-can remember your choices; change them in **Settings → Launch recovery preferences…**.
+macOS library imports, an issue draft, or a background AI source fix. Recovery
+preferences appear again for every failed launch unless remembered,
+including process startup errors and failures without a diagnosed dependency.
+The confirmation can remember your choices; change them in
+**Settings → Launch recovery preferences…**.
 The macOS import option appears only when the selected source matches a readable,
 usable mounted volume. Otherwise **Mount or select macOS source…** opens the existing
-explicit mount chooser and cancels the pending launch. No partition is guessed.
+explicit mount chooser and cancels the pending launch. If successful partition
+discovery finds no APFS/HFS partition and no usable macOS mount is present, library
+import stays visible but disabled with an explanation. Discovery errors retain the
+mount chooser rather than claiming that macOS is absent. No partition is guessed.
 
 A missing library or symbol opens an app-specific recovery popup. **Show details**
 reveals loader output and provenance there; the main window keeps only app status
@@ -115,7 +121,8 @@ private prefix, records its source and retries with the original launch choices.
 A stalled launch requires explicit prefix shutdown before importing. Copied-library
 outcomes and contribution explanations remain in the popup.
 
-Report prepares a completed editable issue draft. The authenticated GitHub account
+Report prepares a completed editable issue draft targeting **VibeDarling/Darling**
+for central triage. The target is fixed. The authenticated GitHub account
 is used only after **Approve completed issue and submit**. Saving or selecting a
 report option alone never submits it.
 

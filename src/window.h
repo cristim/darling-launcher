@@ -62,8 +62,14 @@ private:
     QMap<QString, QString> recoveryOutcomes;
     QMap<QString, QSet<QString>> recoveryActions;
     void dispatchRecovery(const QString &key);
-    bool confirmLaunch(const QString &key);
+    bool confirmLaunch(const QString &key, bool failed = false);
+    void recoverFailure(const QString &key);
+    QSet<QString> failurePreferencesShown, recoveryReady;
     bool hasMountedSource() const;
+    bool hasPossibleMacOSSource() const;
+    void discoverMacPartitions();
+    QProcess *partitionDiscovery = nullptr;
+    bool macPartitionsPossible = true;
     QJsonObject diagnostic(const QString &key) const;
     void showRecovery(const QString &key);
     void updateRecovery(const QString &key, const QString &result = {});

@@ -42,15 +42,17 @@ struct RecoveryChoices {
 class LaunchChoicesDialog : public QDialog {
     Q_OBJECT
 public:
-    LaunchChoicesDialog(const QString &app, bool mounted, QWidget *parent = nullptr);
+    LaunchChoicesDialog(const QString &app, bool mounted, QWidget *parent = nullptr, bool failed = false);
     RecoveryChoices choices() const;
     void setMounted(bool mounted);
+    void setSourceAvailability(bool mounted, bool possible);
 signals:
     void mountRequested();
 private:
     QCheckBox *copy, *report, *ai, *remember;
     QComboBox *agent;
     QPushButton *mount;
+    bool macOSPossible = true;
 };
 namespace LauncherTroubleshooting {
 RecoveryChoices recoveryChoices();
