@@ -59,9 +59,12 @@ struct PrProposal {
 };
 namespace LauncherTroubleshooting {
 QString verificationFile(const QString &workspace, const QString &commit);
+QString verificationMac(const QString &workspace, const QString &commit, bool verified);
 QStringList agents();
 QStringList agentArguments(const QString &agent, const QString &prompt);
-struct AgentAccess { QStringList directories; QString launcher; };
+struct AgentAccess { QStringList directories; QStringList tools; };
+struct AgentTools { QString directory, run, build, deploy, error; bool valid() const { return error.isEmpty(); } };
+AgentTools prepareAgentTools(const QJsonObject &diagnostic, const QString &workspace, const QString &clone);
 QStringList backgroundArguments(const QString &agent, const QString &prompt, const AgentAccess &access = {});
 PrProposal reviewProposal(const QString &file);
 }

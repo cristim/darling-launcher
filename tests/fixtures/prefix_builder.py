@@ -45,7 +45,7 @@ elif args.command == "checkout-nested":
     shutil.copyfile(args.lock, workspace / "nested.refs.lock.json")
     (workspace / "nested.integrated.json").write_text("[]")
 elif args.command == "build":
-    with open("/tmp/agent-locks/darling-heavy-build.lock", "a") as shared_lock:
+    with open(os.environ.get("DARLING_LAUNCHER_LOCK_DIR", "/tmp/agent-locks") + "/darling-heavy-build.lock", "a") as shared_lock:
         try:
             fcntl.flock(shared_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

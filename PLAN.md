@@ -145,3 +145,11 @@ error, or exit 0. The result is saved as LAUNCHER-VERIFICATION.json with the pat
 reviewProposal refuses a proposal that is unverified or whose commit changed. Only a verified
 fix triggers the "review the PR draft now?" offer; submission still needs approval of the
 completed draft.
+
+Runtime choice: the launcher uses only the runtime it built (under <data>/workspaces) or one
+the user adopts explicitly; an installed /usr or /opt darling is not adopted automatically.
+Agent access: the agent works in the imported prefix through launcher-written scripts in
+<data>/agent-tools/<id> (run-in-prefix.sh, build.sh, deploy.sh with backup/change log); its
+source is a git worktree on <data>/sources/vibedarling; Claude gets a narrow tool allowlist.
+Verification records carry an HMAC with a launcher-private key. Tests use an isolated lock
+directory (DARLING_LAUNCHER_LOCK_DIR) so they never wait on other sessions' builds.

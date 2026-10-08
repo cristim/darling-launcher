@@ -44,7 +44,7 @@ class GuiTest : public QObject {
     static void dropSelected(Window &window, QListWidget *) { emit window.findChild<ImportedBrowser *>("importedApps")->bundlesDropped(window.findChild<AppBrowser *>("availableApps")->selectedBundles()); }
     QTemporaryDir isolatedHome;
 private slots:
-    void init() { QVERIFY(isolatedHome.isValid()); const QString home = isolatedHome.path() + "/" + QString::number(qHash(QString(QTest::currentTestFunction()) + QTest::currentDataTag())); QVERIFY(QDir().mkpath(home)); qputenv("HOME", home.toUtf8()); }
+    void init() { QVERIFY(isolatedHome.isValid()); const QString home = isolatedHome.path() + "/" + QString::number(qHash(QString(QTest::currentTestFunction()) + QTest::currentDataTag())); QVERIFY(QDir().mkpath(home)); qputenv("HOME", home.toUtf8()); qputenv("DARLING_LAUNCHER_LOCK_DIR", (isolatedHome.path() + "/locks").toUtf8()); }
     void workspacePreferencesAndEmptyStates() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         QSettings settings("cristim", "darling-launcher"); settings.clear();

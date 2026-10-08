@@ -56,9 +56,9 @@ private slots:
         QVERIFY(write("gh", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + temporary.path().toUtf8() + "/gh-calls'\nif [ \"$1\" = issue ]; then while [ \"$#\" -gt 0 ]; do if [ \"$1\" = --body-file ]; then /usr/bin/cat \"$2\" > '" + temporary.path().toUtf8() + "/approved-body'; fi; shift; done; echo https://example.invalid/issues/1; fi\n"));
         qputenv("PATH", temporary.path().toUtf8());
         QVERIFY(LauncherTroubleshooting::backgroundArguments("codex", "test").contains("workspace-write")); QCOMPARE(LauncherTroubleshooting::backgroundArguments("claude", "test").first(), "--print"); QCOMPARE(LauncherTroubleshooting::backgroundArguments("opencode", "test").first(), "run"); QVERIFY(LauncherTroubleshooting::backgroundArguments("unknown", "test").isEmpty());
-        { const auto args = LauncherTroubleshooting::backgroundArguments("claude", "the prompt", {{"/clone", "/prefix"}, "/usr/local/bin/darling"});
+        { const auto args = LauncherTroubleshooting::backgroundArguments("claude", "the prompt", {{"/clone", "/prefix"}, {"Bash(git -C /clone:*)", "Bash(/tools/run.sh:*)"}});
           QCOMPARE(args.last(), "the prompt"); QCOMPARE(args.at(args.size() - 2), "--"); QVERIFY(args.indexOf("--add-dir") >= 0); QVERIFY(args.contains("/clone")); QVERIFY(args.contains("/prefix"));
-          const QString tools = args.at(args.indexOf("--allowedTools") + 1); QVERIFY(tools.contains("Bash(git:*)")); QVERIFY(tools.contains("Bash(/usr/local/bin/darling:*)")); QVERIFY(!tools.contains("Bash(rm")); }
+          const QString tools = args.at(args.indexOf("--allowedTools") + 1); QVERIFY(tools.contains("Bash(git -C /clone:*)")); QVERIFY(tools.contains("Bash(/tools/run.sh:*)")); QVERIFY(!tools.contains("Bash(env")); QVERIFY(!tools.contains("Bash(cp")); QVERIFY(!tools.contains("Bash(git:*)")); }
         QWidget owner; owner.show();
         const QString prefix = temporary.path() + "/prefix", source = temporary.path() + "/source"; QVERIFY(QDir().mkpath(prefix)); QVERIFY(QDir().mkpath(source));
         QJsonObject data{{"app", "Fixture"}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}, {"sourceBundle", "Applications/Fixture.app"}, {"prefix", prefix}, {"sourceVolume", source}, {"launcher", "/fake/darling"}, {"missingLibrary", "/usr/lib/fixture.dylib"}, {"missingSymbol", "_Fixture"}, {"sourceMounted", true}, {"loaderOutput", "Symbol not found: _Fixture"}};
@@ -155,7 +155,9 @@ private slots:
         QFile forged(workspace + "/LAUNCHER-VERIFICATION.json"); QVERIFY(forged.open(QIODevice::WriteOnly)); forged.write(QJsonDocument(QJsonObject{{"verified", true}, {"proposalCommit", "reviewed-sha"}}).toJson()); forged.close();
         QVERIFY(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).error.contains("until the fix is verified"));
         const QString recorded = LauncherTroubleshooting::verificationFile(workspace, "stale-sha"); QVERIFY(QDir().mkpath(QFileInfo(recorded).absolutePath()));
-        QFile verification(LauncherTroubleshooting::verificationFile(workspace, "reviewed-sha")); QVERIFY(verification.open(QIODevice::WriteOnly)); verification.write(QJsonDocument(QJsonObject{{"verified", true}, {"proposalCommit", "reviewed-sha"}}).toJson()); verification.close();
+        QFile verification(LauncherTroubleshooting::verificationFile(workspace, "reviewed-sha")); QVERIFY(verification.open(QIODevice::WriteOnly)); verification.write(QJsonDocument(QJsonObject{{"verified", true}, {"proposalCommit", "reviewed-sha"}, {"mac", "forged"}}).toJson()); verification.close();
+        QVERIFY(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).error.contains("until the fix is verified"));
+        QVERIFY(verification.open(QIODevice::WriteOnly)); verification.write(QJsonDocument(QJsonObject{{"verified", true}, {"proposalCommit", "reviewed-sha"}, {"mac", LauncherTroubleshooting::verificationMac(workspace, "reviewed-sha", true)}}).toJson()); verification.close();
         QVERIFY2(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).valid(), qPrintable(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).error));
         auto *timer = new QTimer(&dialog); timer->setInterval(10); bool approved = false;
         connect(timer, &QTimer::timeout, &dialog, [&] { if (auto *approval = dialog.findChild<QDialog *>("prApprovalDialog")) { timer->stop(); if (approved) approval->findChild<QPushButton *>("approveCompletedPr")->click(); else approval->reject(); } });

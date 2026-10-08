@@ -24,7 +24,7 @@ private slots:
         QFile log(LauncherLog::path()); QVERIFY(log.open(QIODevice::ReadOnly)); const QString text = QString::fromUtf8(log.readAll());
         QVERIFY(text.contains("[test] first line")); QVERIFY(text.contains("[test] second line"));
     }
-    void initTestCase() { QVERIFY(isolatedHome.isValid()); qputenv("HOME", isolatedHome.path().toUtf8()); }
+    void initTestCase() { QVERIFY(isolatedHome.isValid()); qputenv("HOME", isolatedHome.path().toUtf8()); qputenv("DARLING_LAUNCHER_LOCK_DIR", (isolatedHome.path() + "/locks").toUtf8()); }
     void independentClone() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString git = QStandardPaths::findExecutable("git"); QVERIFY(!git.isEmpty());

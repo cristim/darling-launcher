@@ -125,8 +125,9 @@ void PrefixBuilder::run(Phase next, const QStringList &arguments) {
     QStringList args{"-u", scriptSnapshot}; args.append(arguments);
     if (next == Phase::Build) {
         const QString flock = QStandardPaths::findExecutable("flock");
-        if (flock.isEmpty() || !QDir().mkpath("/tmp/agent-locks")) { fail("Cannot acquire the shared Darling heavy-build lock; install flock and check the lock directory."); return; }
-        process.start(flock, QStringList{"-w", "600", "/tmp/agent-locks/darling-heavy-build.lock", request.python} + args);
+        const QString lockDirectory = qEnvironmentVariable("DARLING_LAUNCHER_LOCK_DIR", "/tmp/agent-locks");
+        if (flock.isEmpty() || !QDir().mkpath(lockDirectory)) { fail("Cannot acquire the shared Darling heavy-build lock; install flock and check the lock directory."); return; }
+        process.start(flock, QStringList{"-w", "600", lockDirectory + "/darling-heavy-build.lock", request.python} + args);
     } else process.start(request.python, args);
 }
 void PrefixBuilder::advance() {
