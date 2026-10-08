@@ -186,6 +186,7 @@ private slots:
         browser.setImportedBundles({"Applications/B.app"}); browser.setFilter(AppBrowser::Filter::Imported);
         QVERIFY(browser.item(0)->isHidden()); QVERIFY(!browser.item(1)->isHidden());
         browser.selectAll(); QCOMPARE(browser.selectedBundles(), QStringList{"Applications/B.app"});
+        browser.setFilter(AppBrowser::Filter::NotImported); QVERIFY(!browser.item(0)->isHidden()); QVERIFY(browser.item(1)->isHidden());
         browser.setSearch({}); browser.setAppState("Applications/C.app", AppBrowser::Filter::Failed); browser.setFilter(AppBrowser::Filter::Failed);
         QVERIFY(!browser.item(2)->isHidden()); QVERIFY(browser.item(1)->isHidden());
         browser.setAppState("Applications/C.app", AppBrowser::Filter::Running); QVERIFY(browser.item(2)->isHidden());

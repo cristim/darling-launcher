@@ -116,7 +116,8 @@ void AppBrowser::applyFilter() {
     for (int i = 0; i < count(); ++i) {
         auto *entry = item(i);
         const bool match = entry->data(NameRole).toString().contains(search.trimmed(), Qt::CaseInsensitive);
-        const bool state = filter == Filter::All || (filter == Filter::Imported ? importedBundles.contains(entry->data(Qt::UserRole).toString()) : entry->data(StateRole).toInt() == int(filter));
+        const bool imported = importedBundles.contains(entry->data(Qt::UserRole).toString());
+        const bool state = filter == Filter::All || (filter == Filter::Imported ? imported : filter == Filter::NotImported ? !imported : entry->data(StateRole).toInt() == int(filter));
         entry->setHidden(!match || !state);
         if (entry->isHidden()) entry->setSelected(false); else ++visible;
     }

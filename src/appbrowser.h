@@ -12,7 +12,7 @@ public:
     void setGridView(bool grid);
     void setSorting(bool bySize, bool descending);
     QStringList selectedBundles() const;
-    enum class Filter { All, Imported, Running, Failed };
+    enum class Filter { All, Imported, Running, Failed, NotImported };
     void setSearch(const QString &query);
     void setFilter(Filter filter);
     void setImportedBundles(const QStringList &bundles);

@@ -208,14 +208,15 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     group->addButton(list); group->addButton(grid); views->addWidget(list); views->addWidget(grid);
     auto *sort = new QComboBox; sort->setObjectName("appSort"); sort->addItems({"Name A–Z", "Name Z–A", "Size smallest first", "Size largest first"}); views->addWidget(sort); sourceLayout->addLayout(views);
     auto *sourceSearch = new QLineEdit; sourceSearch->setObjectName("sourceSearch"); sourceSearch->setPlaceholderText("Search available apps"); sourceSearch->setClearButtonEnabled(true); sourceLayout->addWidget(sourceSearch);
-    auto *sourceFilter = new QComboBox; sourceFilter->setObjectName("sourceFilter"); sourceFilter->addItems({"All apps", "Already imported"}); sourceLayout->addWidget(sourceFilter);
+    auto *sourceFilter = new QComboBox; sourceFilter->setObjectName("sourceFilter"); sourceFilter->addItems({"Not yet imported", "All apps"}); sourceLayout->addWidget(sourceFilter);
     sourceEmpty = new QLabel("Select a mounted macOS source in Settings, then choose apps to import."); sourceEmpty->setObjectName("sourceEmptyState"); sourceEmpty->setWordWrap(true); sourceLayout->addWidget(sourceEmpty);
     auto *chooseSource = new QPushButton("Choose macOS source…"); chooseSource->setObjectName("emptyChooseSource"); sourceLayout->addWidget(chooseSource);
     connect(chooseSource, &QPushButton::clicked, settingsButton, &QPushButton::click);
     available = new AppBrowser; available->setObjectName("availableApps"); sourceLayout->addWidget(available);
-    connect(available, &AppBrowser::visibleAppsChanged, this, [this, chooseSource](int count) { sourceEmpty->setVisible(count == 0); chooseSource->setVisible(count == 0 && volume->text().isEmpty()); sourceEmpty->setText(count > 0 ? QString() : available->count() > 0 ? "No apps match this search or filter." : volume->text().isEmpty() ? "No macOS source selected. Choose an existing readable mount in Settings, or explicitly mount a volume." : "No apps found on this source. Check the selected volume in Settings."); });
+    connect(available, &AppBrowser::visibleAppsChanged, this, [this, chooseSource](int count) { sourceEmpty->setVisible(count == 0); chooseSource->setVisible(count == 0 && volume->text().isEmpty()); sourceEmpty->setText(count > 0 ? QString() : available->count() > 0 ? "No apps to show. Everything may already be imported; choose All apps to see the full list." : volume->text().isEmpty() ? "No macOS source selected. Choose an existing readable mount in Settings, or explicitly mount a volume." : "No apps found on this source. Check the selected volume in Settings."); });
     connect(sourceSearch, &QLineEdit::textChanged, available, &AppBrowser::setSearch);
-    connect(sourceFilter, &QComboBox::currentIndexChanged, this, [this](int index) { available->setFilter(index == 1 ? AppBrowser::Filter::Imported : AppBrowser::Filter::All); });
+    connect(sourceFilter, &QComboBox::currentIndexChanged, this, [this](int index) { available->setFilter(index == 0 ? AppBrowser::Filter::NotImported : AppBrowser::Filter::All); });
+    available->setFilter(AppBrowser::Filter::NotImported);
     auto *selectionHint = new QLabel("Ctrl+A selects all · Ctrl-click toggles · Shift-click selects a range"); selectionHint->setWordWrap(true); sourceLayout->addWidget(selectionHint);
     connect(list, &QPushButton::clicked, this, [this] { available->setGridView(false); apps->setGridView(false); QSettings("cristim", "darling-launcher").setValue("gridView", false); });
     connect(grid, &QPushButton::clicked, this, [this] { available->setGridView(true); apps->setGridView(true); QSettings("cristim", "darling-launcher").setValue("gridView", true); });
