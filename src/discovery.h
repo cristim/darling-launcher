@@ -12,6 +12,7 @@ QString helperExecutable(const QStringList &roots, const QString &name);
 
 QStringList roots();
 QString defaultVolume(const QStringList &mounts, const QString &current);
+QStringList updateArguments(const QString &clone);
 QStringList cloneArguments(const QString &repository, const QString &destination);
 QStringList scripts(const QStringList &roots);
 QStringList sources(const QStringList &roots);

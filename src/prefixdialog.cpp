@@ -74,9 +74,23 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
     };
     connect(build, &QPushButton::clicked, this, [=] {
         if (script.isEmpty() || !QFileInfo(script).isFile()) { status->setText("The bundled prefix builder could not be written under " + data + "/tools."); return; }
-        if (QFileInfo(source).isDir()) { startBuild(); return; }
         QString git = QStandardPaths::findExecutable("git");
         if (git.isEmpty()) { status->setText("Install Git to clone VibeDarling."); return; }
+        if (QFileInfo(source).isDir()) {
+            auto *update = new QProcess(this); update->setProcessChannelMode(QProcess::MergedChannels);
+            build->setEnabled(false); background->setEnabled(true); progress->setRange(0, 0);
+            status->setText("Updating the VibeDarling clone in " + source);
+            connect(update, &QProcess::readyReadStandardOutput, this, [=] { output->insertPlainText(QString::fromUtf8(update->readAllStandardOutput())); });
+            auto updated = [=](bool success) {
+                build->setEnabled(true); progress->setRange(0, 1); progress->setValue(success);
+                if (success) startBuild(); else { status->setText("The VibeDarling clone could not be fast-forwarded to the current master. See output; resolve it in " + source + " and build again."); reopen(false); emit failed("The VibeDarling clone could not be updated."); }
+                update->deleteLater();
+            };
+            connect(update, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) { updated(code == 0 && exit == QProcess::NormalExit); });
+            connect(update, &QProcess::errorOccurred, this, [=](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) updated(false); });
+            update->start(git, LauncherDiscovery::updateArguments(source));
+            return;
+        }
         if (!QDir().mkpath(QFileInfo(source).absolutePath())) { status->setText("Cannot create " + QFileInfo(source).absolutePath()); return; }
         auto *process = new QProcess(this); process->setProcessChannelMode(QProcess::MergedChannels);
         build->setEnabled(false); background->setEnabled(true); progress->setRange(0, 0);

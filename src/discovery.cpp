@@ -9,6 +9,7 @@
 #include <QSettings>
 namespace LauncherDiscovery {
 QStringList cloneArguments(const QString &repository, const QString &destination) { return {"clone", "--progress", "--", repository, destination}; }
+QStringList updateArguments(const QString &clone) { return {"-C", clone, "pull", "--ff-only", "--progress"}; }
 QString defaultVolume(const QStringList &mounts, const QString &current) { return mounts.size() == 1 ? mounts.first() : current; }
 QString dataRoot() { return QDir::homePath() + "/.darling-launcher"; }
 QStringList roots() { return {dataRoot() + "/workspaces"}; }

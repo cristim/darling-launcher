@@ -627,7 +627,7 @@ private slots:
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         QString fakeGit = temporary.path() + "/git";
         QFile git(fakeGit); QVERIFY(git.open(QIODevice::WriteOnly));
-        git.write("#!/bin/sh\nif [ \"$1\" = clone ]; then mkdir -p \"$5\"; echo cloned fixture; exit 0; fi\nexit 1\n"); git.close();
+        git.write("#!/bin/sh\nif [ \"$1\" = clone ]; then mkdir -p \"$5\"; echo cloned fixture; exit 0; fi\nif [ \"$3\" = pull ]; then echo updated >> \"$HOME/pulls\"; exit 0; fi\nexit 1\n"); git.close();
         QVERIFY(git.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
         QByteArray originalPath = qgetenv("PATH"); auto restore = qScopeGuard([originalPath] { qputenv("PATH", originalPath); }); qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath);
         Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py"); window.show();
@@ -638,12 +638,17 @@ private slots:
         dialog->findChild<QPushButton *>("buildPrefix")->click();
         QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLineEdit *>("prefixField")->text(), workspace + "/prefix", 5000);
         QVERIFY(QFileInfo(source).isDir()); QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), workspace + "/image/usr/local");
+        QVERIFY(!QFileInfo::exists(QDir::homePath() + "/pulls"));
+        window.findChild<QPushButton *>("Create prefix")->click(); dialog = window.findChild<PrefixDialog *>(); dialog->findChild<QPushButton *>("buildPrefix")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(QDir::homePath() + "/pulls"), 5000);
         qputenv("PATH", originalPath);
     }
     void prefixBuilderRuntimeSelection() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         QString source = QDir::homePath() + "/.darling-launcher/sources/vibedarling"; QVERIFY(QDir().mkpath(source));
+        QFile git(temporary.path() + "/git"); QVERIFY(git.open(QIODevice::WriteOnly)); git.write("#!/bin/sh\nexit 0\n"); git.close(); QVERIFY(git.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        const QByteArray originalPath = qgetenv("PATH"); auto restore = qScopeGuard([originalPath] { qputenv("PATH", originalPath); }); qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath);
         Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py"); window.show();
         window.findChild<QLineEdit *>("volumeField")->clear();
         window.findChild<QPushButton *>("Create prefix")->click();
