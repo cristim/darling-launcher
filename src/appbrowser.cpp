@@ -44,11 +44,12 @@ public:
         const int lineHeight = option.fontMetrics.height();
         const bool listMode = browser->viewMode() == QListView::ListMode;
         if (gridStatus) content.rect.adjust(0, 0, 0, -lineHeight - 2);
-        if (listMode) content.rect.adjust(0, 0, -SortHeader::SizeColumnWidth, 0);
+        const int statusW = browser->statusColumnWidth();
+        if (listMode) content.rect.adjust(0, 0, -(SortHeader::SizeColumnWidth + statusW), 0);
         QStyledItemDelegate::paint(painter, content, index);
         if (listMode) {
             painter->save(); painter->setPen(option.palette.color(option.state & QStyle::State_Selected ? QPalette::HighlightedText : QPalette::Text));
-            painter->drawText(QRect(option.rect.right() - SortHeader::SizeColumnWidth, option.rect.top(), SortHeader::SizeColumnWidth - 8, option.rect.height()), Qt::AlignRight | Qt::AlignVCenter, QLocale().formattedDataSize(index.data(SizeRole).toLongLong(), 1, QLocale::DataSizeSIFormat));
+            painter->drawText(QRect(option.rect.right() - statusW - SortHeader::SizeColumnWidth, option.rect.top(), SortHeader::SizeColumnWidth - 8, option.rect.height()), Qt::AlignRight | Qt::AlignVCenter, QLocale().formattedDataSize(index.data(SizeRole).toLongLong(), 1, QLocale::DataSizeSIFormat));
             painter->restore();
         }
         if (gridStatus) {
@@ -59,7 +60,8 @@ public:
         if (state != AppBrowser::State::Importing && state != AppBrowser::State::Launching && state != AppBrowser::State::Running && state != AppBrowser::State::Failed) return;
         const QColor color = state == AppBrowser::State::Failed ? QColor(200, 65, 65) : state == AppBrowser::State::Running ? QColor(45, 160, 85) : QColor(65, 125, 215);
         painter->save(); painter->setPen(Qt::NoPen); painter->setBrush(color);
-        painter->drawEllipse(QRect(option.rect.right() - 14, option.rect.top() + 4, 8, 8));
+        if (listMode && statusW > 0) painter->drawEllipse(QRect(option.rect.right() - statusW / 2 - 5, option.rect.center().y() - 5, 10, 10));
+        else painter->drawEllipse(QRect(option.rect.right() - 14, option.rect.top() + 4, 8, 8));
         if (state == AppBrowser::State::Importing) {
             const int percent = index.data(ProgressRole).toInt();
             if (percent >= 0) painter->drawRect(QRect(option.rect.left() + 3, option.rect.bottom() - 3, (option.rect.width() - 6) * percent / 100, 3));
@@ -86,7 +88,7 @@ QList<QRect> AppBrowser::contentRects(const QModelIndex &index) const {
     const QFontMetrics metrics = fontMetrics();
     if (viewMode() == QListView::ListMode) {
         const QString text = index.data(Qt::DisplayRole).toString() + "    · " + index.data(StatusRole).toString();
-        return {QRect(cell.left(), cell.top(), 12 + iconSize().width() + metrics.horizontalAdvance(text), cell.height()), QRect(cell.right() - SortHeader::SizeColumnWidth, cell.top(), SortHeader::SizeColumnWidth, cell.height())};
+        return {QRect(cell.left(), cell.top(), 12 + iconSize().width() + metrics.horizontalAdvance(text), cell.height()), QRect(cell.right() - statusWidth - SortHeader::SizeColumnWidth, cell.top(), SortHeader::SizeColumnWidth, cell.height())};
     }
     const int textWidth = qMin(cell.width(), metrics.horizontalAdvance(index.data(Qt::DisplayRole).toString()) + 8);
     const QRect icon(cell.center().x() - iconSize().width() / 2, cell.top(), iconSize().width(), iconSize().height() + 8);
@@ -276,11 +278,12 @@ void TrashTarget::dropEvent(QDropEvent *event) {
     if (!bundles.isEmpty()) { event->acceptProposedAction(); emit bundlesDropped(bundles); }
 }
 
-SortHeader::SortHeader(QWidget *parent) : QWidget(parent) {
+SortHeader::SortHeader(QWidget *parent, bool withStatus) : QWidget(parent) {
     auto *layout = new QHBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(0);
     nameButton = new QPushButton; nameButton->setObjectName("sortByName"); nameButton->setFlat(true); nameButton->setStyleSheet("text-align: left; font-weight: bold; padding-left: 40px;");
     sizeButton = new QPushButton; sizeButton->setObjectName("sortBySize"); sizeButton->setFlat(true); sizeButton->setFixedWidth(SizeColumnWidth); sizeButton->setStyleSheet("text-align: right; font-weight: bold; padding-right: 8px;");
     layout->addWidget(nameButton, 1); layout->addWidget(sizeButton);
+    if (withStatus) { auto *status = new QLabel("Status"); status->setObjectName("statusHeader"); status->setAlignment(Qt::AlignCenter); status->setFixedWidth(StatusColumnWidth); status->setStyleSheet("font-weight: bold;"); layout->addWidget(status); }
     connect(nameButton, &QPushButton::clicked, this, [this] { setSort(false, !sizeColumn && !reverse); });
     connect(sizeButton, &QPushButton::clicked, this, [this] { setSort(true, sizeColumn && !reverse); });
     refreshLabels();

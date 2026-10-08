@@ -142,6 +142,11 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     int actionCount = 0, settingsActionCount = 0;
     auto add = [&](const QString &title, auto callback) {
         auto *button = new QPushButton(title == "Create prefix" ? "Build and deploy Darling…" : title); button->setObjectName(title);
+        if (title == "Scan volume" || title == "Stop selected prefix processes" || title == "Troubleshoot failed app…") {
+            button->setText({}); button->setToolTip(title == "Scan volume" ? "Rescan the macOS volume" : title == "Stop selected prefix processes" ? "Stop all processes in this prefix" : "Troubleshoot this failed app"); button->setFixedSize(26, 26); button->setParent(this); button->hide();
+            connect(button, &QPushButton::clicked, this, callback);
+            return button;
+        }
         bool setting = title == "Create prefix" || title == "Initialize selected prefix" || title == "Detect mounted macOS volumes" || title == "Mount macOS source…" || title == "Stop background agents" || title == "Launch recovery preferences…";
         int &count = setting ? settingsActionCount : actionCount;
         (setting ? settingsToolbar : toolbar)->addWidget(button, count / 3, count % 3); ++count;
@@ -169,7 +174,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         }
         runCommand("Initialize prefix", {"shell", "/usr/bin/true"});
     });
-    add("Scan volume", [this] {
+    auto *scanButton = add("Scan volume", [this] {
         if (!QFileInfo(volume->text()).isDir()) { setBusy(false, "No mounted macOS source selected."); return; }
         refresh(); load();
     });
@@ -187,8 +192,8 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         }
         mountDialog->show(); mountDialog->raise(); mountDialog->activateWindow();
     });
-    add("Stop selected prefix processes", [this] { runCommand("Stop prefix", {"shutdown"}); });
-    troubleshoot = add("Troubleshoot failed app…", [this] { openTroubleshooting(); }); troubleshoot->hide();
+    auto *stopButton = add("Stop selected prefix processes", [this] { runCommand("Stop prefix", {"shutdown"}); });
+    troubleshoot = add("Troubleshoot failed app…", [this] { openTroubleshooting(); });
     add("Install Brewfile", [this] {
         QString source = QFileDialog::getOpenFileName(this, "Select Brewfile"); if (source.isEmpty()) return;
         QString p = prefix->text();
@@ -239,7 +244,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     };
     auto *availableHeader = new SortHeader; availableHeader->setObjectName("availableSortHeader");
     available = new AppBrowser; available->setObjectName("availableApps");
-    { auto *row = new QHBoxLayout; row->addWidget(sourceSearch, 1); row->addWidget(sourceFilter); row->addWidget(viewButtons(available, "", "gridView")); sourceLayout->addLayout(row); }
+    { auto *row = new QHBoxLayout; row->addWidget(sourceSearch, 1); row->addWidget(sourceFilter); row->addWidget(viewButtons(available, "", "gridView")); scanButton->setIcon(style()->standardIcon(QStyle::SP_BrowserReload)); row->addWidget(scanButton); scanButton->show(); sourceLayout->addLayout(row); }
     sourceLayout->addWidget(availableHeader); sourceLayout->addWidget(available);
     connect(available, &AppBrowser::visibleAppsChanged, this, [this, chooseSource](int count) { sourceEmpty->setVisible(count == 0); chooseSource->setVisible(count == 0 && volume->text().isEmpty()); sourceEmpty->setText(count > 0 ? QString() : available->count() > 0 ? "No apps to show. Everything may already be imported; choose All apps to see the full list." : volume->text().isEmpty() ? "No macOS source selected. Choose an existing readable mount in Settings, or explicitly mount a volume." : "No apps found on this source. Check the selected volume in Settings."); });
     connect(sourceSearch, &QLineEdit::textChanged, available, &AppBrowser::setSearch);
@@ -270,8 +275,10 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         if (!rejected.isEmpty()) statusBar()->showMessage("Only .app folders from the selected macOS volume can be imported: " + rejected.join(", "));
         if (!bundles.isEmpty()) importBundles(bundles);
     });
+    troubleshoot->setParent(apps->viewport()); troubleshoot->setIcon(style()->standardIcon(QStyle::SP_MessageBoxWarning)); troubleshoot->hide();
+    apps->viewport()->setMouseTracking(true); apps->viewport()->installEventFilter(this); troubleshoot->installEventFilter(this);
     connect(apps, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) { launch(item->data(Qt::UserRole).toString()); });
-    auto *importedHeader = new SortHeader; importedHeader->setObjectName("importedSortHeader");
+    auto *importedHeader = new SortHeader(nullptr, true); importedHeader->setObjectName("importedSortHeader"); apps->setStatusColumnWidth(SortHeader::StatusColumnWidth);
     { auto *row = new QHBoxLayout; row->addWidget(appSearch, 1); row->addWidget(appFilter); row->addWidget(viewButtons(apps, "imported", "importedGridView")); importLayout->addLayout(row); }
     importLayout->addWidget(importedHeader); importLayout->addWidget(apps);
     auto sortBy = [](SortHeader *header, AppBrowser *browser, const QString &key) {
@@ -290,7 +297,10 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         for (const auto &receipt : trashedApps) { QString error; if (!LauncherCore::restoreApp(receipt, &error)) { remaining << receipt; QMessageBox::warning(this, "Restore app", error); } }
         trashedApps = remaining; undoTrash->setVisible(!remaining.isEmpty()); trashNotice->setText(remaining.isEmpty() ? "Apps restored" : "Some apps could not be restored"); load();
     });
-    trashRow->addStretch(); auto *trash = new TrashTarget; trash->setObjectName("appTrash"); trashRow->addWidget(trash); importLayout->addLayout(trashRow);
+    trashRow->addStretch();
+    { QPixmap cross(16, 16); cross.fill(Qt::transparent); QPainter painter(&cross); painter.setRenderHint(QPainter::Antialiasing); QPen pen(QColor(200, 65, 65), 2.5); painter.setPen(pen); painter.drawLine(3, 3, 13, 13); painter.drawLine(13, 3, 3, 13); stopButton->setIcon(QIcon(cross)); }
+    trashRow->addWidget(stopButton); stopButton->show();
+    auto *trash = new TrashTarget; trash->setObjectName("appTrash"); trashRow->addWidget(trash); importLayout->addLayout(trashRow);
     connect(trash, &TrashTarget::bundlesDropped, this, [this](const QStringList &bundles) {
         if (importRunning) { QMessageBox::warning(this, "Import in progress", "Finish the current import before removing apps."); return; }
         for (const auto &key : bundles) {
@@ -438,7 +448,6 @@ void Window::updateSourceChoices() {
 
 void Window::updateContribution() {
     const QString key = selectedKey();
-    if (troubleshoot) troubleshoot->setVisible(failedApps.contains(key) || !chains.value(key).isEmpty());
     updateRecovery(key);
 }
 
@@ -773,7 +782,23 @@ void Window::showRecovery(const QString &key) {
     }
     updateRecovery(key); dialog->show(); dialog->raise();
 }
+bool Window::eventFilter(QObject *watched, QEvent *event) {
+    const bool onList = watched == apps->viewport(), onButton = watched == troubleshoot;
+    if ((onList || onButton) && (event->type() == QEvent::MouseMove || event->type() == QEvent::Leave || event->type() == QEvent::Enter)) {
+        QPoint position = apps->viewport()->mapFromGlobal(QCursor::pos());
+        if (event->type() == QEvent::MouseMove) position = static_cast<QMouseEvent *>(event)->position().toPoint() + (onButton ? troubleshoot->pos() : QPoint());
+        const QModelIndex index = apps->indexAt(position);
+        const QString key = index.isValid() ? index.data(Qt::UserRole).toString() : QString();
+        if (!key.isEmpty() && failedApps.contains(key) && apps->viewport()->rect().contains(position)) {
+            hoverKey = key; const QRect cell = apps->visualRect(index);
+            troubleshoot->move(apps->viewMode() == QListView::ListMode ? QPoint(cell.right() - apps->statusColumnWidth() + (apps->statusColumnWidth() - troubleshoot->width()) / 2, cell.center().y() - troubleshoot->height() / 2) : QPoint(cell.right() - troubleshoot->width() - 2, cell.top() + 2));
+            troubleshoot->show(); troubleshoot->raise();
+        } else if (!(onButton && event->type() != QEvent::Leave) && !troubleshoot->underMouse()) { hoverKey.clear(); troubleshoot->hide(); }
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
 void Window::openTroubleshooting() {
+    if (!hoverKey.isEmpty()) for (int row = 0; row < apps->count(); ++row) if (apps->item(row)->data(Qt::UserRole).toString() == hoverKey) { apps->setCurrentRow(row); break; }
     const QString key = selectedKey();
     if (!entries.contains(key) || (!failedApps.contains(key) && chains.value(key).isEmpty())) return;
     showRecovery(key);

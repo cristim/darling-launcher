@@ -15,6 +15,8 @@ public:
     void setGridView(bool grid);
     void setSorting(bool bySize, bool descending);
     QStringList selectedBundles() const;
+    void setStatusColumnWidth(int width) { statusWidth = width; viewport()->update(); }
+    int statusColumnWidth() const { return statusWidth; }
     QRect contentRect(const QModelIndex &index) const;
     QList<QRect> contentRects(const QModelIndex &index) const;
     bool onContent(const QModelIndex &index, const QPoint &point) const;
@@ -28,6 +30,7 @@ public:
 signals:
     void visibleAppsChanged(int count);
 private:
+    int statusWidth = 0;
     QString search;
     Filter filter = Filter::All;
     QStringList importedBundles;
@@ -51,8 +54,9 @@ protected:
 class SortHeader : public QWidget {
     Q_OBJECT
 public:
-    explicit SortHeader(QWidget *parent = nullptr);
+    explicit SortHeader(QWidget *parent = nullptr, bool withStatus = false);
     static constexpr int SizeColumnWidth = 88;
+    static constexpr int StatusColumnWidth = 56;
     void setSort(bool bySize, bool descending);
     bool bySize() const { return sizeColumn; }
     bool descending() const { return reverse; }

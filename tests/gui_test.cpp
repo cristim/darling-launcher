@@ -171,6 +171,10 @@ private slots:
         QTimer::singleShot(0, &window, [] { for (auto *widget : QApplication::topLevelWidgets()) if (auto *box = qobject_cast<QMessageBox *>(widget)) box->accept(); });
         launchSelected(window); QCOMPARE(apps->status("Applications/Fixture.app"), "Failed to start");
         QVERIFY(!window.findChild<QTextEdit *>("failureLog")); QVERIFY(!window.findChild<QLabel *>("failureSummary"));
+        { auto *icon = window.findChild<QPushButton *>("Troubleshoot failed app…"); QVERIFY(!icon->isVisible());
+          QTest::mouseMove(apps->viewport(), QPoint(2000, 2000)); QVERIFY(!icon->isVisible());
+          QTest::mouseMove(apps->viewport(), apps->visualRect(apps->model()->index(0, 0)).center()); QTRY_VERIFY(icon->isVisible());
+          QTest::mouseMove(apps->viewport(), QPoint(apps->viewport()->width() - 2, apps->viewport()->height() - 2)); QTRY_VERIFY(!icon->isVisible()); }
         window.findChild<QPushButton *>("Troubleshoot failed app…")->click(); auto *popup = window.findChild<TroubleshootingDialog *>(); QVERIFY(popup);
         popup->findChild<QPushButton *>("showDependencyDetails")->click(); QVERIFY(popup->findChild<QTextEdit *>("troubleshootingData")->toPlainText().contains("Select an executable"));
         window.findChild<QComboBox *>("appFilter")->setCurrentIndex(1); QVERIFY(apps->item(0)->isHidden()); window.findChild<QComboBox *>("appFilter")->setCurrentIndex(2); QVERIFY(!apps->item(0)->isHidden());

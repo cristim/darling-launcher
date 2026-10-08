@@ -36,6 +36,7 @@ public:
     std::function<void()> detectRuntime;
 protected:
     void closeEvent(QCloseEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 private:
     std::function<QList<SourceMount>()> mountProvider;
     QComboBox *sourceChoices;
@@ -49,6 +50,7 @@ private:
     void notifyDesktop(const QString &title, const QString &body);
     void showQueuedImports();
     QStringList queuedImports;
+    QString hoverKey;
     QHash<QString, QJsonObject> exitInfo;
     QWidget *setupBanner = nullptr;
     QLabel *setupStatus = nullptr;
