@@ -22,7 +22,10 @@ static QStringList candidates(const QStringList &roots) {
 QString helperExecutable(const QStringList &roots, const QString &name) {
     QString installed = QStandardPaths::findExecutable(name);
     if (!installed.isEmpty()) return installed;
-    for (const auto &path : candidates(roots)) {
+    QStringList search;
+    for (const auto &root : roots) search << root + "/apfs-fuse";
+    search += candidates(roots);
+    for (const auto &path : search) {
         QString helper = path + "/build/" + name;
         if (QFileInfo(helper).isExecutable()) return helper;
     }

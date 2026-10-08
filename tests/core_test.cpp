@@ -112,16 +112,19 @@ private slots:
     void appDiscoveryAndImport() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString volume = temporary.path() + "/volume", prefix = temporary.path() + "/prefix";
-        QString app = volume + "/System/Applications/Test.app";
+        QString app = volume + "/System/Applications/Utilities/Test.app";
         QVERIFY(QDir().mkpath(app + "/Contents/MacOS")); QVERIFY(QDir().mkpath(prefix));
         QFile plist(app + "/Contents/Info.plist"); QVERIFY(plist.open(QIODevice::WriteOnly));
         plist.write("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>Test</string></dict></plist>"); plist.close();
         QFile binary(app + "/Contents/MacOS/Test"); QVERIFY(binary.open(QIODevice::WriteOnly)); binary.write("fixture"); binary.close();
-        QCOMPARE(LauncherCore::discoverApps(volume), QStringList{"System/Applications/Test.app"});
+        QVERIFY(QDir().mkpath(app + "/Contents/Helpers/Internal.app"));
+        QVERIFY(QDir().mkpath(temporary.path() + "/outside/Escaped.app"));
+        QVERIFY(QFile::link(temporary.path() + "/outside", volume + "/System/Applications/Escape"));
+        QCOMPARE(LauncherCore::discoverApps(volume), QStringList{"System/Applications/Utilities/Test.app"});
         AppEntry entry; QString error;
-        QVERIFY2(LauncherCore::importApp(volume, prefix, "System/Applications/Test.app", &entry, &error), qPrintable(error));
+        QVERIFY2(LauncherCore::importApp(volume, prefix, "System/Applications/Utilities/Test.app", &entry, &error), qPrintable(error));
         QCOMPARE(entry.executable, "Test");
-        QCOMPARE(entry.sourceRelative, "System/Applications/Test.app");
+        QCOMPARE(entry.sourceRelative, "System/Applications/Utilities/Test.app");
         QVERIFY(QFileInfo::exists(prefix + "/Applications/Test.app/Contents/MacOS/Test"));
     }
 };

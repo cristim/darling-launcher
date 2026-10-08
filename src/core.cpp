@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "core.h"
 #include "sources.h"
+#include <functional>
 #include <QDir>
 #include <QDirIterator>
 #include <QCryptographicHash>
@@ -104,10 +105,20 @@ QStringList mountedMacVolumes() {
 }
 QStringList discoverApps(const QString &volume) {
     QStringList found;
+    const QString root = QFileInfo(volume).canonicalFilePath();
+    if (root.isEmpty()) return found;
+    std::function<void(const QString &)> scan = [&](const QString &relative) {
+        QDir directory(volume + '/' + relative);
+        const QString canonical = QFileInfo(directory.path()).canonicalFilePath();
+        if (!canonical.startsWith(root + '/')) return;
+        for (const auto &item : directory.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks)) {
+            const QString path = relative + '/' + item.fileName();
+            if (item.fileName().endsWith(".app")) found << path;
+            else scan(path);
+        }
+    };
     for (const QString &base : {"Applications", "System/Applications"}) {
-        QDir dir(volume + '/' + base);
-        for (const QFileInfo &item : dir.entryInfoList({"*.app"}, QDir::Dirs | QDir::NoDotAndDotDot))
-            if (!item.isSymLink()) found << base + '/' + item.fileName();
+        scan(base);
     }
     found.sort(Qt::CaseInsensitive);
     return found;

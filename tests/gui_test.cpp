@@ -85,11 +85,11 @@ private slots:
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
         QString first = temporary.path() + "/mounted one", second = temporary.path() + "/mounted two", prefix = temporary.path() + "/prefix";
-        QVERIFY(QDir().mkpath(first + "/System/Applications/Fixture.app/Contents/MacOS"));
+        QVERIFY(QDir().mkpath(first + "/System/Applications/Utilities/Fixture.app/Contents/MacOS"));
         QVERIFY(QDir().mkpath(first + "/System/Library")); QVERIFY(QDir().mkpath(second + "/usr/lib")); QVERIFY(QDir().mkpath(prefix));
-        QFile metadata(first + "/System/Applications/Fixture.app/Contents/Info.plist"); QVERIFY(metadata.open(QIODevice::WriteOnly));
+        QFile metadata(first + "/System/Applications/Utilities/Fixture.app/Contents/Info.plist"); QVERIFY(metadata.open(QIODevice::WriteOnly));
         metadata.write("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>Fixture</string><key>CFBundleDisplayName</key><string>Mounted Fixture</string></dict></plist>"); metadata.close();
-        QFile executable(first + "/System/Applications/Fixture.app/Contents/MacOS/Fixture"); QVERIFY(executable.open(QIODevice::WriteOnly)); executable.write("synthetic private fixture"); executable.close();
+        QFile executable(first + "/System/Applications/Utilities/Fixture.app/Contents/MacOS/Fixture"); QVERIFY(executable.open(QIODevice::WriteOnly)); executable.write("synthetic private fixture"); executable.close();
         QList<SourceMount> records{{first, "/dev/synthetic1", "fuse", true}, {second, "/dev/synthetic1", "fuse", true}};
         QFile lsblk(temporary.path() + "/lsblk"); QVERIFY(lsblk.open(QIODevice::WriteOnly));
         QByteArray json = QJsonDocument(QJsonObject{{"blockdevices", QJsonArray{QJsonObject{{"path", "/dev/synthetic1"}, {"fstype", "apfs"}, {"mountpoints", QJsonArray{first, second}}}}}}).toJson(QJsonDocument::Compact);
@@ -112,6 +112,10 @@ private slots:
         QTRY_VERIFY(QFileInfo::exists(prefix + "/Applications/Fixture.app/Contents/MacOS/Fixture"));
         QVERIFY(!dialog->isMounting());
         records.removeLast(); QTRY_COMPARE_WITH_TIMEOUT(choices->count(), 2, 5000);
+        QSettings("cristim", "darling-launcher").remove("volume");
+        Window startup({}, false, [&records] { return records; }); startup.show();
+        QCOMPARE(startup.findChild<QLineEdit *>("volumeField")->text(), first);
+        QTRY_COMPARE(startup.findChild<QListWidget *>("availableApps")->count(), 1);
         records.clear(); window.findChild<QPushButton *>("Detect mounted macOS volumes")->click(); QCOMPARE(choices->count(), 1);
         auto *refresh = dialog->findChild<QPushButton *>("refreshPartitions"); QVERIFY(refresh); refresh->click(); QTRY_COMPARE(sources->count(), 1); QVERIFY(!dialog->findChild<QPushButton *>("useExistingSource")->isEnabled());
     }

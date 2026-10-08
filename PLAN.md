@@ -1,7 +1,7 @@
 # Darling Launcher implementation plan
 
 1. Build a host Qt application with explicit Darling executable, mounted volume, and prefix fields. Without these, imports or launches could target an unintended installation.
-2. Discover `.app` bundles directly under the selected volume's `Applications` and `System/Applications`; copy only selected bundles into the chosen prefix, rejecting symlinks and path escapes. Store a private local catalog in the prefix.
+2. Discover `.app` bundles under the selected volume's `Applications` and `System/Applications`, including subdirectories but excluding app interiors; copy only selected bundles into the chosen prefix, rejecting symlinks and path escapes. Store a private local catalog in the prefix.
 3. Run each app with its own `QProcess` and `DPREFIX`, stream output and status, and parse dyld's unresolved symbol and expected library from loader output. Offer a confined import from that exact volume path, retry, and append the chain to the local catalog.
 4. Stage a selected Brewfile in the prefix and invoke guest Homebrew only when its executable exists. Show process output and exit status.
 5. Generate a local proposed issue from the chain; give the user a separate opt-in source-fix checklist. No network submission is automatic.

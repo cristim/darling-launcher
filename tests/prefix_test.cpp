@@ -48,6 +48,9 @@ private slots:
         QVERIFY(QDir().mkpath(built + "/build"));
         QVERIFY(QFile::copy(launcher.fileName(), built + "/build/launcher-fixture-helper"));
         QCOMPARE(LauncherDiscovery::helperExecutable({root}, "launcher-fixture-helper"), built + "/build/launcher-fixture-helper");
+        QVERIFY(QDir().mkpath(root + "/apfs-fuse/build"));
+        QVERIFY(QFile::copy(launcher.fileName(), root + "/apfs-fuse/build/launcher-fixture-helper"));
+        QCOMPARE(LauncherDiscovery::helperExecutable({root}, "launcher-fixture-helper"), root + "/apfs-fuse/build/launcher-fixture-helper");
     }
     void cleanBuildSource() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); QString root = temporary.path();
