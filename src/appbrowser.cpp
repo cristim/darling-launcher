@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "appbrowser.h"
+#include "log.h"
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QImageReader>
@@ -220,12 +221,14 @@ ImportedBrowser::ImportedBrowser(QWidget *parent) : AppBrowser(parent) {
 }
 static bool acceptsDrop(const QMimeData *mime) { return mime->hasFormat(bundleMime) || mime->hasUrls(); }
 void ImportedBrowser::dragEnterEvent(QDragEnterEvent *event) {
+    LauncherLog::write("dnd", "drag enter formats=" + event->mimeData()->formats().join(",") + " proposed=" + QString::number(int(event->proposedAction())) + " possible=" + QString::number(int(event->possibleActions())) + " accepted=" + (acceptsDrop(event->mimeData()) ? "yes" : "no"));
     if (acceptsDrop(event->mimeData())) event->acceptProposedAction();
 }
 void ImportedBrowser::dragMoveEvent(QDragMoveEvent *event) {
     if (acceptsDrop(event->mimeData())) event->acceptProposedAction();
 }
 void ImportedBrowser::dropEvent(QDropEvent *event) {
+    LauncherLog::write("dnd", "drop formats=" + event->mimeData()->formats().join(",") + " urls=" + QString::number(event->mimeData()->urls().size()));
     if (!event->mimeData()->hasFormat(bundleMime) && event->mimeData()->hasUrls()) {
         QStringList paths;
         for (const QUrl &url : event->mimeData()->urls()) if (url.isLocalFile()) paths << url.toLocalFile();
