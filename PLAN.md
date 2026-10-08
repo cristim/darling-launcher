@@ -116,3 +116,7 @@ and stop-agents. Prefix, Darling executable, runtime root and detected-runtime f
 are internal state (auto-detected, or set by build/first-run "Select an existing
 runtime" file dialog). Mount dialog: APFS helper paths, batch root and mount directory
 are automatic. Agent source-fix workspace is generated, not edited.
+
+Background builds: while cloning/building, "Continue in the background" (or closing the
+build dialog or the main window) hides the windows; both reappear when the clone or build
+finishes or fails. Quitting remains blocked until then (closing only hides).

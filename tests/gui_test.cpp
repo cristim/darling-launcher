@@ -485,9 +485,9 @@ private slots:
         offer->findChild<QPushButton *>("setupBuildDarling")->click(); auto *builder = window.findChild<PrefixDialog *>(); QVERIFY(builder && builder->isVisible());
         QCOMPARE(builder->findChild<QLabel *>("prefixBuilderSource")->text(), data + "/sources/vibedarling");
         const QString workspace = builder->findChild<QLabel *>("prefixBuilderWorkspace")->text(); QVERIFY(workspace.startsWith(data + "/workspaces/"));
-        builder->findChild<QComboBox *>("prefixBuilderScope")->setCurrentIndex(1); builder->findChild<QPushButton *>("buildPrefix")->click(); QVERIFY(builder->isBusy()); QVERIFY(!window.close()); builder->close(); QVERIFY(builder->isVisible());
+        builder->findChild<QComboBox *>("prefixBuilderScope")->setCurrentIndex(1); builder->findChild<QPushButton *>("buildPrefix")->click(); QVERIFY(builder->isBusy()); QVERIFY(builder->findChild<QPushButton *>("buildInBackground")->isEnabled()); QVERIFY(!window.close()); QVERIFY(!window.isVisible()); builder->close(); QVERIFY(!builder->isVisible());
         QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLineEdit *>("prefixField")->text(), workspace + "/prefix", 5000);
-        QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), workspace + "/build/src/startup/darling"); QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), workspace + "/image/usr/local"); QVERIFY(QFileInfo(data + "/sources/vibedarling").isDir()); QVERIFY(!builder->isBusy());
+        QVERIFY(builder->isVisible()); QVERIFY(window.isVisible()); QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), workspace + "/build/src/startup/darling"); QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), workspace + "/image/usr/local"); QVERIFY(QFileInfo(data + "/sources/vibedarling").isDir()); QVERIFY(!builder->isBusy());
         QVERIFY(QDir().mkpath(workspace + "/image/usr/local/libexec/darling/private/etc")); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); window.offerRuntimeSetup(); QVERIFY(!window.findChild<QDialog *>("firstRunSetup"));
     }
     void bundledBuilderNeedsNoExternalScript() {

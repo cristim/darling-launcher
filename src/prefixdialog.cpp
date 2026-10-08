@@ -35,6 +35,9 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
     auto *progress = new QProgressBar; progress->setRange(0, 1); progress->setValue(0); layout->addWidget(progress);
     auto *output = new QTextEdit; output->setReadOnly(true); layout->addWidget(output);
     auto *build = new QPushButton("Build and deploy private runtime"); build->setObjectName("buildPrefix"); layout->addWidget(build);
+    auto *background = new QPushButton("Continue in the background"); background->setObjectName("buildInBackground"); background->setEnabled(false); layout->addWidget(background);
+    connect(background, &QPushButton::clicked, this, &QDialog::close);
+    auto reopen = [this, background] { background->setEnabled(false); emit finished(); show(); raise(); activateWindow(); };
     auto newWorkspace = [workspaceLabel, data] { QDir().mkpath(data + "/workspaces"); workspaceLabel->setText(LauncherDiscovery::newWorkspace(data + "/workspaces")); };
     newWorkspace();
     QString script = scriptOverride;
@@ -60,11 +63,11 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
         QString message;
         if (!LauncherPrefix::validateRequest(request, &message)) { status->setText(message); return; }
         auto *builder = new PrefixBuilder(this);
-        build->setEnabled(false); progress->setRange(0, 0);
+        build->setEnabled(false); background->setEnabled(true); progress->setRange(0, 0);
         connect(builder, &PrefixBuilder::output, output, &QTextEdit::insertPlainText);
         connect(builder, &PrefixBuilder::phaseChanged, status, &QLabel::setText);
-        connect(builder, &PrefixBuilder::completed, this, [this, builder, build, status, progress](bool success, const QString &message, const QString &prefix, const QString &launcher, const QString &runtime) {
-            status->setText(message); build->setEnabled(true); progress->setRange(0, 1); progress->setValue(success ? 1 : 0); builder->deleteLater();
+        connect(builder, &PrefixBuilder::completed, this, [this, builder, build, status, progress, reopen](bool success, const QString &message, const QString &prefix, const QString &launcher, const QString &runtime) {
+            status->setText(message); build->setEnabled(true); progress->setRange(0, 1); progress->setValue(success ? 1 : 0); builder->deleteLater(); reopen();
             if (success) emit prefixReady(prefix, launcher, runtime);
         });
         builder->start(request);
@@ -76,12 +79,12 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
         if (git.isEmpty()) { status->setText("Install Git to clone VibeDarling."); return; }
         if (!QDir().mkpath(QFileInfo(source).absolutePath())) { status->setText("Cannot create " + QFileInfo(source).absolutePath()); return; }
         auto *process = new QProcess(this); process->setProcessChannelMode(QProcess::MergedChannels);
-        build->setEnabled(false); progress->setRange(0, 0);
+        build->setEnabled(false); background->setEnabled(true); progress->setRange(0, 0);
         status->setText("Cloning https://github.com/VibeDarling/darling.git into " + source);
         connect(process, &QProcess::readyReadStandardOutput, this, [=] { output->insertPlainText(QString::fromUtf8(process->readAllStandardOutput())); });
         auto done = [=](bool success) {
             build->setEnabled(true); progress->setRange(0, 1); progress->setValue(success);
-            if (success) startBuild(); else status->setText("Clone failed. See output; any partial clone is retained for inspection.");
+            if (success) startBuild(); else { status->setText("Clone failed. See output; any partial clone is retained for inspection."); reopen(); }
             process->deleteLater();
         };
         connect(process, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) { done(code == 0 && exit == QProcess::NormalExit); });
@@ -99,4 +102,4 @@ bool PrefixDialog::isBusy() const {
     for (auto *process : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) if (process->state() != QProcess::NotRunning) return true;
     return false;
 }
-void PrefixDialog::done(int result) { if (!isBusy()) QDialog::done(result); }
+void PrefixDialog::done(int result) { if (isBusy()) hide(); else QDialog::done(result); }

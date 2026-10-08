@@ -9,5 +9,6 @@ public:
     bool isBusy() const;
     void done(int result) override;
 signals:
+    void finished();
     void prefixReady(const QString &prefix, const QString &launcher, const QString &runtime);
 };

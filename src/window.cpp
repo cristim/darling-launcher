@@ -272,6 +272,7 @@ void Window::openRuntimeBuilder(bool fresh) {
     if (fresh && prefixDialog && !prefixDialog->isBusy()) { delete prefixDialog; prefixDialog = nullptr; }
     if (!prefixDialog) {
         prefixDialog = new PrefixDialog(volume->text(), prefixBuilderScript, this);
+        connect(prefixDialog, &PrefixDialog::finished, this, [this] { show(); raise(); activateWindow(); });
         connect(prefixDialog, &PrefixDialog::prefixReady, this, [this](const QString &path, const QString &launcher, const QString &runtime) {
             prefix->setText(path); darling->setText(launcher); runtimeRoot->setText(runtime); load();
             QSettings settings("cristim", "darling-launcher"); settings.setValue("prefix", path); settings.setValue("darling", launcher); settings.setValue("runtimeRoot", runtime);
@@ -681,7 +682,7 @@ void Window::openTroubleshooting() {
 }
 
 void Window::closeEvent(QCloseEvent *event) {
-    if (prefixDialog && prefixDialog->isBusy()) { statusBar()->showMessage("Keep the launcher open while Darling is cloning or building."); event->ignore(); return; }
+    if (prefixDialog && prefixDialog->isBusy()) { statusBar()->showMessage("Darling is cloning or building; the launcher continues in the background."); hide(); event->ignore(); return; }
     for (auto *dialog : findChildren<QDialog *>("issueApprovalDialog"))
         for (auto *process : dialog->findChildren<QProcess *>()) if (process->state() != QProcess::NotRunning) { statusBar()->showMessage("Wait for the approved issue submission to finish before closing."); event->ignore(); return; }
     for (auto *job : findChildren<BackgroundFix *>()) if (job->isRunning()) { statusBar()->showMessage("A source-fix agent is running. Finish it or use Settings → Stop background agents before closing."); event->ignore(); return; }
