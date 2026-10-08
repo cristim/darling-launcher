@@ -43,7 +43,14 @@ private:
     QString sourceSignature;
     bool sourceChoicesInitialized = false;
     QString prefixBuilderScript;
-    void openRuntimeBuilder(bool fresh = false);
+    void openRuntimeBuilder(bool fresh = false, bool automatic = false);
+    void offerExistingDarling();
+    void importQueued();
+    void notifyDesktop(const QString &title, const QString &body);
+    void showQueuedImports();
+    QStringList queuedImports;
+    QWidget *setupBanner = nullptr;
+    QLabel *setupStatus = nullptr;
     QLineEdit *volume;
     QLineEdit *prefix;
     QLineEdit *darling;

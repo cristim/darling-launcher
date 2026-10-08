@@ -197,7 +197,16 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     auto *logPath = new QLabel("Diagnostic log (share it when reporting a problem): " + LauncherLog::path()); logPath->setObjectName("logPath"); logPath->setWordWrap(true); logPath->setTextInteractionFlags(Qt::TextSelectableByMouse); settingsLayout->addWidget(logPath); settingsLayout->addStretch();
     auto *closeSettings = new QDialogButtonBox(QDialogButtonBox::Close); settingsLayout->addWidget(closeSettings);
     connect(closeSettings, &QDialogButtonBox::rejected, settingsDialog, &QDialog::hide);
-    layout->addLayout(toolbar);
+    setupBanner = new QWidget; setupBanner->setObjectName("setupBanner"); setupBanner->hide();
+    auto *bannerLayout = new QHBoxLayout(setupBanner); bannerLayout->setContentsMargins(0, 0, 0, 0);
+    setupStatus = new QLabel; setupStatus->setObjectName("setupStatus"); setupStatus->setWordWrap(true); bannerLayout->addWidget(setupStatus, 1);
+    auto *showProgress = new QPushButton("Show progress"); showProgress->setObjectName("setupShowProgress"); bannerLayout->addWidget(showProgress);
+    connect(showProgress, &QPushButton::clicked, this, [this] { openRuntimeBuilder(); });
+    auto *hideWindow = new QPushButton("Hide until ready"); hideWindow->setObjectName("setupHide"); bannerLayout->addWidget(hideWindow);
+    connect(hideWindow, &QPushButton::clicked, this, [this] { hide(); });
+    auto *haveDarling = new QPushButton("I already have Darling…"); haveDarling->setObjectName("setupSelectRuntime"); bannerLayout->addWidget(haveDarling);
+    connect(haveDarling, &QPushButton::clicked, this, &Window::offerExistingDarling);
+    layout->addWidget(setupBanner);
     auto *split = new QSplitter(Qt::Horizontal); browserSplitter = split; split->setObjectName("browserSplitter");
     auto *sourcePane = new QWidget; auto *sourceLayout = new QVBoxLayout(sourcePane);
     sourceLayout->addWidget(new QLabel("Available apps"));
@@ -269,6 +278,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     });
     split->addWidget(sourcePane); split->addWidget(importPane); split->setStretchFactor(1, 2);
     layout->addWidget(split);
+    layout->addLayout(toolbar);
     split->restoreState(settings.value("splitterState").toByteArray());
     connect(apps, &QListWidget::itemSelectionChanged, this, &Window::updateContribution);
     progress = new QProgressBar; progress->setRange(0, 1); progress->setValue(0); progress->hide(); layout->addWidget(progress);
@@ -283,37 +293,40 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         mountDialog->mountAllWhenReady();
     });
 }
-void Window::openRuntimeBuilder(bool fresh) {
+void Window::openRuntimeBuilder(bool fresh, bool automatic) {
     if (fresh && prefixDialog && !prefixDialog->isBusy()) { delete prefixDialog; prefixDialog = nullptr; }
     if (!prefixDialog) {
         prefixDialog = new PrefixDialog(volume->text(), prefixBuilderScript, this);
         connect(prefixDialog, &PrefixDialog::finished, this, [this] { show(); raise(); activateWindow(); });
+        connect(prefixDialog, &PrefixDialog::prefixReady, this, [this] { notifyDesktop("Darling is ready", "The runtime and prefix are prepared. Your apps can run now."); });
+        connect(prefixDialog, &PrefixDialog::failed, this, [this](const QString &message) { notifyDesktop("Darling setup failed", message); });
+        connect(prefixDialog, &PrefixDialog::failed, this, [this](const QString &message) { setupStatus->setText("Darling setup failed: " + message + " Open the progress for details, then retry."); setupBanner->show(); });
         connect(prefixDialog, &PrefixDialog::prefixReady, this, [this](const QString &path, const QString &launcher, const QString &runtime) {
             prefix->setText(path); darling->setText(launcher); runtimeRoot->setText(runtime); load();
             QSettings settings("cristim", "darling-launcher"); settings.setValue("prefix", path); settings.setValue("darling", launcher); settings.setValue("runtimeRoot", runtime);
+            setupBanner->hide();
             setBusy(activeProcesses > 0 || importRunning, "New isolated prefix and runtime ready: " + path);
+            importQueued();
         });
     }
+    if (automatic) { if (!prefixDialog->isBusy()) prefixDialog->startAutomatically(); return; }
     prefixDialog->show(); prefixDialog->raise(); prefixDialog->activateWindow();
 }
 void Window::offerRuntimeSetup() {
     QString root = runtimeRoot->text();
     if (root.isEmpty()) { QDir install(QFileInfo(darling->text()).absolutePath()); install.cdUp(); root = install.absolutePath(); }
     if (QFileInfo(darling->text()).isExecutable() && QFileInfo(root + "/libexec/darling/private/etc").isDir()) return;
-    if (auto *existing = findChild<QDialog *>("firstRunSetup")) { existing->show(); existing->raise(); return; }
-    auto *dialog = new QDialog(this); dialog->setObjectName("firstRunSetup"); dialog->setWindowTitle("Set up Darling"); dialog->setAttribute(Qt::WA_DeleteOnClose);
-    auto *layout = new QVBoxLayout(dialog);
-    auto *description = new QLabel("No usable Darling runtime is selected. Build and install a private runtime without preinstalling Darling. Sources, builds, runtime images, prefixes, mounts and AI workspaces are kept in " + LauncherDiscovery::dataRoot() + ". Building needs network access and host build dependencies; a macOS volume is optional for setup."); description->setWordWrap(true); layout->addWidget(description);
-    auto *result = new QLabel; result->setWordWrap(true); layout->addWidget(result);
-    auto *build = new QPushButton("Build and install Darling…"); build->setObjectName("setupBuildDarling"); layout->addWidget(build);
-    connect(build, &QPushButton::clicked, this, [this, dialog, result] {
-        const QString source = QFileInfo(volume->text()).canonicalFilePath(), path = LauncherDiscovery::dataRoot();
-        if (!source.isEmpty() && (path == source || path.startsWith(source + '/'))) { result->setText("The launcher folder " + path + " is inside the mounted macOS source."); return; }
-        dialog->close(); openRuntimeBuilder(true);
-    });
-    auto *select = new QPushButton("I already have a Darling checkout and prefix…"); select->setObjectName("setupSelectRuntime"); layout->addWidget(select);
-    connect(select, &QPushButton::clicked, this, [this, dialog] {
-        auto *existing = new QDialog(dialog); existing->setObjectName("existingDarling"); existing->setWindowTitle("Use existing Darling"); existing->setAttribute(Qt::WA_DeleteOnClose);
+    if (prefixDialog && prefixDialog->isBusy()) { setupBanner->show(); return; }
+    const QString source = QFileInfo(volume->text()).canonicalFilePath(), path = LauncherDiscovery::dataRoot();
+    if (!source.isEmpty() && (path == source || path.startsWith(source + '/'))) { setupStatus->setText("The launcher folder " + path + " is inside the mounted macOS source; Darling was not set up."); setupBanner->show(); return; }
+    setupStatus->setText("Darling is still being prepared (clone, build and prefix setup) and this takes a while. Please wait: you can hide this window and a notification will bring it back when everything is ready. Apps you drop meanwhile stay grayed out and import automatically.");
+    setupBanner->show();
+    LauncherLog::write("app", "no usable Darling runtime; starting automatic setup");
+    openRuntimeBuilder(true, true);
+}
+void Window::offerExistingDarling() {
+    if (prefixDialog && prefixDialog->isBusy()) { statusBar()->showMessage("Darling is being set up in the background; wait for it to finish first."); return; }
+        auto *existing = new QDialog(this); existing->setObjectName("existingDarling"); existing->setWindowTitle("Use existing Darling"); existing->setAttribute(Qt::WA_DeleteOnClose);
         auto *box = new QVBoxLayout(existing); auto *form = new QFormLayout; box->addLayout(form);
         auto row = [&](const QString &label, const QString &name, const QString &placeholder) {
             auto *edit = new QLineEdit; edit->setObjectName(name); edit->setPlaceholderText(placeholder);
@@ -325,7 +338,7 @@ void Window::offerRuntimeSetup() {
         auto *existingPrefix = row("Darling prefix (optional)", "existingPrefix", "Leave empty to create " + LauncherDiscovery::managedPrefix(LauncherDiscovery::dataRoot()));
         auto *message = new QLabel; message->setObjectName("existingMessage"); message->setWordWrap(true); box->addWidget(message);
         auto *use = new QPushButton("Use these"); use->setObjectName("useExistingDarling"); box->addWidget(use);
-        connect(use, &QPushButton::clicked, existing, [this, dialog, existing, checkout, existingPrefix, message] {
+        connect(use, &QPushButton::clicked, existing, [this, existing, checkout, existingPrefix, message] {
             const auto found = LauncherDiscovery::runtimes({QDir::cleanPath(checkout->text())}, {});
             if (checkout->text().isEmpty() || found.isEmpty()) { message->setText("No built Darling found there. Expected build/src/startup/darling next to image/usr/local or install/usr/local."); return; }
             const QString chosenPrefix = QDir::cleanPath(existingPrefix->text());
@@ -338,14 +351,27 @@ void Window::offerRuntimeSetup() {
             darling->setText(found.first().launcher); runtimeRoot->setText(found.first().installRoot);
             QSettings settings("cristim", "darling-launcher"); settings.setValue("darling", darling->text()); settings.setValue("runtimeRoot", runtimeRoot->text()); settings.setValue("prefix", prefix->text());
             LauncherLog::write("app", "using existing Darling " + darling->text() + " with prefix " + prefix->text());
-            existing->close(); dialog->close(); updatePrefixChoices(); load();
+            existing->close(); if (setupBanner) setupBanner->hide(); updatePrefixChoices(); load(); importQueued();
         });
         existing->open();
-    });
-    auto *later = new QPushButton("Set up later"); later->setObjectName("setupLater"); layout->addWidget(later); connect(later, &QPushButton::clicked, dialog, &QDialog::reject);
-    dialog->show(); dialog->raise();
 }
-
+void Window::showQueuedImports() {
+    for (const QString &bundle : queuedImports) {
+        QString name = QFileInfo(bundle).completeBaseName(); QIcon icon;
+        for (int i = 0; i < available->count(); ++i) if (available->item(i)->data(Qt::UserRole).toString() == bundle) { name = available->item(i)->text(); icon = available->item(i)->icon(); break; }
+        apps->addPending(bundle, name, icon);
+    }
+}
+void Window::notifyDesktop(const QString &title, const QString &body) {
+    const QString tool = QStandardPaths::findExecutable("notify-send");
+    LauncherLog::write("app", "notification: " + title + " - " + body);
+    if (!tool.isEmpty()) QProcess::startDetached(tool, {"--app-name", "Darling Launcher", title, body});
+}
+void Window::importQueued() {
+    if (queuedImports.isEmpty() || (prefixDialog && prefixDialog->isBusy())) return;
+    const QStringList names = queuedImports; queuedImports.clear();
+    QTimer::singleShot(0, this, [this, names] { importBundles(names); });
+}
 Window::~Window() {
     for (auto *process : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) process->disconnect(this);
 }
@@ -457,6 +483,12 @@ void Window::importDependency(const QString &key, const QString &source, const Q
 }
 void Window::importBundles(const QStringList &names) {
     if (names.isEmpty()) return;
+    if (prefixDialog && prefixDialog->isBusy()) {
+        for (const QString &name : names) if (!queuedImports.contains(name)) queuedImports << name;
+        showQueuedImports();
+        statusBar()->showMessage(QString::number(queuedImports.size()) + " app(s) waiting; they import when Darling is ready.");
+        return;
+    }
     if (importRunning) { statusBar()->showMessage("An app import is already in progress."); return; }
     QString error;
     if (!LauncherCore::validateLocations(volume->text(), prefix->text(), &error)) { QMessageBox::warning(this, "Locations", error); return; }
@@ -508,7 +540,7 @@ void Window::load() {
         if (preview.relativeBundle.isEmpty()) preview = {it.key(), it.value().name, {}, 0};
         previews << preview;
     }
-    apps->showPreviews(previews);
+    apps->showPreviews(previews); showQueuedImports();
     QStringList imported; for (const auto &entry : entries) imported << entry.sourceRelative;
     available->setImportedBundles(imported);
     for (const auto &key : entries.keys()) {

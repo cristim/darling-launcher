@@ -279,6 +279,24 @@ private slots:
         QDropEvent drop(QPointF(10, 10), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier); QApplication::sendEvent(apps->viewport(), &drop); QVERIFY(drop.isAccepted());
         QTRY_COMPARE_WITH_TIMEOUT(apps->count(), 1, 5000); QCOMPARE(apps->item(0)->data(Qt::UserRole).toString(), "Applications/Fixture.app");
     }
+    void dragSourceAndTargetAgreeOnTheMimeType() {
+        AppBrowser source; source.showPreviews({{"Applications/A.app", "Calc", {}, 10}}); source.selectAll();
+        std::unique_ptr<QMimeData> mime(source.model()->mimeData(source.selectionModel()->selectedIndexes()));
+        QVERIFY(mime); qDebug() << "FORMATS" << mime->formats();
+        ImportedBrowser target; QVERIFY(target.acceptDrops()); QVERIFY(target.viewport()->acceptDrops());
+        QDragEnterEvent enter(QPoint(5, 5), Qt::CopyAction, mime.get(), Qt::LeftButton, Qt::NoModifier); QApplication::sendEvent(target.viewport(), &enter); QVERIFY(enter.isAccepted());
+        QDragMoveEvent move(QPoint(6, 6), Qt::CopyAction, mime.get(), Qt::LeftButton, Qt::NoModifier); QApplication::sendEvent(target.viewport(), &move); QVERIFY(move.isAccepted());
+    }
+    void importedPaneIsTheDropTargetAtItsCenter() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear();
+        Window window({}, false, [] { return QList<SourceMount>{}; }); window.resize(1200, 800); window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto *apps = window.findChild<ImportedBrowser *>("importedApps");
+        for (const QPoint point : {apps->viewport()->rect().center(), QPoint(20, 20), QPoint(apps->viewport()->width() - 20, apps->viewport()->height() - 20)}) {
+            QWidget *widget = window.childAt(window.mapFromGlobal(apps->viewport()->mapToGlobal(point)));
+            while (widget && !widget->acceptDrops()) widget = widget->parentWidget();
+            qDebug() << "TARGET" << point << widget; QCOMPARE(widget, apps->viewport());
+        }
+    }
     void iconViewsAndSelection() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QImage image(64, 64, QImage::Format_ARGB32); image.fill(Qt::green);
@@ -538,20 +556,30 @@ private slots:
         QTRY_VERIFY(dialog->findChild<QTextEdit *>("mountOutput")->toPlainText().contains("No macOS partitions detected"));
         QVERIFY(window.findChild<QDialog *>("settingsDialog")->isVisible());
     }
-    void firstRunOffersManagedCloneBuildAndAdoptsRuntime() {
+    void firstRunStartsSetupAutomaticallyAndQueuesDroppedApps() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings settings("cristim", "darling-launcher"); settings.clear();
         qputenv("HOME", (temporary.path() + "/managed home").toUtf8()); const QString data = temporary.path() + "/managed home/.darling-launcher";
-        QFile git(temporary.path() + "/git"); QVERIFY(git.open(QIODevice::WriteOnly)); git.write("#!/bin/sh\nif [ \"$1\" = clone ]; then /usr/bin/sleep 0.1; /usr/bin/mkdir -p \"$5\"; exit 0; fi\nexit 1\n"); git.close(); QVERIFY(git.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        const QString volume = temporary.path() + "/volume", app = volume + "/Applications/Fixture.app";
+        QVERIFY(QDir().mkpath(app + "/Contents/MacOS"));
+        QFile plist(app + "/Contents/Info.plist"); QVERIFY(plist.open(QIODevice::WriteOnly)); plist.write("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>"); plist.close();
+        QFile executable(app + "/Contents/MacOS/Fixture"); QVERIFY(executable.open(QIODevice::WriteOnly)); executable.write("fixture"); executable.close();
+        QFile git(temporary.path() + "/git"); QVERIFY(git.open(QIODevice::WriteOnly)); git.write("#!/bin/sh\nif [ \"$1\" = clone ]; then /usr/bin/sleep 0.5; /usr/bin/mkdir -p \"$5\"; exit 0; fi\nexit 1\n"); git.close(); QVERIFY(git.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         const auto path = qgetenv("PATH"); auto restore = qScopeGuard([=] { qputenv("PATH", path); }); qputenv("PATH", temporary.path().toUtf8() + ':' + path);
-        Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py", false, [] { return QList<SourceMount>{}; }); window.show(); window.findChild<QLineEdit *>("darlingField")->clear(); window.findChild<QLineEdit *>("runtimeRootField")->clear(); window.findChild<QLineEdit *>("volumeField")->clear();
-        window.offerRuntimeSetup(); auto *offer = window.findChild<QDialog *>("firstRunSetup"); QVERIFY(offer && offer->isVisible()); 
-        offer->findChild<QPushButton *>("setupBuildDarling")->click(); auto *builder = window.findChild<PrefixDialog *>(); QVERIFY(builder && builder->isVisible());
+        Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py", false, [] { return QList<SourceMount>{}; }); window.show(); window.findChild<QLineEdit *>("darlingField")->clear(); window.findChild<QLineEdit *>("runtimeRootField")->clear(); window.findChild<QLineEdit *>("volumeField")->setText(volume);
+        window.offerRuntimeSetup();
+        auto *banner = window.findChild<QWidget *>("setupBanner"); QVERIFY(banner && banner->isVisible()); QVERIFY(window.findChild<QLabel *>("setupStatus")->text().contains("hide this window"));
+        auto *builder = window.findChild<PrefixDialog *>(); QVERIFY(builder); QVERIFY(builder->isBusy()); QVERIFY(!builder->isVisible());
         QCOMPARE(builder->findChild<QLabel *>("prefixBuilderSource")->text(), data + "/sources/vibedarling");
         const QString workspace = builder->findChild<QLabel *>("prefixBuilderWorkspace")->text(); QVERIFY(workspace.startsWith(data + "/workspaces/"));
-        builder->findChild<QComboBox *>("prefixBuilderScope")->setCurrentIndex(1); builder->findChild<QPushButton *>("buildPrefix")->click(); QVERIFY(builder->isBusy()); QVERIFY(builder->findChild<QPushButton *>("buildInBackground")->isEnabled()); QVERIFY(!window.close()); QVERIFY(!window.isVisible()); builder->close(); QVERIFY(!builder->isVisible());
-        QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLineEdit *>("prefixField")->text(), workspace + "/prefix", 5000);
-        QVERIFY(builder->isVisible()); QVERIFY(window.isVisible()); QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), workspace + "/build/src/startup/darling"); QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), workspace + "/image/usr/local"); QVERIFY(QFileInfo(data + "/sources/vibedarling").isDir()); QVERIFY(!builder->isBusy());
-        QVERIFY(QDir().mkpath(workspace + "/image/usr/local/libexec/darling/private/etc")); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); window.offerRuntimeSetup(); QVERIFY(!window.findChild<QDialog *>("firstRunSetup"));
+        auto *apps = window.findChild<ImportedBrowser *>("importedApps");
+        QMimeData mime; mime.setUrls({QUrl::fromLocalFile(app)});
+        QDragEnterEvent enter(QPoint(10, 10), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier); QApplication::sendEvent(apps->viewport(), &enter);
+        QDropEvent drop(QPointF(10, 10), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier); QApplication::sendEvent(apps->viewport(), &drop); QVERIFY(drop.isAccepted());
+        QCOMPARE(apps->count(), 1); QVERIFY(!(apps->item(0)->flags() & Qt::ItemIsEnabled)); QCOMPARE(apps->status("Applications/Fixture.app"), "Waiting for Darling");
+        QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLineEdit *>("prefixField")->text(), workspace + "/prefix", 8000);
+        QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), workspace + "/build/src/startup/darling"); QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), workspace + "/image/usr/local");
+        QVERIFY(!banner->isVisible()); QVERIFY(!builder->isVisible()); QVERIFY(!builder->isBusy());
+        QTRY_VERIFY_WITH_TIMEOUT(apps->count() == 1 && (apps->item(0)->flags() & Qt::ItemIsEnabled), 8000); QVERIFY(QFileInfo(workspace + "/prefix").isDir());
     }
     void existingCheckoutAndPrefixAreAdopted() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear();
@@ -559,8 +587,7 @@ private slots:
         QVERIFY(QDir().mkpath(checkout + "/build/src/startup")); QVERIFY(QDir().mkpath(checkout + "/image/usr/local/libexec/darling/private/etc")); QVERIFY(QDir().mkpath(existingPrefix));
         QFile launcher(checkout + "/build/src/startup/darling"); QVERIFY(launcher.open(QIODevice::WriteOnly)); launcher.close(); QVERIFY(launcher.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         Window window({}, false, [] { return QList<SourceMount>{}; }); window.show(); window.findChild<QLineEdit *>("darlingField")->clear(); window.findChild<QLineEdit *>("runtimeRootField")->clear();
-        window.offerRuntimeSetup(); auto *offer = window.findChild<QDialog *>("firstRunSetup"); QVERIFY(offer);
-        offer->findChild<QPushButton *>("setupSelectRuntime")->click(); auto *existing = window.findChild<QDialog *>("existingDarling"); QVERIFY(existing && existing->isVisible());
+        window.findChild<QPushButton *>("setupSelectRuntime")->click(); auto *existing = window.findChild<QDialog *>("existingDarling"); QVERIFY(existing && existing->isVisible());
         existing->findChild<QLineEdit *>("existingCheckout")->setText(temporary.path() + "/missing"); existing->findChild<QPushButton *>("useExistingDarling")->click();
         QVERIFY(existing->findChild<QLabel *>("existingMessage")->text().contains("No built Darling")); QVERIFY(window.findChild<QLineEdit *>("darlingField")->text().isEmpty());
         existing->findChild<QLineEdit *>("existingCheckout")->setText(checkout); existing->findChild<QLineEdit *>("existingPrefix")->setText(existingPrefix); existing->findChild<QPushButton *>("useExistingDarling")->click();

@@ -30,13 +30,13 @@ private:
     QString search;
     Filter filter = Filter::All;
     QStringList importedBundles;
-    void applyFilter();
     bool dragCandidate = false;
     QPoint pressPosition;
     QPersistentModelIndex pressedItem;
     QRubberBand *rubberBand = nullptr;
     QPoint rubberOrigin;
 protected:
+    void applyFilter();
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
@@ -52,6 +52,7 @@ public:
     explicit ImportedBrowser(QWidget *parent = nullptr);
     void setStatus(const QString &bundle, const QString &status);
     QString status(const QString &bundle) const;
+    void addPending(const QString &bundle, const QString &name, const QIcon &icon);
 signals:
     void bundlesDropped(const QStringList &bundles);
     void pathsDropped(const QStringList &localPaths);

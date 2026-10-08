@@ -238,6 +238,14 @@ void ImportedBrowser::setStatus(const QString &bundle, const QString &status) {
         item(i)->setData(StatusRole, status); item(i)->setToolTip(bundle + "\n" + status); viewport()->update(); break;
     }
 }
+void ImportedBrowser::addPending(const QString &bundle, const QString &name, const QIcon &icon) {
+    for (int i = 0; i < count(); ++i) if (item(i)->data(Qt::UserRole).toString() == bundle) return;
+    auto *entry = new AppItem(icon, name, this);
+    entry->setData(Qt::UserRole, bundle); entry->setData(NameRole, name); entry->setData(StatusRole, "Waiting for Darling");
+    entry->setFlags(Qt::NoItemFlags); entry->setForeground(palette().color(QPalette::Disabled, QPalette::Text));
+    entry->setToolTip(name + "\nImports automatically when Darling is ready");
+    applyFilter();
+}
 QString ImportedBrowser::status(const QString &bundle) const {
     for (int i = 0; i < count(); ++i) if (item(i)->data(Qt::UserRole).toString() == bundle) return item(i)->data(StatusRole).toString();
     return {};

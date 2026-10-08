@@ -37,7 +37,7 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
     auto *build = new QPushButton("Build and deploy private runtime"); build->setObjectName("buildPrefix"); layout->addWidget(build);
     auto *background = new QPushButton("Continue in the background"); background->setObjectName("buildInBackground"); background->setEnabled(false); layout->addWidget(background);
     connect(background, &QPushButton::clicked, this, &QDialog::close);
-    auto reopen = [this, background] { background->setEnabled(false); emit finished(); show(); raise(); activateWindow(); };
+    auto reopen = [this, background](bool success) { background->setEnabled(false); emit finished(); if (!(automatic && success)) { show(); raise(); activateWindow(); } };
     auto newWorkspace = [workspaceLabel, data] { QDir().mkpath(data + "/workspaces"); workspaceLabel->setText(LauncherDiscovery::newWorkspace(data + "/workspaces")); };
     newWorkspace();
     QString script = scriptOverride;
@@ -67,7 +67,7 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
         connect(builder, &PrefixBuilder::output, output, &QTextEdit::insertPlainText);
         connect(builder, &PrefixBuilder::phaseChanged, status, &QLabel::setText);
         connect(builder, &PrefixBuilder::completed, this, [this, builder, build, status, progress, reopen](bool success, const QString &message, const QString &prefix, const QString &launcher, const QString &runtime) {
-            status->setText(message); build->setEnabled(true); progress->setRange(0, 1); progress->setValue(success ? 1 : 0); builder->deleteLater(); reopen();
+            status->setText(message); build->setEnabled(true); progress->setRange(0, 1); progress->setValue(success ? 1 : 0); builder->deleteLater(); reopen(success); if (!success) emit failed(message);
             if (success) emit prefixReady(prefix, launcher, runtime);
         });
         builder->start(request);
@@ -84,13 +84,18 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
         connect(process, &QProcess::readyReadStandardOutput, this, [=] { output->insertPlainText(QString::fromUtf8(process->readAllStandardOutput())); });
         auto done = [=](bool success) {
             build->setEnabled(true); progress->setRange(0, 1); progress->setValue(success);
-            if (success) startBuild(); else { status->setText("Clone failed. See output; any partial clone is retained for inspection."); reopen(); }
+            if (success) startBuild(); else { status->setText("Clone failed. See output; any partial clone is retained for inspection."); reopen(false); emit failed("The VibeDarling clone failed."); }
             process->deleteLater();
         };
         connect(process, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) { done(code == 0 && exit == QProcess::NormalExit); });
         connect(process, &QProcess::errorOccurred, this, [=](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) done(false); });
         process->start(git, LauncherDiscovery::cloneArguments("https://github.com/VibeDarling/darling.git", source));
     });
+}
+
+void PrefixDialog::startAutomatically() {
+    automatic = true;
+    if (auto *build = findChild<QPushButton *>("buildPrefix")) build->click();
 }
 
 PrefixDialog::~PrefixDialog() {
