@@ -2,6 +2,7 @@
 #include "core.h"
 #include "sources.h"
 #include <functional>
+#include <QUuid>
 #include <QDir>
 #include <QDirIterator>
 #include <QCryptographicHash>
@@ -176,6 +177,66 @@ bool importApp(const QString &volume, const QString &prefix, const QString &rela
     if (displayName.isEmpty()) displayName = plistString(source + "/Contents/Info.plist", "CFBundleName");
     if (displayName.isEmpty()) displayName = QFileInfo(source).completeBaseName();
     if (result) *result = {displayName, destRelative, executable, relativeBundle};
+    return true;
+}
+
+bool trashApp(const QString &prefix, const QString &bundle, QString *error, TrashReceipt *receipt) {
+    const QString root = QFileInfo(prefix).canonicalFilePath();
+    if (root.isEmpty() || root == "/" || !confinedRelative(bundle) || !bundle.startsWith("Applications/") || !bundle.endsWith(".app")) return fail(error, "Select a catalogued imported app in a private prefix");
+    auto catalog = loadCatalog(prefix); auto records = catalog.value("apps").toArray(); int selected = -1;
+    for (int index = 0; index < records.size(); ++index) if (records[index].toObject().value("bundle").toString() == bundle) { selected = index; break; }
+    if (selected < 0) return fail(error, "App is not in this prefix's import catalog");
+    const QString source = prefix + '/' + bundle;
+    QFileInfo info(source);
+    if (!info.isDir() || info.isSymLink() || !within(info.canonicalFilePath(), root)) return fail(error, "Imported app path is unsafe");
+    QString parent = prefix;
+    for (const auto &part : bundle.split('/').mid(0, bundle.split('/').size() - 1)) {
+        parent += '/' + part; if (QFileInfo(parent).isSymLink()) return fail(error, "Imported app parent is a symlink");
+    }
+    QString trash = prefix;
+    for (const auto &part : QStringList{".darling-launcher", "trash", QUuid::createUuid().toString(QUuid::WithoutBraces)}) {
+        trash += '/' + part;
+        if (QFileInfo(trash).isSymLink() || !QDir().mkpath(trash) || !within(QFileInfo(trash).canonicalFilePath(), root)) return fail(error, "Prefix trash path is unsafe");
+    }
+    const QString destination = trash + '/' + info.fileName();
+    if (!QDir().rename(source, destination)) return fail(error, "Cannot move imported app to prefix trash");
+    const auto record = records[selected].toObject();
+    records.removeAt(selected); catalog.insert("apps", records);
+    if (!saveCatalog(prefix, catalog, error)) {
+        if (!QDir().rename(destination, source)) return fail(error, "Catalog update failed; app remains recoverable at " + destination);
+        return false;
+    }
+    if (receipt) *receipt = {root, bundle, destination, record};
+    return true;
+}
+
+bool restoreApp(const TrashReceipt &receipt, QString *error) {
+    const QString root = QFileInfo(receipt.prefix).canonicalFilePath();
+    if (root.isEmpty() || root == "/" || root != receipt.prefix || !confinedRelative(receipt.bundle) || !receipt.bundle.startsWith("Applications/") || !receipt.bundle.endsWith(".app") || receipt.record.value("bundle").toString() != receipt.bundle)
+        return fail(error, "Invalid trash receipt");
+    const QString trashRoot = root + "/.darling-launcher/trash";
+    const QFileInfo trashed(receipt.trashedPath);
+    if (!trashed.isDir() || trashed.isSymLink() || !within(trashed.canonicalFilePath(), trashRoot)) return fail(error, "Trashed app is no longer safely available");
+    QString path = root;
+    for (const auto &part : QStringList{".darling-launcher", "trash"}) {
+        path += '/' + part; if (QFileInfo(path).isSymLink()) return fail(error, "Trash parent is a symlink");
+    }
+    if (QFileInfo(trashed.absolutePath()).isSymLink()) return fail(error, "Trash entry parent is a symlink");
+    QString destination = root + '/' + receipt.bundle;
+    path = root;
+    for (const auto &part : receipt.bundle.split('/').mid(0, receipt.bundle.split('/').size() - 1)) {
+        path += '/' + part;
+        if (QFileInfo(path).isSymLink() || !QFileInfo(path).isDir() || !within(QFileInfo(path).canonicalFilePath(), root)) return fail(error, "Restore destination parent is unsafe");
+    }
+    auto catalog = loadCatalog(root); auto records = catalog.value("apps").toArray();
+    for (const auto &record : records) if (record.toObject().value("bundle").toString() == receipt.bundle) return fail(error, "An app with this bundle is already catalogued");
+    if (QFileInfo::exists(destination) || QFileInfo(destination).isSymLink()) return fail(error, "Restore would overwrite an existing app");
+    if (!QDir().rename(receipt.trashedPath, destination)) return fail(error, "Cannot restore app");
+    records.append(receipt.record); catalog.insert("apps", records);
+    if (!saveCatalog(root, catalog, error)) {
+        if (!QDir().rename(destination, receipt.trashedPath)) return fail(error, "Catalog update failed; restored app remains at " + destination);
+        return false;
+    }
     return true;
 }
 

@@ -9,6 +9,31 @@
 class CoreTest : public QObject {
     Q_OBJECT
 private slots:
+    void trashAndRestore() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QString prefix = temporary.path() + "/prefix", bundle = "Applications/Test.app";
+        QVERIFY(QDir().mkpath(prefix + '/' + bundle));
+        QFile data(prefix + '/' + bundle + "/private.txt"); QVERIFY(data.open(QIODevice::WriteOnly)); data.write("private fixture"); data.close();
+        QJsonObject record{{"bundle", bundle}, {"name", "Test"}, {"chain", QJsonArray{QJsonObject{{"library", "/usr/lib/fixture"}}}}};
+        QString error; QVERIFY(LauncherCore::saveCatalog(prefix, QJsonObject{{"apps", QJsonArray{record}}}, &error));
+        LauncherCore::TrashReceipt receipt;
+        QVERIFY(!LauncherCore::trashApp(prefix, "Applications/../Test.app", &error));
+        QVERIFY(!LauncherCore::trashApp(prefix, "Applications/Unknown.app", &error));
+        QVERIFY(LauncherCore::trashApp(prefix, bundle, &error, &receipt));
+        QVERIFY(!QFileInfo::exists(data.fileName())); QVERIFY(QFileInfo::exists(receipt.trashedPath + "/private.txt"));
+        QVERIFY(LauncherCore::loadCatalog(prefix).value("apps").toArray().isEmpty());
+        QVERIFY(QDir().mkpath(prefix + '/' + bundle)); QVERIFY(!LauncherCore::restoreApp(receipt, &error));
+        QVERIFY(QDir(prefix + '/' + bundle).removeRecursively());
+        QVERIFY(LauncherCore::restoreApp(receipt, &error)); QVERIFY(QFileInfo::exists(data.fileName()));
+        QCOMPARE(LauncherCore::loadCatalog(prefix).value("apps").toArray().first().toObject(), record);
+        QVERIFY(!LauncherCore::restoreApp(receipt, &error));
+        QVERIFY(QDir().mkpath(temporary.path() + "/outside"));
+        QVERIFY(QDir(prefix + "/.darling-launcher/trash").removeRecursively());
+        QVERIFY(QFile::link(temporary.path() + "/outside", prefix + "/.darling-launcher/trash"));
+        QVERIFY(!LauncherCore::trashApp(prefix, bundle, &error)); QVERIFY(QFileInfo::exists(data.fileName()));
+        QVERIFY(QDir(temporary.path() + "/outside").entryList(QDir::NoDotAndDotDot | QDir::AllEntries).isEmpty());
+    }
+
     void mountedSourcesAndContent() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString first = temporary.path() + "/one volume", second = temporary.path() + "/two", recovery = temporary.path() + "/recovery";
