@@ -163,7 +163,7 @@ void AppBrowser::setGridView(bool grid) {
     setGridSize(grid ? QSize(128, 128) : QSize());
     setWordWrap(grid); setSpacing(grid ? 8 : 2); setWrapping(grid);
     setMovement(QListView::Static); setResizeMode(QListView::Adjust);
-    setDragEnabled(true); viewport()->setAcceptDrops(acceptDrops());
+    setDragEnabled(true); setAcceptDrops(dropsEnabled); viewport()->setAcceptDrops(dropsEnabled);
     viewport()->update();
 }
 void AppBrowser::showPreviews(const QList<AppPreview> &previews) {
@@ -218,7 +218,7 @@ QMimeData *AppBrowser::mimeData(const QList<QListWidgetItem *> &items) const {
 QString AppBrowser::dragMimeType() const { return bundleMime; }
 QStringList AppBrowser::mimeTypes() const { return {dragMimeType()}; }
 ImportedBrowser::ImportedBrowser(QWidget *parent) : AppBrowser(parent) {
-    setAcceptDrops(true); setDragDropMode(QAbstractItemView::DragDrop);
+    dropsEnabled = true; setAcceptDrops(true); setDragDropMode(QAbstractItemView::DragDrop); viewport()->setAcceptDrops(true);
 }
 static bool acceptsDrop(const QMimeData *mime) { return mime->hasFormat(bundleMime) || mime->hasUrls(); }
 void ImportedBrowser::dragEnterEvent(QDragEnterEvent *event) {

@@ -37,6 +37,7 @@ private:
     QRubberBand *rubberBand = nullptr;
     QPoint rubberOrigin;
 protected:
+    bool dropsEnabled = false;
     void applyFilter();
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;

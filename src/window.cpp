@@ -40,6 +40,7 @@
 #include <QToolButton>
 #include <QPainter>
 #include <QPixmap>
+#include <QGuiApplication>
 #include <QTimer>
 #include <QStandardItemModel>
 #include <QSignalBlocker>
@@ -386,7 +387,7 @@ void Window::showQueuedImports() {
 void Window::notifyDesktop(const QString &title, const QString &body) {
     const QString tool = QStandardPaths::findExecutable("notify-send");
     LauncherLog::write("app", "notification: " + title + " - " + body);
-    if (!tool.isEmpty()) QProcess::startDetached(tool, {"--app-name", "Darling Launcher", title, body});
+    if (!tool.isEmpty() && QGuiApplication::platformName() != "offscreen") QProcess::startDetached(tool, {"--app-name", "Darling Launcher", title, body});
 }
 void Window::importQueued() {
     if (queuedImports.isEmpty() || (prefixDialog && prefixDialog->isBusy())) return;
