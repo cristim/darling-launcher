@@ -20,3 +20,25 @@ hidden or the wrong volume is chosen. Show unsuitable mounts separately from usa
 sources, require a choice when several are usable, and refresh without mounting.
 Prove partition mapping, confinement, automatic/manual refresh and GUI import with
 synthetic fixtures; run the real desktop GUI against the existing mounted volumes.
+
+Launcher simplification: move settings to a hidden popup; reuse AppBrowser for
+both source and imported apps so list/grid styles and icons match. Double-click
+launches an imported app. Dropping onto trash moves only catalogued, non-running
+app copies into the selected prefix's private trash, with rollback on catalog
+failure. Show loader logs and troubleshooting tools only for failed apps.
+Agent choices launch installed CLIs only after the user chooses one, with local
+loader/provenance data and clean-room instructions in a new workspace. GitHub
+submission requires authenticated gh plus explicit approval of a completed PR
+proposal and its source patch. Verify fake tools/mounts and real host GUI; preserve
+shared runtime, encrypted volumes and other source checkouts.
+
+Eight UX improvements, in requested order:
+1. Search each browser and filter source imports / running / failed apps; verify hidden items cannot be imported via select-all.
+2. Show app state and progress in list/grid tiles; derive state from owned process/import events.
+3. Summarize failures and put raw selected-app logs behind Show details.
+4. Offer Undo for prefix-local trash moves; validate restoration and never overwrite an existing app.
+5. Add a compact known-prefix selector showing the import/launch target.
+6. Persist view, sorting, geometry, splitter and selected source/prefix; verify restoration.
+7. Guide empty panes toward source selection and first import, including no-mounted-volume state.
+8. Explain local dependency imports, issue drafts and agent fixes separately, preview shared data and require explicit consent before starting an agent.
+For every step, add behavior tests; build under the shared heavy-build lock and run the real Qt GUI.

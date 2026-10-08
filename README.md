@@ -43,7 +43,7 @@ The external builder requires GitHub network access and a full Darling build env
 
 **Install Brewfile** stages a copy under the prefix and runs only `/opt/homebrew/bin/brew` as a guest executable. Native guest Homebrew must already be installed there. Brewfiles with MAS entries are refused because Apple ID interaction needs a separate workflow. The Brewfile is never executed on Linux.
 
-The **Opt in: source fix workflow** action describes a separate clean-room VibeDarling patch and PR process. It does not change another checkout or submit a PR. A real source fix should use published source, headers, documentation and API observations, with a completed patch and PR draft presented for explicit approval.
+The **Opt in: source fix workflow** action opens the troubleshooting dialog described below. Source fixes use published sources, headers, documentation and API observations; completed source patches and PR drafts require explicit approval before submission.
 
 ## Current limits
 
@@ -79,20 +79,57 @@ partial folders for inspection, and require an explicit retry.
 
 ### Apps, settings and contributions
 
-The **Apps** tab contains the import browser, imported apps, launches and progress.
-Configure source, prefix and runtime paths in **Settings**; **Apply settings**
-returns to Apps and reloads the selected source and prefix.
+The launcher opens directly to two matching app browsers. **Settings…** opens
+configuration in a separate popup. The compact prefix selector shows where imports
+and launches will run; its tooltip shows the full path. It lists previously used
+prefixes and directories under the launcher's managed prefixes folder. Finish
+imports and stop active prefix processes before switching with this selector.
 
-A contribution offer appears only for a selected app whose missing-symbol launch
-failure was followed by a successful library import into the private prefix.
-It explains the imported libraries and retry result, and offers a local issue
-draft or the separate opt-in source-fix workflow. The offer also remains available
-if the retry still fails. Failed imports, ordinary failures and launches without
-this workaround show no contribution actions. Original loader errors are retained
-in each private dependency-chain step and included in the proposed draft. Review
-local paths and logs before sharing; Apple payloads remain private and no issue or
-PR is submitted automatically. Source-fix opt-in currently presents workflow
-guidance; automated source edits and PR creation remain future work.
+Search each pane by app name. The available-app browser can filter to already
+imported apps; the imported browser can filter to running or failed apps. Hidden
+results are excluded from selection actions. Both panes support list/grid views,
+Ctrl+A, Ctrl-click and Shift-click, and name or size sorting. The source volume,
+prefix, runtime, view, sort, window geometry and pane sizes are remembered locally.
+Empty panes explain how to choose a mounted source and import the first app.
+
+Double-click an imported app or use **Launch selected**. Activity badges and text
+show queued/importing, launching, running and failed states. Import progress counts
+completed apps; it does not estimate byte-copy progress. Running means the host
+launch process is alive, not proof that the guest window is usable. Drag imported
+apps onto the trash icon to move their private copies into that prefix's
+`.darling-launcher/trash` directory. Running apps cannot be trashed. **Undo** restores
+session trash moves without overwriting an existing app; copies remain recoverable
+on disk after closing the launcher. The macOS source is never deleted.
+
+A failed app shows a concise diagnosis and **Show details** for that app's loader
+output. Healthy launches keep logs hidden. **Import needed library and retry**
+copies only the diagnosed local dependency into the chosen private prefix and
+records its source and loader provenance. A contribution offer appears after a
+successful dependency copy, including when the retry still fails. It explains what
+was copied and provides a local issue draft and a separate source-fix workflow.
+A failure without a successful copy also offers a troubleshooting dialog and local
+issue draft. Saving a draft never submits it.
+
+The troubleshooting dialog distinguishes local dependency workarounds, issue
+drafts, and source fixes. It detects installed Claude, Codex and OpenCode CLIs.
+Before starting an agent, review the displayed loader/provenance JSON and explicitly
+approve sharing it with that tool's configured service. The launcher creates a new
+workspace outside the prefix and macOS source, saves that JSON and clean-room
+instructions, then opens the selected CLI through `xdg-terminal-exec`. No Apple
+apps/libraries are attached. Agents are instructed to use independent source clones,
+private prefixes, published source/APIs/headers and the shared heavy-build lock;
+no push or issue/PR submission is authorized by starting an agent.
+
+If `gh auth status --hostname github.com` succeeds, **Review completed PR proposal…**
+can load a local `proposal.json` with string fields `source`, `repo`, `base`, `head`,
+`title`, and `body`. The source must be a clean independent clone inside the
+proposal's workspace; target `repo` is `VibeDarling/<repository>`, `head` is
+`<fork-owner>:<branch>`, and `base` is explicit. The complete text patch and draft
+are displayed before an **Approve completed draft and submit PR** action. Binary
+patches are refused. The published fork head must match the reviewed local commit.
+Publishing that branch remains a separate explicitly approved action; the launcher
+never pushes automatically. Tests use fake agents, Git and GitHub CLI, and never
+submit real issues or PRs.
 
 ### Machine defaults and a private source build
 

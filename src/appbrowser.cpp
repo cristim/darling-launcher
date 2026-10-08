@@ -10,10 +10,19 @@
 #include <QStyledItemDelegate>
 #include <QStyleOptionViewItem>
 #include <QStyle>
+#include <QPainter>
 
 namespace {
 const QString bundleMime = "application/x-darling-app-bundles";
-enum Roles { NameRole = Qt::UserRole + 1, SizeRole };
+enum Roles { NameRole = Qt::UserRole + 1, SizeRole, StatusRole, StateRole, ActivityRole, ProgressRole };
+class AppItem : public QListWidgetItem {
+public:
+    using QListWidgetItem::QListWidgetItem;
+    bool operator<(const QListWidgetItem &other) const override {
+        if (listWidget()->property("sortBySize").toBool() && data(SizeRole).toULongLong() != other.data(SizeRole).toULongLong()) return data(SizeRole).toULongLong() < other.data(SizeRole).toULongLong();
+        return QString::localeAwareCompare(data(NameRole).toString(), other.data(NameRole).toString()) < 0;
+    }
+};
 class AppDelegate : public QStyledItemDelegate {
 public:
     explicit AppDelegate(AppBrowser *browser) : QStyledItemDelegate(browser), browser(browser) {}
@@ -21,6 +30,34 @@ public:
         QStyledItemDelegate::initStyleOption(option, index);
         if (browser->viewMode() == QListView::ListMode)
             option->text = index.data(NameRole).toString() + "    " + QLocale().formattedDataSize(index.data(SizeRole).toLongLong(), 1, QLocale::DataSizeSIFormat);
+        if (browser->viewMode() == QListView::ListMode && !index.data(StatusRole).toString().isEmpty()) option->text += "    · " + index.data(StatusRole).toString();
+    }
+    void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
+        const QString status = index.data(StatusRole).toString();
+        const bool gridStatus = browser->viewMode() == QListView::IconMode && !status.isEmpty();
+        QStyleOptionViewItem content(option);
+        const int lineHeight = option.fontMetrics.height();
+        if (gridStatus) content.rect.adjust(0, 0, 0, -lineHeight - 2);
+        QStyledItemDelegate::paint(painter, content, index);
+        if (gridStatus) {
+            painter->save(); painter->setPen(option.palette.color(option.state & QStyle::State_Selected ? QPalette::HighlightedText : QPalette::Text));
+            painter->drawText(QRect(option.rect.left(), option.rect.bottom() - lineHeight, option.rect.width(), lineHeight), Qt::AlignHCenter | Qt::AlignVCenter, option.fontMetrics.elidedText(status, Qt::ElideRight, option.rect.width() - 4)); painter->restore();
+        }
+        const auto state = AppBrowser::State(index.data(ActivityRole).toInt());
+        if (state != AppBrowser::State::Importing && state != AppBrowser::State::Launching && state != AppBrowser::State::Running && state != AppBrowser::State::Failed) return;
+        const QColor color = state == AppBrowser::State::Failed ? QColor(200, 65, 65) : state == AppBrowser::State::Running ? QColor(45, 160, 85) : QColor(65, 125, 215);
+        painter->save(); painter->setPen(Qt::NoPen); painter->setBrush(color);
+        painter->drawEllipse(QRect(option.rect.right() - 14, option.rect.top() + 4, 8, 8));
+        if (state == AppBrowser::State::Importing) {
+            const int percent = index.data(ProgressRole).toInt();
+            if (percent >= 0) painter->drawRect(QRect(option.rect.left() + 3, option.rect.bottom() - 3, (option.rect.width() - 6) * percent / 100, 3));
+        }
+        painter->restore();
+    }
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override {
+        QSize size = QStyledItemDelegate::sizeHint(option, index);
+        if (browser->viewMode() == QListView::IconMode && !index.data(StatusRole).toString().isEmpty()) size.rheight() += option.fontMetrics.height() + 2;
+        return size;
     }
 private:
     AppBrowser *browser;
@@ -32,10 +69,14 @@ AppBrowser::AppBrowser(QWidget *parent) : QListWidget(parent) {
     setMovement(QListView::Static); setResizeMode(QListView::Adjust);
     setItemDelegate(new AppDelegate(this)); setGridView(false);
 }
+void AppBrowser::setSorting(bool bySize, bool descending) {
+    setProperty("sortingConfigured", true); setProperty("sortBySize", bySize); setProperty("sortDescending", descending);
+    sortItems(descending ? Qt::DescendingOrder : Qt::AscendingOrder);
+}
 void AppBrowser::setGridView(bool grid) {
     setViewMode(grid ? QListView::IconMode : QListView::ListMode);
     setIconSize(grid ? QSize(64, 64) : QSize(32, 32));
-    setGridSize(grid ? QSize(128, 112) : QSize());
+    setGridSize(grid ? QSize(128, 128) : QSize());
     setWordWrap(grid); setSpacing(grid ? 8 : 2); setWrapping(grid);
     setMovement(QListView::Static); setResizeMode(QListView::Adjust);
     viewport()->update();
@@ -47,33 +88,87 @@ void AppBrowser::showPreviews(const QList<AppPreview> &previews) {
         QImage image;
         if (!preview.iconPath.isEmpty()) image = reader.read();
         QIcon icon = image.isNull() ? style()->standardIcon(QStyle::SP_FileIcon) : QIcon(QPixmap::fromImage(image));
-        auto *item = new QListWidgetItem(icon, preview.name, this);
+        auto *item = new AppItem(icon, preview.name, this);
         item->setData(Qt::UserRole, preview.relativeBundle); item->setData(NameRole, preview.name); item->setData(SizeRole, QVariant::fromValue(preview.bytes));
         item->setToolTip(preview.relativeBundle + "\n" + QLocale().formattedDataSize(preview.bytes, 1, QLocale::DataSizeSIFormat) + (image.isNull() ? "\nBundle icon unavailable" : ""));
     }
+    if (property("sortingConfigured").toBool()) sortItems(property("sortDescending").toBool() ? Qt::DescendingOrder : Qt::AscendingOrder);
+    applyFilter();
+}
+void AppBrowser::setSearch(const QString &query) { search = query; applyFilter(); }
+void AppBrowser::setFilter(Filter value) { filter = value; applyFilter(); }
+void AppBrowser::setImportedBundles(const QStringList &bundles) { importedBundles = bundles; applyFilter(); }
+void AppBrowser::setAppState(const QString &bundle, Filter state) {
+    for (int i = 0; i < count(); ++i) if (item(i)->data(Qt::UserRole).toString() == bundle) item(i)->setData(StateRole, int(state));
+    applyFilter();
+}
+void AppBrowser::setActivity(const QString &bundle, State state, int percent) {
+    static const QStringList labels{"Ready", "Importing…", "Launching…", "Running", "Failed", "Exited", "Queued"};
+    for (int i = 0; i < count(); ++i) if (item(i)->data(Qt::UserRole).toString() == bundle) {
+        item(i)->setData(ActivityRole, int(state)); item(i)->setData(ProgressRole, percent);
+        item(i)->setData(StatusRole, labels.at(int(state)) + (percent >= 0 ? " " + QString::number(percent) + "%" : QString()));
+    }
+    setAppState(bundle, state == State::Failed ? Filter::Failed : state == State::Running || state == State::Launching ? Filter::Running : Filter::All);
+    viewport()->update();
+}
+void AppBrowser::applyFilter() {
+    int visible = 0;
+    for (int i = 0; i < count(); ++i) {
+        auto *entry = item(i);
+        const bool match = entry->data(NameRole).toString().contains(search.trimmed(), Qt::CaseInsensitive);
+        const bool state = filter == Filter::All || (filter == Filter::Imported ? importedBundles.contains(entry->data(Qt::UserRole).toString()) : entry->data(StateRole).toInt() == int(filter));
+        entry->setHidden(!match || !state);
+        if (entry->isHidden()) entry->setSelected(false); else ++visible;
+    }
+    emit visibleAppsChanged(visible);
 }
 QStringList AppBrowser::selectedBundles() const {
-    QStringList names; for (auto *item : selectedItems()) names << item->data(Qt::UserRole).toString(); return names;
+    QStringList names; for (auto *item : selectedItems()) if (!item->isHidden()) names << item->data(Qt::UserRole).toString(); return names;
 }
 QMimeData *AppBrowser::mimeData(const QList<QListWidgetItem *> &items) const {
     QJsonArray paths; for (auto *item : items) paths.append(item->data(Qt::UserRole).toString());
-    auto *mime = new QMimeData; mime->setData(bundleMime, QJsonDocument(paths).toJson(QJsonDocument::Compact)); return mime;
+    auto *mime = new QMimeData; mime->setData(dragMimeType(), QJsonDocument(paths).toJson(QJsonDocument::Compact)); return mime;
 }
-QStringList AppBrowser::mimeTypes() const { return {bundleMime}; }
-ImportTable::ImportTable(QWidget *parent) : QTableWidget(0, 3, parent) {
-    setAcceptDrops(true); setDragDropMode(QAbstractItemView::DropOnly);
+QString AppBrowser::dragMimeType() const { return bundleMime; }
+QStringList AppBrowser::mimeTypes() const { return {dragMimeType()}; }
+ImportedBrowser::ImportedBrowser(QWidget *parent) : AppBrowser(parent) {
+    setAcceptDrops(true); setDragDropMode(QAbstractItemView::DragDrop);
 }
-void ImportTable::dragEnterEvent(QDragEnterEvent *event) {
+void ImportedBrowser::dragEnterEvent(QDragEnterEvent *event) {
     if (event->mimeData()->hasFormat(bundleMime)) event->acceptProposedAction();
 }
-void ImportTable::dragMoveEvent(QDragMoveEvent *event) {
+void ImportedBrowser::dragMoveEvent(QDragMoveEvent *event) {
     if (event->mimeData()->hasFormat(bundleMime)) event->acceptProposedAction();
 }
-void ImportTable::dropEvent(QDropEvent *event) {
+void ImportedBrowser::dropEvent(QDropEvent *event) {
     if (!event->mimeData()->hasFormat(bundleMime)) return;
     auto document = QJsonDocument::fromJson(event->mimeData()->data(bundleMime));
     if (!document.isArray()) return;
     QStringList names;
     for (const auto &value : document.array()) { if (!value.isString()) return; names << value.toString(); }
     if (!names.isEmpty()) { event->acceptProposedAction(); emit bundlesDropped(names); }
+}
+
+QString ImportedBrowser::dragMimeType() const { return "application/x-darling-imported-bundles"; }
+void ImportedBrowser::setStatus(const QString &bundle, const QString &status) {
+    for (int i = 0; i < count(); ++i) if (item(i)->data(Qt::UserRole).toString() == bundle) {
+        item(i)->setData(StatusRole, status); item(i)->setToolTip(bundle + "\n" + status); viewport()->update(); break;
+    }
+}
+QString ImportedBrowser::status(const QString &bundle) const {
+    for (int i = 0; i < count(); ++i) if (item(i)->data(Qt::UserRole).toString() == bundle) return item(i)->data(StatusRole).toString();
+    return {};
+}
+TrashTarget::TrashTarget(QWidget *parent) : QLabel(parent) {
+    setAcceptDrops(true); setPixmap(style()->standardIcon(QStyle::SP_TrashIcon).pixmap(36, 36));
+    setToolTip("Drag imported apps here to move them to this prefix's trash"); setMinimumSize(48, 48); setAlignment(Qt::AlignCenter);
+}
+void TrashTarget::dragEnterEvent(QDragEnterEvent *event) {
+    if (event->mimeData()->hasFormat("application/x-darling-imported-bundles")) event->acceptProposedAction();
+}
+void TrashTarget::dropEvent(QDropEvent *event) {
+    const auto document = QJsonDocument::fromJson(event->mimeData()->data("application/x-darling-imported-bundles"));
+    if (!document.isArray()) return;
+    QStringList bundles; for (const auto &value : document.array()) { if (!value.isString()) return; bundles << value.toString(); }
+    if (!bundles.isEmpty()) { event->acceptProposedAction(); emit bundlesDropped(bundles); }
 }
