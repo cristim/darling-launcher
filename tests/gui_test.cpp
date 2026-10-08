@@ -213,18 +213,18 @@ private slots:
     void runtimeDetectionRefresh() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
-        QString install = temporary.path() + "/runtime";
-        QVERIFY(QDir().mkpath(install + "/bin"));
-        QFile executable(install + "/bin/darling"); QVERIFY(executable.open(QIODevice::WriteOnly)); executable.close();
-        QVERIFY(executable.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        const QString installed = temporary.path() + "/system", built = QDir::homePath() + "/.darling-launcher/workspaces/darling-workspace";
+        QVERIFY(QDir().mkpath(installed + "/bin")); QVERIFY(QDir().mkpath(installed + "/libexec/darling/private/etc"));
+        QFile system(installed + "/bin/darling"); QVERIFY(system.open(QIODevice::WriteOnly)); system.close(); QVERIFY(system.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         auto previousPath = qgetenv("PATH"); auto restore = qScopeGuard([=] { qputenv("PATH", previousPath); });
-        qputenv("PATH", (install + "/bin").toUtf8());
+        qputenv("PATH", (installed + "/bin").toUtf8());
         Window window; window.show();
         QVERIFY(window.findChild<QLineEdit *>("darlingField")->text().isEmpty());
-        QVERIFY(QDir().mkpath(install + "/libexec/darling/private/etc"));
+        QVERIFY(QDir().mkpath(built + "/build/src/startup")); QVERIFY(QDir().mkpath(built + "/image/usr/local/libexec/darling/private/etc"));
+        QFile launcher(built + "/build/src/startup/darling"); QVERIFY(launcher.open(QIODevice::WriteOnly)); launcher.close(); QVERIFY(launcher.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         window.detectRuntime();
-        QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), executable.fileName());
-        QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), install);
+        QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), launcher.fileName());
+        QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), built + "/image/usr/local");
         QVERIFY(!window.findChild<QWidget *>("Detect paths"));
     }
     void rubberBandOnBlankSpaceDragOnApps() {

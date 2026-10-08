@@ -103,8 +103,11 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     if (prefix->text().isEmpty()) prefix->setText(LauncherDiscovery::managedPrefix(dataRoot));
     volume->setPlaceholderText("Select a mounted source with apps or libraries");
     auto detectPaths = [this] {
-        const auto detectedRuntimes = LauncherDiscovery::runtimes(LauncherDiscovery::roots(), QStandardPaths::findExecutable("darling"));
+        const auto detectedRuntimes = LauncherDiscovery::runtimes(LauncherDiscovery::roots(), {});
         volume->setText(LauncherSources::automaticSource(LauncherSources::candidates(mountProvider()), volume->text()));
+        const QString system = QStandardPaths::findExecutable("darling");
+        const QString systemPath = QFileInfo(system).canonicalFilePath();
+        if (!system.isEmpty() && (systemPath.startsWith("/usr/") || systemPath.startsWith("/opt/")) && QFileInfo(darling->text()).canonicalFilePath() == systemPath && !QSettings("cristim", "darling-launcher").value("darlingAdopted", false).toBool()) { darling->clear(); runtimeRoot->clear(); }
         if ((darling->text().isEmpty() || !QFileInfo(darling->text()).isExecutable()) && !detectedRuntimes.isEmpty()) {
             darling->setText(detectedRuntimes.first().launcher); runtimeRoot->setText(detectedRuntimes.first().installRoot);
         }
@@ -382,7 +385,7 @@ void Window::offerExistingDarling() {
                 prefix->setText(chosenPrefix);
             }
             darling->setText(found.first().launcher); runtimeRoot->setText(found.first().installRoot);
-            QSettings settings("cristim", "darling-launcher"); settings.setValue("darling", darling->text()); settings.setValue("runtimeRoot", runtimeRoot->text()); settings.setValue("prefix", prefix->text());
+            QSettings settings("cristim", "darling-launcher"); settings.setValue("darling", darling->text()); settings.setValue("runtimeRoot", runtimeRoot->text()); settings.setValue("prefix", prefix->text()); settings.setValue("darlingAdopted", true);
             LauncherLog::write("app", "using existing Darling " + darling->text() + " with prefix " + prefix->text());
             existing->close(); if (setupBanner) setupBanner->hide(); updatePrefixChoices(); load(); importQueued();
         });

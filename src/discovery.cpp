@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "discovery.h"
+#include <algorithm>
 #include <QDir>
 #include <QFileInfo>
 #include <QStandardPaths>
@@ -10,7 +11,7 @@ namespace LauncherDiscovery {
 QStringList cloneArguments(const QString &repository, const QString &destination) { return {"clone", "--progress", "--", repository, destination}; }
 QString defaultVolume(const QStringList &mounts, const QString &current) { return mounts.size() == 1 ? mounts.first() : current; }
 QString dataRoot() { return QDir::homePath() + "/.darling-launcher"; }
-QStringList roots() { return {QDir::homePath()+"/src", dataRoot()+"/sources", dataRoot()+"/workspaces", QDir::tempPath()}; }
+QStringList roots() { return {dataRoot() + "/workspaces"}; }
 static QStringList candidates(const QStringList &roots) {
     QStringList result;
     for (const auto &root : roots) {
@@ -50,6 +51,7 @@ QList<Runtime> runtimes(const QStringList &roots, const QString &installedLaunch
         add(path + "/build/src/startup/darling", path + "/install/usr/local");
         add(path + "/build/src/startup/darling", path + "/build/image/usr/local");
     }
+    std::sort(result.begin(), result.end(), [](const Runtime &a, const Runtime &b) { return QFileInfo(a.launcher).lastModified() > QFileInfo(b.launcher).lastModified(); });
     return result;
 }
 QString cleanSource(const QStringList &roots) {
