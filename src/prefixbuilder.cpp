@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "prefixbuilder.h"
+#include "log.h"
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
@@ -79,10 +80,11 @@ bool validateRequest(const PrefixBuildRequest &request, QString *message) {
 PrefixBuilder::PrefixBuilder(QObject *parent) : QObject(parent) {
     process.setProcessChannelMode(QProcess::MergedChannels);
     connect(&process, &QProcess::readyReadStandardOutput, this, [this] {
-        QString text = QString::fromLocal8Bit(process.readAllStandardOutput()); phaseOutput += text; emit output(text);
+        QString text = QString::fromLocal8Bit(process.readAllStandardOutput()); phaseOutput += text; LauncherLog::write("build", text); emit output(text);
     });
     connect(&process, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
-        QString text = QString::fromLocal8Bit(process.readAllStandardOutput()); phaseOutput += text; emit output(text);
+        QString text = QString::fromLocal8Bit(process.readAllStandardOutput()); phaseOutput += text; LauncherLog::write("build", text); emit output(text);
+        LauncherLog::write("build", "phase process exited with status " + QString::number(code));
         if (phase == Phase::Idle) return;
         if (code != 0 || status != QProcess::NormalExit) { fail("Prefix builder failed with exit status " + QString::number(code) + ". Inspect the output and retained workspace."); return; }
         advance();

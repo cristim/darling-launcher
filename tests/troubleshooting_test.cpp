@@ -17,7 +17,9 @@
 #include <QtTest>
 class TroubleshootingTest : public QObject {
     Q_OBJECT
+    QTemporaryDir isolatedHome;
 private slots:
+    void initTestCase() { QVERIFY(isolatedHome.isValid()); qputenv("HOME", isolatedHome.path().toUtf8()); }
     void rememberedLaunchChoicesAndMountOffer() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", temporary.path().toUtf8());
         LauncherTroubleshooting::saveRecoveryChoices({true, true, false, true, "codex"});

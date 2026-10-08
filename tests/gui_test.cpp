@@ -288,7 +288,7 @@ private slots:
         QVERIFY(!window.findChild<QWidget *>("contributionPanel"));
         window.findChild<QPushButton *>("openSettings")->click(); QVERIFY(settings->isVisible());
         QVERIFY(window.findChild<QLineEdit *>("volumeField")->isVisible());
-        QVERIFY(!window.findChild<QWidget *>("Apply settings"));
+        QVERIFY(!window.findChild<QWidget *>("Apply settings")); QVERIFY(window.findChild<QLabel *>("logPath")->text().endsWith(QDir::homePath() + "/.darling-launcher/logs/launcher.log"));
 
     }
     void importDiagnoseRetry_data() {

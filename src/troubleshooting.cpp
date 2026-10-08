@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "troubleshooting.h"
+#include "log.h"
 #include "core.h"
 #include "discovery.h"
 #include <QComboBox>
@@ -69,7 +70,7 @@ QStringList LauncherTroubleshooting::backgroundArguments(const QString &agent, c
 BackgroundFix::BackgroundFix(const QString &agent, const QStringList &args, const QString &workspace, QObject *parent) : QObject(parent) {
     setObjectName("backgroundFix");
     process.setWorkingDirectory(workspace); process.setProcessChannelMode(QProcess::MergedChannels);
-    auto append = [workspace](const QByteArray &bytes) { QFile log(workspace + "/AGENT.log"); if (log.open(QIODevice::WriteOnly | QIODevice::Append)) log.write(bytes); };
+    auto append = [workspace](const QByteArray &bytes) { LauncherLog::write("agent", QString::fromUtf8(bytes)); QFile log(workspace + "/AGENT.log"); if (log.open(QIODevice::WriteOnly | QIODevice::Append)) log.write(bytes); };
     connect(&process, &QProcess::started, this, [this, agent, workspace] { process.closeWriteChannel(); emit statusChanged(agent + " is working in the background. Private log: " + workspace + "/AGENT.log"); });
     connect(&process, &QProcess::readyReadStandardOutput, this, [this, append] { append(process.readAllStandardOutput()); });
     connect(&process, &QProcess::finished, this, [this, append, agent, workspace](int code, QProcess::ExitStatus exit) {

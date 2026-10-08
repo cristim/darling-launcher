@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "prefixbuilder.h"
 #include "discovery.h"
+#include "log.h"
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -15,7 +16,15 @@ QJsonObject readJson(const QString &path) { QFile file(path); if (!file.open(QIO
 }
 class PrefixTest : public QObject {
     Q_OBJECT
+    QTemporaryDir isolatedHome;
 private slots:
+    void logRecordsBuilderOutputUnderDataFolder() {
+        LauncherLog::write("test", "first line\nsecond line");
+        QCOMPARE(LauncherLog::path(), QDir::homePath() + "/.darling-launcher/logs/launcher.log");
+        QFile log(LauncherLog::path()); QVERIFY(log.open(QIODevice::ReadOnly)); const QString text = QString::fromUtf8(log.readAll());
+        QVERIFY(text.contains("[test] first line")); QVERIFY(text.contains("[test] second line"));
+    }
+    void initTestCase() { QVERIFY(isolatedHome.isValid()); qputenv("HOME", isolatedHome.path().toUtf8()); }
     void independentClone() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString git = QStandardPaths::findExecutable("git"); QVERIFY(!git.isEmpty());

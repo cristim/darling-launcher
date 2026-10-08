@@ -219,3 +219,13 @@ The script uses the calling user's identity supplied by `pkexec` for file access
 ownership. It never writes filesystem data to the macOS device or unlocks encrypted
 volumes. Mounts remain present until explicitly unmounted. Apple payloads and
 filesystem metadata are private local data and are not uploaded.
+
+## Diagnostic log
+
+The launcher appends to `~/.darling-launcher/logs/launcher.log` (rotated at 8 MB to a
+timestamped file next to it). Each line is `time [source] text`. Sources: `app`, `build`
+(clone and prefix builder output), `launch` (the exact darling command, loader output and
+exit status), `agent` (AI fix sessions) and `qt-*` (Qt warnings). The path is shown in
+Settings. To have Claude investigate a failure, ask it to read this file, plus the build
+workspace named in the build status, and the loader output it records.
+Logs hold local paths and loader output but never Apple binaries or symbol dumps.

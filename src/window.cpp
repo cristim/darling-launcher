@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "window.h"
+#include "log.h"
 #include "mountdialog.h"
 #include "appbrowser.h"
 #include "prefixdialog.h"
@@ -194,7 +195,8 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         if (!LauncherCore::stageBrewfile(p, source, &guestPath, &error)) { QMessageBox::warning(this, "Brewfile", error); return; }
         runCommand("Brewfile", {"exec", "/opt/homebrew/bin/brew", "bundle", "--file", guestPath});
     });
-    settingsLayout->addLayout(settingsToolbar); settingsLayout->addStretch();
+    settingsLayout->addLayout(settingsToolbar);
+    auto *logPath = new QLabel("Diagnostic log (share it when reporting a problem): " + LauncherLog::path()); logPath->setObjectName("logPath"); logPath->setWordWrap(true); logPath->setTextInteractionFlags(Qt::TextSelectableByMouse); settingsLayout->addWidget(logPath); settingsLayout->addStretch();
     auto *closeSettings = new QDialogButtonBox(QDialogButtonBox::Close); settingsLayout->addWidget(closeSettings);
     connect(closeSettings, &QDialogButtonBox::rejected, settingsDialog, &QDialog::hide);
     layout->addLayout(toolbar);
@@ -519,6 +521,7 @@ void Window::launch(const QString &key, bool retry) {
 }
 void Window::runCommand(const QString &label, const QStringList &args, const QString &key) {
     auto invalid = [this, label, key](const QString &error) {
+        LauncherLog::write("launch", label + " not started: " + error);
         if (!key.isEmpty()) { outputs[key] = error; failedApps.insert(key); apps->setActivity(key, AppBrowser::State::Failed); apps->setStatus(key, "Failed to start"); updateContribution(); }
         setBusy(activeProcesses > 0, error); QMessageBox::warning(this, label, error);
         if (!key.isEmpty()) recoverFailure(key);
@@ -538,12 +541,13 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     if (!key.isEmpty()) runningApps.insert(key);
     setBusy(true, "Running " + label);
     connect(process, &QProcess::started, this, [this, key, p] { if (!key.isEmpty() && prefix->text() == p) apps->setActivity(key, AppBrowser::State::Running); });
-    connect(process, &QProcess::readyReadStandardOutput, this, [this, process, key, p] {
-        QString text = QString::fromLocal8Bit(process->readAllStandardOutput());
+    connect(process, &QProcess::readyReadStandardOutput, this, [this, process, key, p, label] {
+        QString text = QString::fromLocal8Bit(process->readAllStandardOutput()); LauncherLog::write("launch:" + label, text);
         if (!key.isEmpty() && prefix->text() == p) { outputs[key] += text; diagnoseOutput(key); updateRecovery(key); }
     });
     connect(process, &QProcess::finished, this, [this, process, key, label, p](int code, QProcess::ExitStatus exit) {
         const bool success = code == 0 && exit == QProcess::NormalExit;
+        LauncherLog::write("launch", label + (exit == QProcess::NormalExit ? " exited with status " + QString::number(code) : QString(" crashed")));
         --activeProcesses;
         runningApps.remove(key);
         setBusy(activeProcesses > 0, label + " exited with status " + QString::number(code));
@@ -566,8 +570,9 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
         process->deleteLater();
     });
     connect(process, &QProcess::errorOccurred, this, [this, process, label, key, p](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart) { --activeProcesses; runningApps.remove(key); if (!key.isEmpty() && prefix->text() == p) { outputs[key] += process->errorString(); failedApps.insert(key); apps->setActivity(key, AppBrowser::State::Failed); apps->setStatus(key, "Failed to start"); } setBusy(activeProcesses > 0, label + ": " + process->errorString()); updateContribution(); if (!key.isEmpty() && prefix->text() == p) recoverFailure(key); process->deleteLater(); }
+        if (error == QProcess::FailedToStart) { LauncherLog::write("launch", label + " failed to start: " + process->errorString()); --activeProcesses; runningApps.remove(key); if (!key.isEmpty() && prefix->text() == p) { outputs[key] += process->errorString(); failedApps.insert(key); apps->setActivity(key, AppBrowser::State::Failed); apps->setStatus(key, "Failed to start"); } setBusy(activeProcesses > 0, label + ": " + process->errorString()); updateContribution(); if (!key.isEmpty() && prefix->text() == p) recoverFailure(key); process->deleteLater(); }
     });
+    LauncherLog::write("launch", label + ": " + darling->text() + " " + args.join(' ') + " (prefix " + p + ", runtime " + runtimeRoot->text() + ")");
     process->start(darling->text(), args);
 }
 
