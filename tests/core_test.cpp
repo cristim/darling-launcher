@@ -92,6 +92,10 @@ private slots:
         QVERIFY2(LauncherCore::importLibrary(volume, prefix,
             "/Library/Frameworks/Good.framework/Good", &error), qPrintable(error));
         QVERIFY(QFileInfo::exists(prefix + "/Library/Frameworks/Good.framework/Good"));
+        QVERIFY(QDir().mkpath(volume + "/System/Library/PrivateFrameworks/Calculate.framework/Versions/A/Resources"));
+        QVERIFY(!LauncherCore::importLibrary(volume, prefix, "/System/Library/PrivateFrameworks/Calculate.framework/Versions/A/Calculate", &error));
+        QVERIFY(error.contains("no standalone library file"));
+        QVERIFY(!QFileInfo::exists(prefix + "/System/Library/PrivateFrameworks/Calculate.framework"));
     }
     void catalogBrewfileAndIssue() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());

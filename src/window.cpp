@@ -194,12 +194,39 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         QString key = selectedKey();
         if (!pending.contains(key)) { QMessageBox::information(this, "Diagnosis", "Select an app with a missing loader dependency."); return; }
         if (runningApps.contains(key)) { QMessageBox::information(this, "Diagnosis", "The launch process is still running after the loader error. Choose Stop selected prefix processes, then retry. This stops all apps in this prefix."); return; }
-        QString error; auto missing = pending.value(key);
-        if (!LauncherCore::importLibrary(volume->text(), prefix->text(), missing.expectedIn, &error)) {
-            QMessageBox::warning(this, "Library import", error); return;
-        }
+        if (importRunning) { statusBar()->showMessage("An import is already in progress."); return; }
+        const auto missing = pending.value(key);
+        const QString source = volume->text(), destination = prefix->text();
         QJsonObject step{{"symbol", missing.symbol}, {"failure", missing.missingLibrary ? "missing library" : "missing symbol"}, {"library", missing.expectedIn}, {"referencedFrom", missing.referencedFrom}, {"action", "imported from selected volume"}, {"loaderOutput", outputs.value(key)}};
-        chains[key].append(step); persist(); pending.remove(key); updateContribution(); launch(key);
+        step.insert("sourceVolume", source); step.insert("sourceLibrary", source + missing.expectedIn); step.insert("destinationPrefix", destination);
+        auto *watcher = new QFutureWatcher<QString>(this);
+        importRunning = true; setBusy(true, "Importing library: " + missing.expectedIn);
+        connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, key, step, destination] {
+            QString error = watcher->result(); watcher->deleteLater(); importRunning = false;
+            if (!error.isEmpty()) {
+                setBusy(activeProcesses > 0, "Library import failed: " + error);
+                QMessageBox::warning(this, "Library import", error); return;
+            }
+            auto catalog = LauncherCore::loadCatalog(destination); auto records = catalog.value("apps").toArray();
+            QJsonArray recordedChain; bool found = false;
+            for (int index = 0; index < records.size(); ++index) {
+                auto record = records[index].toObject();
+                if (record.value("bundle").toString() != key) continue;
+                recordedChain = record.value("chain").toArray(); recordedChain.append(step);
+                record.insert("chain", recordedChain); records[index] = record; found = true; break;
+            }
+            catalog.insert("apps", records);
+            if (!found || !LauncherCore::saveCatalog(destination, catalog, &error)) {
+                setBusy(activeProcesses > 0, "Library copied, but dependency recording failed: " + error); return;
+            }
+            if (prefix->text() != destination) {
+                setBusy(activeProcesses > 0, "Library imported and recorded in " + destination + ". Select that prefix to retry."); return;
+            }
+            chains[key] = recordedChain; pending.remove(key); updateContribution(); launch(key);
+        });
+        watcher->setFuture(QtConcurrent::run([source, destination, missing] {
+            QString error; LauncherCore::importLibrary(source, destination, missing.expectedIn, &error); return error;
+        }));
     });
     add("Install Brewfile", [this] {
         QString source = QFileDialog::getOpenFileName(this, "Select Brewfile"); if (source.isEmpty()) return;
@@ -259,6 +286,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     setCentralWidget(central);
     updateSourceChoices(); load();
     statusBar()->showMessage(sourceSummary->text());
+    connect(prefix, &QLineEdit::textChanged, this, [this] { pending.clear(); updateContribution(); });
     auto *mountRefresh = new QTimer(this); mountRefresh->setInterval(3000);
     connect(mountRefresh, &QTimer::timeout, this, &Window::updateSourceChoices); mountRefresh->start();
     if (mountAll) QTimer::singleShot(0, this, [this, tabs] {
@@ -311,7 +339,7 @@ void Window::updateContribution() {
         "Libraries remain private; nothing is submitted until you approve a completed draft.");
 }
 
-void Window::setBusy(bool busy, const QString &message) { progress->setRange(0, busy ? 0 : 1); if (!busy) progress->setValue(1); statusBar()->showMessage(message); log->append(message); }
+void Window::setBusy(bool busy, const QString &message) { busy = busy || importRunning; progress->setRange(0, busy ? 0 : 1); if (!busy) progress->setValue(1); statusBar()->showMessage(message); log->append(message); }
 void Window::refresh() {
     const QString source = volume->text(); const int generation = ++scanGeneration;
     available->clear();
@@ -387,6 +415,7 @@ QString Window::selectedKey() const { int row = apps->currentRow(); return row <
 void Window::launch(const QString &key) {
     if (!entries.contains(key)) return;
     if (runningApps.contains(key)) { setBusy(true, "This app already has a running launch process."); return; }
+    pending.remove(key);
     const AppEntry app = entries.value(key);
     outputs[key].clear();
     for (int row = 0; row < apps->rowCount(); ++row) if (apps->item(row, 1)->text() == key) apps->item(row, 2)->setText("Launching…");
@@ -408,15 +437,15 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     ++activeProcesses;
     if (!key.isEmpty()) runningApps.insert(key);
     setBusy(true, "Running " + label);
-    connect(process, &QProcess::readyReadStandardOutput, this, [this, process, key] {
+    connect(process, &QProcess::readyReadStandardOutput, this, [this, process, key, p] {
         QString text = QString::fromLocal8Bit(process->readAllStandardOutput()); log->insertPlainText(text); log->ensureCursorVisible();
-        if (!key.isEmpty()) { outputs[key] += text; diagnoseOutput(key); }
+        if (!key.isEmpty() && prefix->text() == p) { outputs[key] += text; diagnoseOutput(key); }
     });
-    connect(process, &QProcess::finished, this, [this, process, key, label](int code, QProcess::ExitStatus) {
+    connect(process, &QProcess::finished, this, [this, process, key, label, p](int code, QProcess::ExitStatus) {
         --activeProcesses;
         runningApps.remove(key);
         setBusy(activeProcesses > 0, label + " exited with status " + QString::number(code));
-        if (!key.isEmpty()) {
+        if (!key.isEmpty() && prefix->text() == p) {
             outputs[key] += QString::fromLocal8Bit(process->readAllStandardOutput());
             MissingSymbol missing = LauncherCore::diagnose(outputs.value(key));
             int row = -1; for (int i = 0; i < apps->rowCount(); ++i) if (apps->item(i, 1)->text() == key) row = i;

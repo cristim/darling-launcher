@@ -189,6 +189,8 @@ bool importLibrary(const QString &volume, const QString &prefix, const QString &
     if (match.hasMatch()) relative = relative.left(match.capturedEnd(2));
     if (!relative.startsWith("System/Library/") && !relative.startsWith("usr/lib/") && !relative.startsWith("Library/Frameworks/"))
         return fail(error, "Library path is outside supported macOS system locations");
+    if (!QFileInfo(volume + expectedIn).isFile())
+        return fail(error, "The source has no standalone library file at " + expectedIn + ". Framework resources alone cannot satisfy the loader. The library may reside in the macOS dyld shared cache; cache extraction is not supported. No library was imported.");
     return safeCopy(volume + '/' + relative, prefix + '/' + relative, volume, prefix, error);
 }
 
@@ -253,6 +255,7 @@ QString issueDraft(const AppEntry &app, const QJsonArray &chain, const QString &
     for (const auto &entry : chain) {
         auto item = entry.toObject();
         text += "- " + (item.value("symbol").toString().isEmpty() ? "Library not loaded: " : item.value("symbol").toString() + " expected in ") + item.value("library").toString() + "; action: " + item.value("action").toString() + "\n";
+        if (!item.value("sourceLibrary").toString().isEmpty()) text += "  - Imported source: `" + item.value("sourceLibrary").toString() + "`\n";
         if (!item.value("loaderOutput").toString().isEmpty()) text += "\n```text\n" + item.value("loaderOutput").toString().left(8000) + "\n```\n";
     }
     text += "\n## Latest loader output\n```text\n" + output.left(8000) + "\n```\n\n";

@@ -18,12 +18,16 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QPushButton>
+#include <QProgressBar>
 #include <QRegularExpression>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTextEdit>
 #include <QScopeGuard>
+#include <QSemaphore>
+#include <QThreadPool>
+#include <QtConcurrent>
 #include <QtTest>
 #include <QtEndian>
 
@@ -139,15 +143,18 @@ private slots:
         QTest::addColumn<bool>("retrySuccess");
         QTest::addColumn<bool>("missingLibrary");
         QTest::addColumn<bool>("wrapperStaysRunning");
-        QTest::newRow("workaround-succeeds") << true << false << false;
-        QTest::newRow("workaround-still-fails") << false << false << false;
-        QTest::newRow("missing-library-workaround") << true << true << false;
-        QTest::newRow("loader-error-before-wrapper-exit") << true << true << true;
+        QTest::addColumn<bool>("prefixChanges");
+        QTest::newRow("workaround-succeeds") << true << false << false << false;
+        QTest::newRow("workaround-still-fails") << false << false << false << false;
+        QTest::newRow("missing-library-workaround") << true << true << false << false;
+        QTest::newRow("loader-error-before-wrapper-exit") << true << true << true << false;
+        QTest::newRow("prefix-changes-during-import") << true << true << false << true;
     }
     void importDiagnoseRetry() {
         QFETCH(bool, retrySuccess);
         QFETCH(bool, missingLibrary);
         QFETCH(bool, wrapperStaysRunning);
+        QFETCH(bool, prefixChanges);
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
         QString volume = temporary.path() + "/volume", prefix = temporary.path() + "/prefix";
@@ -209,13 +216,33 @@ private slots:
         }
         QVERIFY(QFile::rename(volume + "/usr/lib/libExample.dylib", volume + "/usr/lib/temporarily-unavailable"));
         window.findChild<QPushButton *>("Import needed library and retry")->click();
+        QCOMPARE(window.findChild<QProgressBar *>()->maximum(), 0);
+        QTRY_VERIFY(window.findChild<QTextEdit *>()->toPlainText().contains("Library import failed:"));
         QVERIFY(!window.findChild<QWidget *>("contributionPanel")->isVisible());
         QVERIFY(QFile::rename(volume + "/usr/lib/temporarily-unavailable", volume + "/usr/lib/libExample.dylib"));
-        window.findChild<QPushButton *>("Import needed library and retry")->click();
+        if (prefixChanges) {
+            const QString other = temporary.path() + "/other-prefix"; QVERIFY(QDir().mkpath(other));
+            auto *pool = QThreadPool::globalInstance(); pool->waitForDone(); const int maximum = pool->maxThreadCount(); pool->setMaxThreadCount(1);
+            QSemaphore started, release;
+            auto blocked = QtConcurrent::run([&] { started.release(); release.acquire(); });
+            auto unblock = qScopeGuard([&] { release.release(); blocked.waitForFinished(); pool->setMaxThreadCount(maximum); });
+            QVERIFY(started.tryAcquire(1, 2000));
+            window.findChild<QPushButton *>("Import needed library and retry")->click();
+            window.findChild<QLineEdit *>("prefixField")->setText(other);
+            release.release(); blocked.waitForFinished();
+            QTRY_VERIFY(window.findChild<QTextEdit *>()->toPlainText().contains("Select that prefix to retry."));
+            QVERIFY(!QFileInfo::exists(other + "/usr/lib/libExample.dylib"));
+            QVERIFY(LauncherCore::loadCatalog(other).isEmpty());
+            window.findChild<QLineEdit *>("prefixField")->setText(prefix);
+            window.findChild<QPushButton *>("Scan volume")->click(); apps->selectRow(0);
+            window.findChild<QPushButton *>("Launch selected")->click();
+        } else window.findChild<QPushButton *>("Import needed library and retry")->click();
         QTRY_COMPARE_WITH_TIMEOUT(apps->item(0, 2)->text(), retrySuccess ? QString("Exited successfully") : QString("Exited 2"), 5000);
         QVERIFY(QFileInfo::exists(prefix + "/usr/lib/libExample.dylib"));
         auto catalog = LauncherCore::loadCatalog(prefix);
         QCOMPARE(catalog.value("apps").toArray().first().toObject().value("chain").toArray().size(), 1);
+        QCOMPARE(catalog.value("apps").toArray().first().toObject().value("chain").toArray().first().toObject().value("sourceLibrary").toString(), volume + "/usr/lib/libExample.dylib");
+        if (retrySuccess) QVERIFY(window.findChild<QTextEdit *>()->toPlainText().contains("succeeded after importing macOS libraries"));
         QVERIFY(window.findChild<QWidget *>("contributionPanel")->isVisible());
         QString explanation = window.findChild<QLabel *>("contributionMessage")->text();
         QVERIFY(explanation.contains("libExample.dylib")); QVERIFY(explanation.contains("nothing is submitted"));
