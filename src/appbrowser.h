@@ -5,6 +5,7 @@
 #include <QLabel>
 #include <QPoint>
 #include <QRubberBand>
+#include <QPushButton>
 
 class AppBrowser : public QListWidget {
     Q_OBJECT
@@ -44,6 +45,22 @@ protected:
     QMimeData *mimeData(const QList<QListWidgetItem *> &items) const override;
     QStringList mimeTypes() const override;
     virtual QString dragMimeType() const;
+};
+
+class SortHeader : public QWidget {
+    Q_OBJECT
+public:
+    explicit SortHeader(QWidget *parent = nullptr);
+    static constexpr int SizeColumnWidth = 88;
+    void setSort(bool bySize, bool descending);
+    bool bySize() const { return sizeColumn; }
+    bool descending() const { return reverse; }
+signals:
+    void sortChanged(bool bySize, bool descending);
+private:
+    QPushButton *nameButton, *sizeButton;
+    bool sizeColumn = false, reverse = false;
+    void refreshLabels();
 };
 
 class ImportedBrowser : public AppBrowser {

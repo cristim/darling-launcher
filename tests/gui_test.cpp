@@ -56,7 +56,7 @@ private slots:
             window.findChild<QPushButton *>("emptyChooseSource")->click(); QVERIFY(window.findChild<QDialog *>("settingsDialog")->isVisible()); window.findChild<QDialog *>("settingsDialog")->hide();
             auto *choices = window.findChild<QComboBox *>("prefixChoices"); QCOMPARE(choices->count(), 2); choices->setCurrentIndex(choices->findData(second)); QVERIFY(QMetaObject::invokeMethod(choices, "activated", Q_ARG(int, choices->currentIndex())));
             QCOMPARE(window.findChild<QLineEdit *>("prefixField")->text(), second); QCOMPARE(choices->toolTip(), second);
-            window.findChild<QPushButton *>("gridView")->click(); window.findChild<QComboBox *>("appSort")->setCurrentIndex(3);
+            window.findChild<QPushButton *>("gridView")->click(); window.findChild<SortHeader *>("availableSortHeader")->setSort(true, true);
             window.resize(1150, 800); window.findChild<QSplitter *>("browserSplitter")->setSizes({300, 650});
             window.close(); geometry = settings.value("windowGeometry").toByteArray(); splitter = settings.value("splitterState").toByteArray(); QVERIFY(!geometry.isEmpty()); QVERIFY(!splitter.isEmpty());
         }
@@ -64,7 +64,7 @@ private slots:
         QCOMPARE(restored.findChild<QComboBox *>("prefixChoices")->currentData().toString(), second);
         QCOMPARE(restored.findChild<AppBrowser *>("availableApps")->viewMode(), QListView::IconMode);
         QCOMPARE(restored.findChild<ImportedBrowser *>("importedApps")->iconSize(), QSize(64, 64));
-        QCOMPARE(restored.findChild<QComboBox *>("appSort")->currentIndex(), 3); QWidget reference; QVERIFY(reference.restoreGeometry(geometry)); QCOMPARE(restored.size(), reference.size().expandedTo(restored.minimumSize()));
+        QVERIFY(restored.findChild<SortHeader *>("importedSortHeader")->bySize()); QVERIFY(restored.findChild<SortHeader *>("importedSortHeader")->descending()); QWidget reference; QVERIFY(reference.restoreGeometry(geometry)); QCOMPARE(restored.size(), reference.size().expandedTo(restored.minimumSize()));
         QCOMPARE(settings.value("splitterState").toByteArray(), splitter); QVERIFY(restored.findChild<QSplitter *>("browserSplitter")->restoreState(splitter));
         QVERIFY(!restored.findChild<QDialog *>("settingsDialog")->isVisible());
     }
@@ -227,16 +227,16 @@ private slots:
         browser.showPreviews({{"Applications/A.app", "Calculator", {}, 10}, {"Applications/B.app", "Calendar", {}, 20}, {"Applications/C.app", "Notes", {}, 30}}); browser.show();
         QVERIFY(QTest::qWaitForWindowExposed(&browser));
         const QModelIndex first = browser.model()->index(0, 0), second = browser.model()->index(1, 0), third = browser.model()->index(2, 0);
-        const QPoint onApp = browser.contentRect(first).center(), blank(browser.viewport()->width() - 10, browser.visualRect(first).center().y());
+        const QPoint onApp = browser.contentRect(first).center(), blank(browser.visualRect(first).right() - SortHeader::SizeColumnWidth - 10, browser.visualRect(first).center().y());
         QVERIFY(!browser.onContent(first, blank));
         browser.selectAll(); QCOMPARE(browser.selectedItems().size(), 3);
         QTest::mousePress(browser.viewport(), Qt::LeftButton, Qt::NoModifier, browser.contentRect(second).center());
         QCOMPARE(browser.selectedItems().size(), 3);
         QTest::mouseRelease(browser.viewport(), Qt::LeftButton, Qt::NoModifier, browser.contentRect(second).center());
         browser.selectAll();
-        QTest::mousePress(browser.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(browser.viewport()->width() - 10, browser.visualRect(first).top() + 1));
+        QTest::mousePress(browser.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(browser.visualRect(first).right() - SortHeader::SizeColumnWidth - 10, browser.visualRect(first).top() + 1));
         QCOMPARE(browser.selectedItems().size(), 0);
-        QTest::mouseMove(browser.viewport(), QPoint(browser.viewport()->width() - 10, browser.visualRect(second).bottom() - 1));
+        QTest::mouseMove(browser.viewport(), QPoint(browser.visualRect(second).right() - SortHeader::SizeColumnWidth - 10, browser.visualRect(second).bottom() - 1));
         QTest::mouseMove(browser.viewport(), QPoint(10, browser.visualRect(second).center().y()));
         QTest::mouseRelease(browser.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(10, browser.visualRect(second).center().y()));
         QCOMPARE(browser.selectedBundles(), (QStringList{"Applications/A.app", "Applications/B.app"})); Q_UNUSED(onApp); Q_UNUSED(third);
@@ -296,6 +296,15 @@ private slots:
             while (widget && !widget->acceptDrops()) widget = widget->parentWidget();
             qDebug() << "TARGET" << point << widget; QCOMPARE(widget, apps->viewport());
         }
+    }
+    void clickingHeadersSortsByNameOrSize() {
+        SortHeader header; QSignalSpy spy(&header, &SortHeader::sortChanged);
+        header.findChild<QPushButton *>("sortBySize")->click(); QCOMPARE(spy.takeLast(), (QList<QVariant>{true, false}));
+        header.findChild<QPushButton *>("sortBySize")->click(); QCOMPARE(spy.takeLast(), (QList<QVariant>{true, true}));
+        header.findChild<QPushButton *>("sortByName")->click(); QCOMPARE(spy.takeLast(), (QList<QVariant>{false, false}));
+        header.findChild<QPushButton *>("sortByName")->click(); QCOMPARE(spy.takeLast(), (QList<QVariant>{false, true}));
+        AppBrowser browser; browser.showPreviews({{"Applications/A.app", "Alpha", {}, 300}, {"Applications/B.app", "Beta", {}, 100}}); browser.setSorting(true, false);
+        QCOMPARE(browser.item(0)->data(Qt::UserRole).toString(), "Applications/B.app");
     }
     void iconViewsAndSelection() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());

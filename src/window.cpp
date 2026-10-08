@@ -215,12 +215,13 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     auto *list = new QPushButton("List"); list->setObjectName("listView"); list->setCheckable(true); list->setChecked(true);
     auto *grid = new QPushButton("Grid"); grid->setObjectName("gridView"); grid->setCheckable(true);
     group->addButton(list); group->addButton(grid); views->addWidget(list); views->addWidget(grid);
-    auto *sort = new QComboBox; sort->setObjectName("appSort"); sort->addItems({"Name A–Z", "Name Z–A", "Size smallest first", "Size largest first"}); views->addWidget(sort); sourceLayout->addLayout(views);
+    sourceLayout->addLayout(views);
     auto *sourceSearch = new QLineEdit; sourceSearch->setObjectName("sourceSearch"); sourceSearch->setPlaceholderText("Search available apps"); sourceSearch->setClearButtonEnabled(true); sourceLayout->addWidget(sourceSearch);
     auto *sourceFilter = new QComboBox; sourceFilter->setObjectName("sourceFilter"); sourceFilter->addItems({"Not yet imported", "All apps"}); sourceLayout->addWidget(sourceFilter);
     sourceEmpty = new QLabel("Select a mounted macOS source in Settings, then choose apps to import."); sourceEmpty->setObjectName("sourceEmptyState"); sourceEmpty->setWordWrap(true); sourceLayout->addWidget(sourceEmpty);
     auto *chooseSource = new QPushButton("Choose macOS source…"); chooseSource->setObjectName("emptyChooseSource"); sourceLayout->addWidget(chooseSource);
     connect(chooseSource, &QPushButton::clicked, settingsButton, &QPushButton::click);
+    auto *availableHeader = new SortHeader; availableHeader->setObjectName("availableSortHeader"); sourceLayout->addWidget(availableHeader);
     available = new AppBrowser; available->setObjectName("availableApps"); sourceLayout->addWidget(available);
     connect(available, &AppBrowser::visibleAppsChanged, this, [this, chooseSource](int count) { sourceEmpty->setVisible(count == 0); chooseSource->setVisible(count == 0 && volume->text().isEmpty()); sourceEmpty->setText(count > 0 ? QString() : available->count() > 0 ? "No apps to show. Everything may already be imported; choose All apps to see the full list." : volume->text().isEmpty() ? "No macOS source selected. Choose an existing readable mount in Settings, or explicitly mount a volume." : "No apps found on this source. Check the selected volume in Settings."); });
     connect(sourceSearch, &QLineEdit::textChanged, available, &AppBrowser::setSearch);
@@ -254,9 +255,15 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         if (!bundles.isEmpty()) importBundles(bundles);
     });
     connect(apps, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) { launch(item->data(Qt::UserRole).toString()); });
+    auto *importedHeader = new SortHeader; importedHeader->setObjectName("importedSortHeader"); importLayout->addWidget(importedHeader);
     importLayout->addWidget(apps);
-    connect(sort, &QComboBox::currentIndexChanged, this, [this](int index) { available->setSorting(index >= 2, index % 2); apps->setSorting(index >= 2, index % 2); QSettings("cristim", "darling-launcher").setValue("appSort", index); });
-    sort->setCurrentIndex(qBound(0, settings.value("appSort", 0).toInt(), 3)); available->setSorting(sort->currentIndex() >= 2, sort->currentIndex() % 2); apps->setSorting(sort->currentIndex() >= 2, sort->currentIndex() % 2);
+    auto applySort = [this, availableHeader, importedHeader](bool bySize, bool descending) {
+        for (SortHeader *header : {availableHeader, importedHeader}) { QSignalBlocker blocker(header); header->setSort(bySize, descending); }
+        available->setSorting(bySize, descending); apps->setSorting(bySize, descending);
+        QSettings("cristim", "darling-launcher").setValue("appSort", (bySize ? 2 : 0) + (descending ? 1 : 0));
+    };
+    connect(availableHeader, &SortHeader::sortChanged, this, applySort); connect(importedHeader, &SortHeader::sortChanged, this, applySort);
+    { const int saved = qBound(0, settings.value("appSort", 0).toInt(), 3); QSignalBlocker a(availableHeader), b(importedHeader); availableHeader->setSort(saved >= 2, saved % 2); importedHeader->setSort(saved >= 2, saved % 2); available->setSorting(saved >= 2, saved % 2); apps->setSorting(saved >= 2, saved % 2); }
     if (settings.value("gridView", false).toBool()) grid->click();
     auto *trashRow = new QHBoxLayout;
     trashNotice = new QLabel; trashNotice->setObjectName("trashNotice"); trashNotice->setWordWrap(true); trashRow->addWidget(trashNotice);

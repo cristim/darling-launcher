@@ -12,6 +12,7 @@
 #include <QStyleOptionViewItem>
 #include <QStyle>
 #include <QPainter>
+#include <QHBoxLayout>
 #include <QMouseEvent>
 #include <QApplication>
 #include <QRubberBand>
@@ -32,8 +33,7 @@ public:
     explicit AppDelegate(AppBrowser *browser) : QStyledItemDelegate(browser), browser(browser) {}
     void initStyleOption(QStyleOptionViewItem *option, const QModelIndex &index) const override {
         QStyledItemDelegate::initStyleOption(option, index);
-        if (browser->viewMode() == QListView::ListMode)
-            option->text = index.data(NameRole).toString() + "    " + QLocale().formattedDataSize(index.data(SizeRole).toLongLong(), 1, QLocale::DataSizeSIFormat);
+        if (browser->viewMode() == QListView::ListMode) option->text = index.data(NameRole).toString();
         if (browser->viewMode() == QListView::ListMode && !index.data(StatusRole).toString().isEmpty()) option->text += "    · " + index.data(StatusRole).toString();
     }
     void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
@@ -41,8 +41,15 @@ public:
         const bool gridStatus = browser->viewMode() == QListView::IconMode && !status.isEmpty();
         QStyleOptionViewItem content(option);
         const int lineHeight = option.fontMetrics.height();
+        const bool listMode = browser->viewMode() == QListView::ListMode;
         if (gridStatus) content.rect.adjust(0, 0, 0, -lineHeight - 2);
+        if (listMode) content.rect.adjust(0, 0, -SortHeader::SizeColumnWidth, 0);
         QStyledItemDelegate::paint(painter, content, index);
+        if (listMode) {
+            painter->save(); painter->setPen(option.palette.color(option.state & QStyle::State_Selected ? QPalette::HighlightedText : QPalette::Text));
+            painter->drawText(QRect(option.rect.right() - SortHeader::SizeColumnWidth, option.rect.top(), SortHeader::SizeColumnWidth - 8, option.rect.height()), Qt::AlignRight | Qt::AlignVCenter, QLocale().formattedDataSize(index.data(SizeRole).toLongLong(), 1, QLocale::DataSizeSIFormat));
+            painter->restore();
+        }
         if (gridStatus) {
             painter->save(); painter->setPen(option.palette.color(option.state & QStyle::State_Selected ? QPalette::HighlightedText : QPalette::Text));
             painter->drawText(QRect(option.rect.left(), option.rect.bottom() - lineHeight, option.rect.width(), lineHeight), Qt::AlignHCenter | Qt::AlignVCenter, option.fontMetrics.elidedText(status, Qt::ElideRight, option.rect.width() - 4)); painter->restore();
@@ -77,8 +84,8 @@ QList<QRect> AppBrowser::contentRects(const QModelIndex &index) const {
     const QRect cell = visualRect(index);
     const QFontMetrics metrics = fontMetrics();
     if (viewMode() == QListView::ListMode) {
-        const QString text = index.data(Qt::DisplayRole).toString() + "    " + QLocale().formattedDataSize(index.data(SizeRole).toLongLong(), 1, QLocale::DataSizeSIFormat) + "    · " + index.data(StatusRole).toString();
-        return {QRect(cell.left(), cell.top(), 12 + iconSize().width() + metrics.horizontalAdvance(text), cell.height())};
+        const QString text = index.data(Qt::DisplayRole).toString() + "    · " + index.data(StatusRole).toString();
+        return {QRect(cell.left(), cell.top(), 12 + iconSize().width() + metrics.horizontalAdvance(text), cell.height()), QRect(cell.right() - SortHeader::SizeColumnWidth, cell.top(), SortHeader::SizeColumnWidth, cell.height())};
     }
     const int textWidth = qMin(cell.width(), metrics.horizontalAdvance(index.data(Qt::DisplayRole).toString()) + 8);
     const QRect icon(cell.center().x() - iconSize().width() / 2, cell.top(), iconSize().width(), iconSize().height() + 8);
@@ -86,6 +93,7 @@ QList<QRect> AppBrowser::contentRects(const QModelIndex &index) const {
     return {icon, text};
 }
 QRect AppBrowser::contentRect(const QModelIndex &index) const {
+    if (viewMode() == QListView::ListMode) return contentRects(index).first();
     QRect all; for (const QRect &rect : contentRects(index)) all = all.united(rect);
     return all;
 }
@@ -262,4 +270,21 @@ void TrashTarget::dropEvent(QDropEvent *event) {
     if (!document.isArray()) return;
     QStringList bundles; for (const auto &value : document.array()) { if (!value.isString()) return; bundles << value.toString(); }
     if (!bundles.isEmpty()) { event->acceptProposedAction(); emit bundlesDropped(bundles); }
+}
+
+SortHeader::SortHeader(QWidget *parent) : QWidget(parent) {
+    auto *layout = new QHBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(0);
+    nameButton = new QPushButton; nameButton->setObjectName("sortByName"); nameButton->setFlat(true); nameButton->setStyleSheet("text-align: left; font-weight: bold; padding-left: 40px;");
+    sizeButton = new QPushButton; sizeButton->setObjectName("sortBySize"); sizeButton->setFlat(true); sizeButton->setFixedWidth(SizeColumnWidth); sizeButton->setStyleSheet("text-align: right; font-weight: bold; padding-right: 8px;");
+    layout->addWidget(nameButton, 1); layout->addWidget(sizeButton);
+    connect(nameButton, &QPushButton::clicked, this, [this] { setSort(false, !sizeColumn && !reverse); });
+    connect(sizeButton, &QPushButton::clicked, this, [this] { setSort(true, sizeColumn && !reverse); });
+    refreshLabels();
+}
+void SortHeader::setSort(bool bySize, bool descending) {
+    sizeColumn = bySize; reverse = descending; refreshLabels(); emit sortChanged(sizeColumn, reverse);
+}
+void SortHeader::refreshLabels() {
+    const QString arrow = reverse ? QStringLiteral(" ▼") : QStringLiteral(" ▲");
+    nameButton->setText("Name" + (sizeColumn ? QString() : arrow)); sizeButton->setText("Size" + (sizeColumn ? arrow : QString()));
 }

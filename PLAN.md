@@ -130,3 +130,10 @@ Drag selection: presses on an app icon/name keep the selection and start a drag 
 drag distance (selection is not redone); presses on blank space rubber-band. Double-click
 is handled explicitly. File-manager drops: URL drops of .app folders under the selected
 macOS volume import by their volume-relative path; anything else is refused with a message.
+
+First run: when no runtime is found the launcher starts the clone/build/prefix setup by itself
+in the background (hidden build dialog; banner explains the wait, offers hide and "I already
+have Darling"). Apps dropped meanwhile are queued, shown grayed out, and import when the
+prefix is ready; a desktop notification (notify-send) and the window reappear when done or
+failed. Scan/Stop/Brewfile buttons sit below the panels; the app lists have a Size column and
+clickable Name/Size headers (replacing the sort dropdown).
