@@ -70,12 +70,16 @@ public slots:
     void chooseActions(bool importLibrary, bool report, bool ai, const QString &agent);
     void updateDiagnostic(const QJsonObject &data, bool canImport, bool launchRunning, const QString &result = {});
 signals:
+    void actionsChosen(bool copy, bool report, bool ai, const QString &agent);
     void importRequested();
     void mountRequested();
     void stopRequested();
     void backgroundStatus(const QString &message);
 private:
     void submitProposal(const PrProposal &proposal);
+    QString issueBody() const;
+    void updateIssueDrafts();
+    bool applyingChoices = false;
     QJsonObject diagnostic;
     QCheckBox *importOption = nullptr, *issueOption = nullptr, *aiOption = nullptr;
     QTextEdit *details;

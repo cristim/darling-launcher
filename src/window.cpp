@@ -496,8 +496,10 @@ void Window::launch(const QString &key, bool retry) {
     if (!entries.contains(key)) return;
     if (runningApps.contains(key)) { setBusy(true, "This app already has a running launch process."); return; }
     if (!retry && !confirmLaunch(key)) return;
-    failurePreferencesShown.remove(key);
-    if (!LauncherTroubleshooting::recoveryChoices().remember) recoveryReady.remove(key);
+    if (!retry) {
+        failurePreferencesShown.remove(key);
+        if (!LauncherTroubleshooting::recoveryChoices().remember) recoveryReady.remove(key);
+    }
     pending.remove(key);
     const AppEntry app = entries.value(key);
     outputs[key].clear(); recoveryOutcomes.remove(key);
@@ -571,7 +573,11 @@ void Window::diagnoseOutput(const QString &key) {
 }
 
 void Window::recoverFailure(const QString &key) {
-    if (!entries.contains(key) || failurePreferencesShown.contains(key)) return;
+    if (!entries.contains(key)) return;
+    if (failurePreferencesShown.contains(key)) {
+        QTimer::singleShot(0, this, [this, key] { if (failedApps.contains(key) && recoveryReady.contains(key)) showRecovery(key); });
+        return;
+    }
     failurePreferencesShown.insert(key);
     const QString destination = prefix->text();
     QTimer::singleShot(0, this, [this, key, destination] {
@@ -633,8 +639,9 @@ void Window::dispatchRecovery(const QString &key) {
     const QString library = "import:" + pending.value(key).expectedIn;
     const bool copy = pending.value(key).valid() && preferences.importLibrary && !done.contains(library) && hasMountedSource() && !runningApps.contains(key) && !importRunning;
     const bool report = preferences.report && !done.contains("report");
-    const bool ai = preferences.ai && !done.contains("ai");
-    if (copy) done.insert(library); if (report) done.insert("report"); if (ai) done.insert("ai");
+    const QString aiSession = "ai:" + (pending.value(key).valid() ? pending.value(key).expectedIn : QString("launch"));
+    const bool ai = preferences.ai && !done.contains(aiSession);
+    if (copy) done.insert(library); if (report) done.insert("report"); if (ai) done.insert(aiSession);
     if (copy || report || ai) dialog->chooseActions(copy, report, ai, preferences.agent);
 }
 void Window::showRecovery(const QString &key) {
@@ -643,6 +650,13 @@ void Window::showRecovery(const QString &key) {
     if (!dialog) {
         dialog = new TroubleshootingDialog(diagnostic(key), this); dialog->setAttribute(Qt::WA_DeleteOnClose); recoveryDialogs[key] = dialog;
         const QString destination = prefix->text();
+        connect(dialog, &TroubleshootingDialog::actionsChosen, this, [this, key](bool copy, bool report, bool ai, const QString &agent) {
+            auto &choices = launchChoices[key]; choices.importLibrary = copy; choices.report = report; choices.ai = ai; choices.agent = agent;
+            recoveryReady.insert(key);
+            if (copy) recoveryActions[key].insert("import:" + pending.value(key).expectedIn);
+            if (report) recoveryActions[key].insert("report");
+            if (ai) recoveryActions[key].insert("ai:" + pending.value(key).expectedIn);
+        });
         connect(dialog, &TroubleshootingDialog::importRequested, this, [this, key, destination] { if (hasMountedSource()) importDependency(key, volume->text(), destination); });
         connect(dialog, &TroubleshootingDialog::mountRequested, this, [this] {
             for (auto *button : findChildren<QPushButton *>()) if (button->text() == "Mount macOS source…") { button->click(); break; }

@@ -85,3 +85,10 @@ results distinct from confirmed absence. Mounted sources override absent disk re
 Central triage: always target completed issue drafts and approved issue submissions
 at VibeDarling/Darling; display the target read-only. Verify exact target/body with
 fake gh and retain separate approval of completed issue and PR drafts.
+
+Multi-library recovery: keep one accepted action set throughout automatic dependency
+retries. Resolve libraries in loader order; start one independent background AI job
+and workspace for each new missing library, deduplicating repeated diagnoses. Manual
+popup action selection applies to subsequent dependencies too. Group reporting into
+one central issue draft that tracks the chain; preserve user edits, mark stale drafts
+and require explicit refresh/review before submitting changed provenance.

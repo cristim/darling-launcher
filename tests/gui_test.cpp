@@ -82,6 +82,40 @@ private slots:
         QVERIFY(!popup->findChild<QCheckBox *>("importDependencyOption")->isVisible()); QVERIFY(popup->findChild<QPushButton *>("mountDependencySource")->isVisible());
     }
 
+    void dependencyChainReusesActionsAndStartsSeparateAgents() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings settings("cristim", "darling-launcher"); settings.clear();
+        const auto path = qgetenv("PATH"), dataHome = qgetenv("XDG_DATA_HOME"); auto restore = qScopeGuard([=] { qputenv("PATH", path); if (dataHome.isEmpty()) qunsetenv("XDG_DATA_HOME"); else qputenv("XDG_DATA_HOME", dataHome); });
+        qputenv("XDG_DATA_HOME", (temporary.path() + "/data").toUtf8()); qputenv("PATH", temporary.path().toUtf8() + ':' + path);
+        const QString source = temporary.path() + "/source", prefix = temporary.path() + "/prefix";
+        QVERIFY(QDir().mkpath(source + "/usr/lib")); QVERIFY(QDir().mkpath(prefix));
+        auto write = [&](const QString &file, const QByteArray &contents) { QFile output(file); if (!output.open(QIODevice::WriteOnly)) return false; output.write(contents); output.close(); return output.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner); };
+        QVERIFY(write(source + "/usr/lib/a.dylib", "synthetic A")); QVERIFY(write(source + "/usr/lib/b.dylib", "synthetic B"));
+        QVERIFY(write(temporary.path() + "/darling", "#!/bin/sh\nfor name in a b; do if [ ! -f \"$DPREFIX/usr/lib/$name.dylib\" ]; then printf 'Library not loaded: /usr/lib/%s.dylib\\n  Referenced from: /Applications/Fixture.app/Contents/MacOS/Fixture\\n  Reason: image not found\\n' \"$name\"; exit 1; fi; done\necho launched; exit 0\n"));
+        QVERIFY(write(temporary.path() + "/codex", "#!/bin/sh\necho started\n/usr/bin/sleep 2\necho finished\n"));
+        QVERIFY(write(temporary.path() + "/gh", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + temporary.path().toUtf8() + "/gh-calls'\nexit 0\n"));
+        QString error; QVERIFY(LauncherCore::saveCatalog(prefix, QJsonObject{{"apps", QJsonArray{QJsonObject{{"name", "Fixture"}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}}}}}, &error)); settings.setValue("prefix", prefix); settings.setValue("volume", source); settings.setValue("darling", temporary.path() + "/darling");
+        Window window({}, false, [source] { return QList<SourceMount>{{source, "/dev/synthetic", "fuse", true}}; }); window.show(); window.findChild<QLineEdit *>("runtimeRootField")->clear();
+        int failurePrompts = 0;
+        QTimer approval; connect(&approval, &QTimer::timeout, [&] {
+            if (auto *choices = window.findChild<LaunchChoicesDialog *>()) {
+                if (choices->property("failurePreferences").toBool()) {
+                    ++failurePrompts; choices->findChild<QCheckBox *>("launchImportOption")->setChecked(true); choices->findChild<QCheckBox *>("launchReportOption")->setChecked(true); choices->findChild<QCheckBox *>("launchAiOption")->setChecked(true); choices->findChild<QComboBox *>("launchAgent")->setCurrentText("codex");
+                }
+                choices->accept();
+            }
+        }); approval.start(10);
+        auto *apps = window.findChild<ImportedBrowser *>("importedApps"); apps->setCurrentRow(0); window.findChild<QPushButton *>("Launch selected")->click();
+        QTRY_VERIFY_WITH_TIMEOUT(apps->status("Applications/Fixture.app").contains("Exited successfully"), 5000); QCOMPARE(failurePrompts, 1);
+        const auto chain = LauncherCore::loadCatalog(prefix).value("apps").toArray().first().toObject().value("chain").toArray(); QCOMPARE(chain.size(), 2);
+        auto jobs = window.findChildren<BackgroundFix *>(); QCOMPARE(jobs.size(), 2); QVERIFY(jobs[0]->isRunning()); QVERIFY(jobs[1]->isRunning()); QVERIFY(jobs[0]->property("workspace") != jobs[1]->property("workspace"));
+        QSet<QString> libraries;
+        for (auto *job : jobs) { const QString workspace = job->property("workspace").toString(); QVERIFY(workspace.startsWith(temporary.path() + '/')); QFile report(workspace + "/TROUBLESHOOTING.json"); QVERIFY(report.open(QIODevice::ReadOnly)); libraries.insert(QJsonDocument::fromJson(report.readAll()).object().value("missingLibrary").toString()); }
+        QCOMPARE(libraries, (QSet<QString>{"/usr/lib/a.dylib", "/usr/lib/b.dylib"}));
+        auto drafts = window.findChildren<QDialog *>("issueApprovalDialog"); QCOMPARE(drafts.size(), 1); const QString body = drafts.first()->findChild<QTextEdit *>("issueBody")->toPlainText(); QVERIFY(body.contains("/usr/lib/a.dylib")); QVERIFY(body.contains("/usr/lib/b.dylib"));
+        QFile calls(temporary.path() + "/gh-calls"); QVERIFY(calls.open(QIODevice::ReadOnly)); QVERIFY(!calls.readAll().contains("issue create"));
+        for (auto *job : jobs) job->stop(); QTRY_VERIFY(!jobs[0]->isRunning() && !jobs[1]->isRunning());
+    }
+
     void failurePreferencesRepeatUntilRemembered_data() {
         QTest::addColumn<QString>("mode");
         for (const QString &mode : {"generic", "dependency", "invalid-runtime", "failed-to-start"}) QTest::newRow(qPrintable(mode)) << mode;

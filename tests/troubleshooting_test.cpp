@@ -11,6 +11,7 @@
 #include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QTextEdit>
+#include <QTextDocument>
 #include <QTimer>
 #include <QPointer>
 #include <QtTest>
@@ -76,6 +77,19 @@ private slots:
         QPointer<TroubleshootingDialog> remaining(popup); popup->reject(); QTRY_VERIFY(remaining.isNull()); QVERIFY(job->isRunning()); QTRY_VERIFY(!job->isRunning());
         QFile log(temporary.path() + "/work/AGENT.log"); QVERIFY(log.open(QIODevice::ReadOnly)); QVERIFY(log.readAll().contains("finished"));
         QVERIFY(QFile::remove(temporary.path() + "/codex")); TroubleshootingDialog noTools(data); QVERIFY(!noTools.findChild<QCheckBox *>("aiFixOption")->isEnabled()); QVERIFY(!noTools.findChild<QCheckBox *>("importDependencyOption")->isEnabled());
+    }
+
+    void issueDraftTracksChainAndPreservesEdits() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const auto path = qgetenv("PATH"); auto restore = qScopeGuard([=] { qputenv("PATH", path); });
+        QFile gh(temporary.path() + "/gh"); QVERIFY(gh.open(QIODevice::WriteOnly)); gh.write("#!/bin/sh\nexit 0\n"); gh.close(); QVERIFY(gh.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner)); qputenv("PATH", temporary.path().toUtf8());
+        QJsonObject data{{"app", "Fixture"}, {"missingLibrary", "/usr/lib/a.dylib"}};
+        TroubleshootingDialog popup(data); popup.reviewIssue(); auto *draft = popup.findChild<QDialog *>("issueApprovalDialog"); QVERIFY(draft);
+        auto *body = draft->findChild<QTextEdit *>("issueBody"); auto *approve = draft->findChild<QPushButton *>("approveCompletedIssue"); QTRY_VERIFY(approve->isEnabled());
+        data.insert("dependencyChain", QJsonArray{QJsonObject{{"library", "/usr/lib/a.dylib"}}}); popup.updateDiagnostic(data, false, false); QVERIFY(body->toPlainText().contains("/usr/lib/a.dylib"));
+        body->setPlainText("My redacted draft"); body->document()->setModified(true);
+        data.insert("dependencyChain", QJsonArray{QJsonObject{{"library", "/usr/lib/a.dylib"}}, QJsonObject{{"library", "/usr/lib/b.dylib"}}}); popup.updateDiagnostic(data, false, false);
+        QCOMPARE(body->toPlainText(), QString("My redacted draft")); QVERIFY(!approve->isEnabled()); auto *refresh = draft->findChild<QPushButton *>("refreshIssueDraft"); QVERIFY(refresh->isVisible());
+        refresh->click(); QVERIFY(body->toPlainText().contains("/usr/lib/b.dylib")); QVERIFY(approve->isEnabled());
     }
 
     void troubleshootingApprovalBoundaries() {

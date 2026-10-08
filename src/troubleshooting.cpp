@@ -20,6 +20,7 @@
 #include <QTemporaryFile>
 #include <QTimer>
 #include <QTextEdit>
+#include <QTextDocument>
 #include <QUrl>
 #include <QUuid>
 #include <QVBoxLayout>
@@ -131,7 +132,7 @@ LaunchChoicesDialog::LaunchChoicesDialog(const QString &app, bool mounted, QWidg
     report = new QCheckBox("Prepare an issue draft using my GitHub account; ask before submitting the completed draft"); report->setObjectName("launchReportOption"); layout->addWidget(report);
     ai = new QCheckBox("Use AI in the background to implement missing functionality"); ai->setObjectName("launchAiOption"); layout->addWidget(ai);
     agent = new QComboBox; agent->setObjectName("launchAgent"); agent->addItems(LauncherTroubleshooting::agents()); layout->addWidget(agent); ai->setEnabled(agent->count() > 0);
-    auto *sharing = new QLabel("Choosing AI authorizes sharing subsequent loader output and local app/source/prefix paths with the selected agent’s configured service. No Apple payloads are shared. Work uses an independent workspace; completed issues and PRs still require separate explicit approval. Library import waits if the prefix must be stopped first."); sharing->setWordWrap(true); layout->addWidget(sharing);
+    auto *sharing = new QLabel("Choosing AI authorizes sharing subsequent loader output and local app/source/prefix paths with the selected agent’s configured service. No Apple payloads are shared. Work uses an independent workspace; completed issues and PRs still require separate explicit approval. The same actions cover the dependency chain, with a separate AI session for each missing library. Library import waits if the prefix must be stopped first."); sharing->setWordWrap(true); layout->addWidget(sharing);
     remember = new QCheckBox("Remember these choices for subsequent launches"); remember->setObjectName("rememberLaunchChoices"); layout->addWidget(remember);
     const auto saved = LauncherTroubleshooting::recoveryChoices(); copy->setChecked(saved.importLibrary); report->setChecked(saved.report); ai->setChecked(saved.ai && ai->isEnabled()); remember->setChecked(saved.remember);
     if (agent->findText(saved.agent) >= 0) agent->setCurrentText(saved.agent);
@@ -146,6 +147,10 @@ void LaunchChoicesDialog::setSourceAvailability(bool mounted, bool possible) {
     mount->setVisible(!mounted && possible);
 }
 void TroubleshootingDialog::chooseActions(bool copy, bool report, bool ai, const QString &selectedAgent) {
+    if (ai) {
+        auto *workspace = findChild<QLineEdit *>("agentWorkspace");
+        if (QFileInfo::exists(workspace->text())) workspace->setText(QFileInfo(workspace->text()).absolutePath() + '/' + QUuid::createUuid().toString(QUuid::WithoutBraces));
+    }
     if (!importOption) {
         if (report) reviewIssue();
         if (ai) {
@@ -163,7 +168,9 @@ void TroubleshootingDialog::chooseActions(bool copy, bool report, bool ai, const
     }
     importOption->setChecked(copy && importOption->isEnabled()); issueOption->setChecked(report); aiOption->setChecked(ai && aiOption->isEnabled());
     if (aiOption->isChecked()) findChild<QCheckBox *>("approveAgentData")->setChecked(true);
+    applyingChoices = true;
     findChild<QPushButton *>("runDependencyActions")->click();
+    applyingChoices = false;
 }
 TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWidget *parent) : QDialog(parent), diagnostic(initialData) {
     setObjectName("troubleshootingDialog"); setWindowTitle("Troubleshoot app failure"); resize(780, 600);
@@ -229,6 +236,7 @@ TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWi
         if (executable.isEmpty() || arguments.isEmpty()) { status->setText("Selected agent is no longer installed."); return; }
         if (background->isChecked()) {
             auto *job = new BackgroundFix(chosen, arguments, directory, parentWidget() ? parentWidget() : this);
+            job->setProperty("workspace", directory); job->setProperty("library", diagnostic.value("missingLibrary").toString());
             connect(job, &BackgroundFix::statusChanged, this, [this](const QString &message) { status->setText(message); });
             if (auto *window = qobject_cast<QMainWindow *>(parentWidget())) connect(job, &BackgroundFix::statusChanged, window, [window](const QString &message) { window->statusBar()->showMessage(message); });
             status->setText("Starting background agent in " + directory); return;
@@ -247,6 +255,7 @@ TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWi
         connect(apply, &QPushButton::clicked, this, [=] {
             const bool copy = importOption->isChecked(), report = issueOption->isChecked(), fix = aiOption->isChecked();
             if (fix && !start->isEnabled()) return;
+            if (!applyingChoices) emit actionsChosen(copy, report, fix, agents->currentText());
             if (fix) start->click();
             if (copy) emit importRequested();
             if (report) reviewIssue();
@@ -260,7 +269,7 @@ TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWi
     if (gh.isEmpty()) status->setText("GitHub CLI is not installed. Agent work and local drafts are available.");
     else {
         auto *check = new QProcess(this);
-        connect(check, &QProcess::finished, this, [this, check](int code, QProcess::ExitStatus exit) { authenticated = code == 0 && exit == QProcess::NormalExit; review->setEnabled(authenticated); for (auto *button : findChildren<QPushButton *>("approveCompletedIssue")) button->setEnabled(authenticated); status->setText(authenticated ? "GitHub CLI authenticated. Completed PR drafts can be reviewed and explicitly approved here." : "GitHub CLI is not authenticated. Sign in separately before submitting a reviewed PR."); check->deleteLater(); });
+        connect(check, &QProcess::finished, this, [this, check](int code, QProcess::ExitStatus exit) { authenticated = code == 0 && exit == QProcess::NormalExit; review->setEnabled(authenticated); for (auto *button : findChildren<QPushButton *>("approveCompletedIssue")) button->setEnabled(authenticated && !button->parent()->property("draftStale").toBool() && !button->parent()->property("submitted").toBool()); status->setText(authenticated ? "GitHub CLI authenticated. Completed PR drafts can be reviewed and explicitly approved here." : "GitHub CLI is not authenticated. Sign in separately before submitting a reviewed PR."); check->deleteLater(); });
         connect(check, &QProcess::errorOccurred, this, [this, check](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) { status->setText("Cannot start GitHub CLI authentication check."); check->deleteLater(); } });
         QTimer::singleShot(15000, check, [this, check] { if (check->state() != QProcess::NotRunning) { status->setText("GitHub CLI authentication check timed out."); check->kill(); } });
         check->start(gh, {"auth", "status", "--hostname", "github.com"});
@@ -278,6 +287,7 @@ void TroubleshootingDialog::done(int result) {
 void TroubleshootingDialog::updateDiagnostic(const QJsonObject &data, bool canImport, bool launchRunning, const QString &result) {
     if (diagnostic != data) if (auto *consent = findChild<QCheckBox *>("approveAgentData")) consent->setChecked(false);
     diagnostic = data;
+    updateIssueDrafts();
     details->setPlainText(QString::fromUtf8(QJsonDocument(data).toJson()));
     const QString symbol = data.value("missingSymbol").toString(), library = data.value("missingLibrary").toString();
     summary->setText(library.isEmpty() ? data.value("app").toString() + " troubleshooting" : data.value("app").toString() + " needs " + library + (symbol.isEmpty() ? QString() : "\nUnresolved symbol: " + symbol));
@@ -288,24 +298,43 @@ void TroubleshootingDialog::updateDiagnostic(const QJsonObject &data, bool canIm
     if (importOption) { importOption->setVisible(mounted || !possible); importOption->setEnabled(canImport && mounted); if (!canImport || !mounted) importOption->setChecked(false); importOption->setToolTip(!possible ? "No APFS/HFS partition or usable macOS mount detected on this system." : launchRunning ? "Stop the stalled launch process explicitly before importing and retrying. This affects all apps in this prefix." : "Import the exact standalone library from the displayed macOS source into the displayed private prefix."); }
     if (stopPrefix) stopPrefix->setVisible(launchRunning);
 }
+QString TroubleshootingDialog::issueBody() const {
+    const AppEntry app{diagnostic.value("app").toString(), diagnostic.value("bundle").toString(), diagnostic.value("executable").toString(), diagnostic.value("sourceBundle").toString()};
+    return LauncherCore::issueDraft(app, diagnostic.value("dependencyChain").toArray(), diagnostic.value("loaderOutput").toString(), diagnostic.value("sourceVolume").toString(), diagnostic.value("prefix").toString(), diagnostic.value("launcher").toString(), diagnostic.value("runtime").toString());
+}
+void TroubleshootingDialog::updateIssueDrafts() {
+    const QString latest = issueBody();
+    for (auto *dialog : findChildren<QDialog *>("issueApprovalDialog")) {
+        if (dialog->property("submitted").toBool()) continue;
+        auto *body = dialog->findChild<QTextEdit *>("issueBody");
+        if (dialog->property("latestBody").toString() == latest) continue;
+        dialog->setProperty("latestBody", latest);
+        if (!body->document()->isModified()) body->setPlainText(latest);
+        else {
+            dialog->findChild<QLabel *>("issueSubmissionStatus")->setText("Dependency chain changed. Your edits were preserved; use Refresh draft to review the latest provenance before submitting.");
+            dialog->setProperty("draftStale", true); dialog->findChild<QPushButton *>("refreshIssueDraft")->show(); dialog->findChild<QPushButton *>("approveCompletedIssue")->setEnabled(false);
+        }
+    }
+}
 void TroubleshootingDialog::reviewIssue() {
     auto *dialog = new IssueApprovalDialog(this); dialog->setObjectName("issueApprovalDialog"); dialog->setWindowTitle("Review completed issue draft"); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->resize(820, 650);
     auto *layout = new QVBoxLayout(dialog);
     auto *notice = new QLabel("Review the complete draft and redact local paths. Selecting Report prepares this draft; only approving this completed draft submits it."); notice->setWordWrap(true); layout->addWidget(notice);
     auto *repo = new QLineEdit("VibeDarling/Darling"); repo->setObjectName("issueRepository"); repo->setReadOnly(true); layout->addWidget(repo);
     auto *title = new QLineEdit(diagnostic.value("app").toString() + " missing loader dependency"); title->setObjectName("issueTitle"); layout->addWidget(title);
-    const AppEntry app{diagnostic.value("app").toString(), diagnostic.value("bundle").toString(), diagnostic.value("executable").toString(), diagnostic.value("sourceBundle").toString()};
-    auto *body = new QTextEdit; body->setObjectName("issueBody"); body->setPlainText(LauncherCore::issueDraft(app, diagnostic.value("dependencyChain").toArray(), diagnostic.value("loaderOutput").toString(), diagnostic.value("sourceVolume").toString(), diagnostic.value("prefix").toString(), diagnostic.value("launcher").toString(), diagnostic.value("runtime").toString())); layout->addWidget(body);
+    auto *body = new QTextEdit; body->setObjectName("issueBody"); body->setPlainText(issueBody()); layout->addWidget(body); dialog->setProperty("latestBody", issueBody());
     auto *result = new QLabel; result->setObjectName("issueSubmissionStatus"); result->setWordWrap(true); layout->addWidget(result);
     auto *save = new QPushButton("Save local draft…"); layout->addWidget(save);
     connect(save, &QPushButton::clicked, dialog, [=] { const auto file = QFileDialog::getSaveFileName(dialog, "Save reviewed issue", "proposed-issue.md", "Markdown (*.md)"); if (file.isEmpty()) return; QSaveFile output(file); if (!output.open(QIODevice::WriteOnly) || output.write(body->toPlainText().toUtf8()) < 0 || !output.commit()) result->setText("Cannot save local draft."); else result->setText("Draft saved locally. Nothing submitted."); });
     auto *approve = new QPushButton("Approve completed issue and submit"); approve->setObjectName("approveCompletedIssue"); approve->setEnabled(authenticated); layout->addWidget(approve);
+    auto *refresh = new QPushButton("Refresh draft with latest dependency chain (replaces edits)"); refresh->setObjectName("refreshIssueDraft"); layout->addWidget(refresh); refresh->hide();
+    connect(refresh, &QPushButton::clicked, dialog, [=] { body->setPlainText(issueBody()); dialog->setProperty("latestBody", issueBody()); dialog->setProperty("draftStale", false); refresh->hide(); approve->setEnabled(authenticated); result->setText("Latest dependency chain loaded. Review and redact this completed draft before approval."); });
     if (!authenticated) result->setText("GitHub CLI is not authenticated. You can save the draft locally.");
     connect(approve, &QPushButton::clicked, dialog, [=] {
-        if (!authenticated) return;
+        if (!authenticated || dialog->property("draftStale").toBool()) return;
         if (title->text().trimmed().isEmpty() || body->toPlainText().trimmed().isEmpty()) { result->setText("Complete the title and body for VibeDarling/Darling."); return; }
         auto *file = new QTemporaryFile(dialog); if (!file->open() || file->write(body->toPlainText().toUtf8()) < 0 || !file->flush()) { result->setText("Cannot prepare approved draft."); return; }
-        auto *submit = new QProcess(dialog); approve->setEnabled(false); result->setText("Submitting approved issue…");
+        auto *submit = new QProcess(dialog); dialog->setProperty("submitted", true); approve->setEnabled(false); result->setText("Submitting approved issue…");
         connect(submit, &QProcess::finished, dialog, [=](int code, QProcess::ExitStatus exit) { result->setText(code == 0 && exit == QProcess::NormalExit ? "Issue submitted: " + QString::fromUtf8(submit->readAllStandardOutput()).trimmed() : "Issue submission failed: " + QString::fromUtf8(submit->readAllStandardError()).trimmed()); submit->deleteLater(); file->deleteLater(); });
         connect(submit, &QProcess::errorOccurred, dialog, [=](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) { result->setText("Cannot start GitHub CLI. No issue submitted."); submit->deleteLater(); file->deleteLater(); } });
         submit->start(gh, {"issue", "create", "--repo", "VibeDarling/Darling", "--title", title->text(), "--body-file", file->fileName()});

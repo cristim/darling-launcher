@@ -105,6 +105,7 @@ Before launching an app, choose recovery actions for missing dependencies: priva
 macOS library imports, an issue draft, or a background AI source fix. Recovery
 preferences appear again for every failed launch unless remembered,
 including process startup errors and failures without a diagnosed dependency.
+Library retries within that attempt reuse its accepted choices.
 The confirmation can remember your choices; change them in
 **Settings → Launch recovery preferences…**.
 The macOS import option appears only when the selected source matches a readable,
@@ -118,6 +119,11 @@ A missing library or symbol opens an app-specific recovery popup. **Show details
 reveals loader output and provenance there; the main window keeps only app status
 and progress. Import copies the exact standalone dependency into the selected
 private prefix, records its source and retries with the original launch choices.
+A dependency chain uses one set of choices: each newly diagnosed missing library
+starts a separate AI session and workspace when AI is selected. Libraries are
+resolved in loader order as retries reveal them; identical libraries do not start
+duplicate sessions. The issue draft gathers the whole chain. Draft updates preserve
+user edits and require an explicit refresh before approving a stale draft.
 A stalled launch requires explicit prefix shutdown before importing. Copied-library
 outcomes and contribution explanations remain in the popup.
 
