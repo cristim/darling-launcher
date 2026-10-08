@@ -182,8 +182,6 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         }
         mountDialog->show(); mountDialog->raise(); mountDialog->activateWindow();
     });
-    add("Import selected apps", [this] { importBundles(available->selectedBundles()); });
-    add("Launch selected", [this] { for (const auto &key : apps->selectedBundles()) launch(key); });
     add("Stop selected prefix processes", [this] { runCommand("Stop prefix", {"shutdown"}); });
     troubleshoot = add("Troubleshoot failed app…", [this] { openTroubleshooting(); }); troubleshoot->hide();
     add("Install Brewfile", [this] {
@@ -225,9 +223,9 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     auto *importTitle = new QLabel("Imported apps — drag selected apps here to import"); importTitle->setWordWrap(true); importLayout->addWidget(importTitle);
     auto *appSearch = new QLineEdit; appSearch->setObjectName("appSearch"); appSearch->setPlaceholderText("Search imported apps"); appSearch->setClearButtonEnabled(true); importLayout->addWidget(appSearch);
     auto *appFilter = new QComboBox; appFilter->setObjectName("appFilter"); appFilter->addItems({"All imported apps", "Running", "Failed"}); importLayout->addWidget(appFilter);
-    importedEmpty = new QLabel("Import your first app: select an app on the left and click Import selected apps, or drag it into this pane. Then double-click it to launch."); importedEmpty->setObjectName("importedEmptyState"); importedEmpty->setWordWrap(true); importLayout->addWidget(importedEmpty);
+    importedEmpty = new QLabel("Import your first app: drag apps from the left into this pane. Then double-click one to launch it."); importedEmpty->setObjectName("importedEmptyState"); importedEmpty->setWordWrap(true); importLayout->addWidget(importedEmpty);
     apps = new ImportedBrowser; apps->setObjectName("importedApps");
-    connect(apps, &AppBrowser::visibleAppsChanged, this, [this](int count) { importedEmpty->setVisible(count == 0); importedEmpty->setText(apps->count() > 0 ? "No imported apps match this search or filter." : "Import your first app: select an app on the left and click Import selected apps, or drag it into this pane. Then double-click it to launch."); });
+    connect(apps, &AppBrowser::visibleAppsChanged, this, [this](int count) { importedEmpty->setVisible(count == 0); importedEmpty->setText(apps->count() > 0 ? "No imported apps match this search or filter." : "Import your first app: drag apps from the left into this pane. Then double-click one to launch it."); });
     connect(appSearch, &QLineEdit::textChanged, apps, &AppBrowser::setSearch);
     connect(appFilter, &QComboBox::currentIndexChanged, this, [this](int index) { apps->setFilter(index == 1 ? AppBrowser::Filter::Running : index == 2 ? AppBrowser::Filter::Failed : AppBrowser::Filter::All); });
     connect(apps, &ImportedBrowser::bundlesDropped, this, &Window::importBundles);

@@ -36,6 +36,9 @@
 
 class GuiTest : public QObject {
     Q_OBJECT
+    static void launchSelected(Window &window) { auto *apps = window.findChild<ImportedBrowser *>("importedApps"); for (auto *item : apps->selectedItems()) emit apps->itemDoubleClicked(item); }
+    static void launchSelected(Window *window) { launchSelected(*window); }
+    static void dropSelected(Window &window, QListWidget *) { emit window.findChild<ImportedBrowser *>("importedApps")->bundlesDropped(window.findChild<AppBrowser *>("availableApps")->selectedBundles()); }
     QTemporaryDir isolatedHome;
 private slots:
     void init() { QVERIFY(isolatedHome.isValid()); const QString home = isolatedHome.path() + "/" + QString::number(qHash(QString(QTest::currentTestFunction()) + QTest::currentDataTag())); QVERIFY(QDir().mkpath(home)); qputenv("HOME", home.toUtf8()); }
@@ -75,7 +78,7 @@ private slots:
         LauncherTroubleshooting::saveRecoveryChoices({true, false, false, true, {}});
         QList<SourceMount> mounts{{source, "/dev/synthetic", "fuse", true}};
         Window window({}, false, [&mounts] { return mounts; }); window.show(); window.findChild<QLineEdit *>("runtimeRootField")->clear();
-        auto *apps = window.findChild<ImportedBrowser *>("importedApps"); apps->setCurrentRow(0); window.findChild<QPushButton *>("Launch selected")->click();
+        auto *apps = window.findChild<ImportedBrowser *>("importedApps"); apps->setCurrentRow(0); launchSelected(window);
         QTRY_VERIFY_WITH_TIMEOUT(apps->status("Applications/Fixture.app").contains("Exited"), 5000);
         QVERIFY(QFileInfo::exists(prefix + "/usr/lib/fixture.dylib"));
         QCOMPARE(LauncherCore::loadCatalog(prefix).value("apps").toArray().first().toObject().value("chain").toArray().size(), 1);
@@ -107,7 +110,7 @@ private slots:
                 choices->accept();
             }
         }); approval.start(10);
-        auto *apps = window.findChild<ImportedBrowser *>("importedApps"); apps->setCurrentRow(0); window.findChild<QPushButton *>("Launch selected")->click();
+        auto *apps = window.findChild<ImportedBrowser *>("importedApps"); apps->setCurrentRow(0); launchSelected(window);
         QTRY_VERIFY_WITH_TIMEOUT(apps->status("Applications/Fixture.app").contains("Exited successfully"), 5000); QCOMPARE(failurePrompts, 1);
         const auto chain = LauncherCore::loadCatalog(prefix).value("apps").toArray().first().toObject().value("chain").toArray(); QCOMPARE(chain.size(), 2);
         auto jobs = window.findChildren<BackgroundFix *>(); QCOMPARE(jobs.size(), 2); QVERIFY(jobs[0]->isRunning()); QVERIFY(jobs[1]->isRunning()); QVERIFY(jobs[0]->property("workspace") != jobs[1]->property("workspace"));
@@ -148,9 +151,9 @@ private slots:
             }
         }); approvals.start(10);
         QTest::qWait(100);
-        window.findChild<QPushButton *>("Launch selected")->click(); QTRY_COMPARE(failures, 1); QCOMPARE(before, 1); QVERIFY(noMacDisabled);
-        window.findChild<QPushButton *>("Launch selected")->click(); QTRY_COMPARE(failures, 2); QCOMPARE(before, 2); QVERIFY(LauncherTroubleshooting::recoveryChoices().remember);
-        window.findChild<QPushButton *>("Launch selected")->click(); QTest::qWait(200); QCOMPARE(failures, 2); QCOMPARE(before, 2);
+        launchSelected(window); QTRY_COMPARE(failures, 1); QCOMPARE(before, 1); QVERIFY(noMacDisabled);
+        launchSelected(window); QTRY_COMPARE(failures, 2); QCOMPARE(before, 2); QVERIFY(LauncherTroubleshooting::recoveryChoices().remember);
+        launchSelected(window); QTest::qWait(200); QCOMPARE(failures, 2); QCOMPARE(before, 2);
         QVERIFY(window.findChild<TroubleshootingDialog *>());
     }
 
@@ -163,7 +166,7 @@ private slots:
         window.findChild<QLineEdit *>("darlingField")->setText(temporary.path() + "/missing-runtime");
         auto *apps = window.findChild<ImportedBrowser *>("importedApps"); apps->setCurrentRow(0);
         QTimer::singleShot(0, &window, [] { for (auto *widget : QApplication::topLevelWidgets()) if (auto *box = qobject_cast<QMessageBox *>(widget)) box->accept(); });
-        window.findChild<QPushButton *>("Launch selected")->click(); QCOMPARE(apps->status("Applications/Fixture.app"), "Failed to start");
+        launchSelected(window); QCOMPARE(apps->status("Applications/Fixture.app"), "Failed to start");
         QVERIFY(!window.findChild<QTextEdit *>("failureLog")); QVERIFY(!window.findChild<QLabel *>("failureSummary"));
         window.findChild<QPushButton *>("Troubleshoot failed app…")->click(); auto *popup = window.findChild<TroubleshootingDialog *>(); QVERIFY(popup);
         popup->findChild<QPushButton *>("showDependencyDetails")->click(); QVERIFY(popup->findChild<QTextEdit *>("troubleshootingData")->toPlainText().contains("Select an executable"));
@@ -265,7 +268,7 @@ private slots:
         QCOMPARE(window.findChild<QLineEdit *>("volumeField")->text(), first);
         window.findChild<QLineEdit *>("prefixField")->setText(prefix);
         auto *available = window.findChild<QListWidget *>("availableApps"); QTRY_COMPARE(available->count(), 1); QCOMPARE(available->item(0)->text(), QString("Mounted Fixture"));
-        available->item(0)->setSelected(true); window.findChild<QPushButton *>("Import selected apps")->click();
+        available->item(0)->setSelected(true); dropSelected(window, available);
         QTRY_VERIFY(QFileInfo::exists(prefix + "/Applications/Fixture.app/Contents/MacOS/Fixture"));
         QVERIFY(!dialog->isMounting());
         records.removeLast(); QTRY_COMPARE_WITH_TIMEOUT(choices->count(), 2, 5000);
@@ -410,7 +413,7 @@ private slots:
             QVERIFY(LauncherCore::loadCatalog(other).isEmpty());
             window.findChild<QLineEdit *>("prefixField")->setText(prefix);
             window.findChild<QPushButton *>("Scan volume")->click(); apps->setCurrentRow(0);
-            window.findChild<QPushButton *>("Launch selected")->click();
+            launchSelected(window);
         } else requestImport();
         QTRY_COMPARE_WITH_TIMEOUT(apps->status("Applications/Test.app"), retrySuccess ? QString("Exited successfully") : QString("Exited 2"), 5000);
         QVERIFY(QFileInfo::exists(prefix + "/usr/lib/libExample.dylib"));
@@ -428,7 +431,7 @@ private slots:
         savedApp.insert("chain", QJsonArray{}); savedApps[0] = savedApp; catalog.insert("apps", savedApps);
         QString error; QVERIFY(LauncherCore::saveCatalog(prefix, catalog, &error));
         window.findChild<QPushButton *>("Scan volume")->click(); apps->setCurrentRow(0);
-        window.findChild<QPushButton *>("Launch selected")->click();
+        launchSelected(window);
         QTRY_COMPARE_WITH_TIMEOUT(apps->status("Applications/Test.app"), retrySuccess ? QString("Exited successfully") : QString("Exited 2"), 5000);
         QVERIFY(!window.findChild<QWidget *>("contributionPanel"));
         QVERIFY(!window.findChild<QTextEdit *>("failureLog"));
@@ -567,7 +570,7 @@ private slots:
         window->findChild<QLineEdit *>("runtimeRootField")->clear();
         window->findChild<QPushButton *>("Scan volume")->click();
         window->findChild<ImportedBrowser *>("importedApps")->setCurrentRow(0);
-        window->findChild<QPushButton *>("Launch selected")->click();
+        launchSelected(window);
         QTRY_VERIFY_WITH_TIMEOUT(!window->findChildren<QProcess *>().isEmpty() && window->findChildren<QProcess *>().first()->state() == QProcess::Running, 5000);
         QTest::ignoreMessage(QtWarningMsg, QRegularExpression("QProcess: Destroyed while process .* is still running\\."));
         delete window;
