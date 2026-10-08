@@ -92,3 +92,13 @@ and workspace for each new missing library, deduplicating repeated diagnoses. Ma
 popup action selection applies to subsequent dependencies too. Group reporting into
 one central issue draft that tracks the chain; preserve user edits, mark stale drafts
 and require explicit refresh/review before submitting changed provenance.
+
+First-run runtime setup: offer private build/install or existing runtime selection
+when the selected executable/private image is unavailable. Use one configurable
+home data folder for sources, build/image/prefix workspaces, mounts and agent
+workspaces. Changing that folder never moves existing user data.
+
+Embed the ready separate-tab GPL builder with exact commit/hash provenance;
+external overrides remain optional. Protect clone/build lifetime and hold the
+shared heavy-build lock for compilation/private installation. Verify synthetic
+first-run clone/build, path adoption, embedded helper CLI/hash and real Wayland UI.

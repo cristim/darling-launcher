@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSaveFile>
+#include <QStandardPaths>
 
 namespace {
 bool error(QString *target, const QString &message) { if (target) *target = message; return false; }
@@ -114,12 +115,17 @@ void PrefixBuilder::run(Phase next, const QStringList &arguments) {
     case Phase::Checkout: label = "Create independent checkout"; break;
     case Phase::ResolveNested: label = "Resolve nested submodule inputs"; break;
     case Phase::CheckoutNested: label = "Integrate nested submodules"; break;
-    case Phase::Build: label = "Build runtime and initialize prefix"; break;
+    case Phase::Build: label = "Wait for shared build lock, then build private Darling runtime"; break;
     case Phase::Idle: return;
     }
     emit phaseChanged(label);
     process.setWorkingDirectory(staging.path());
-    QStringList args{"-u", scriptSnapshot}; args.append(arguments); process.start(request.python, args);
+    QStringList args{"-u", scriptSnapshot}; args.append(arguments);
+    if (next == Phase::Build) {
+        const QString flock = QStandardPaths::findExecutable("flock");
+        if (flock.isEmpty() || !QDir().mkpath("/tmp/agent-locks")) { fail("Cannot acquire the shared Darling heavy-build lock; install flock and check the lock directory."); return; }
+        process.start(flock, QStringList{"-w", "600", "/tmp/agent-locks/darling-heavy-build.lock", request.python} + args);
+    } else process.start(request.python, args);
 }
 void PrefixBuilder::advance() {
     if (phase == Phase::Inspect) {
@@ -176,3 +182,5 @@ void PrefixBuilder::build() {
 }
 void PrefixBuilder::fail(const QString &message) { phase = Phase::Idle; emit completed(false, message, {}, {}, {}); }
 PrefixBuilder::~PrefixBuilder() { process.disconnect(this); }
+
+bool PrefixBuilder::isRunning() const { return phase != Phase::Idle; }

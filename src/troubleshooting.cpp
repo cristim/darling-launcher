@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "troubleshooting.h"
 #include "core.h"
+#include "discovery.h"
 #include <QComboBox>
 #include <QCheckBox>
 #include <QDir>
@@ -202,7 +203,7 @@ TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWi
     connect(toggleDetails, &QPushButton::toggled, this, [this, toggleDetails](bool shown) { details->setVisible(shown); toggleDetails->setText(shown ? "Hide details" : "Show details"); });
     auto *agentPanel = new QGroupBox("Clean-room source fix"); auto *agentLayout = new QVBoxLayout(agentPanel); layout->addWidget(agentPanel);
     auto *agents = new QComboBox; agents->setObjectName("agentChoices"); agents->addItems(LauncherTroubleshooting::agents()); agentLayout->addWidget(agents);
-    auto *workspace = new QLineEdit(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/source-fixes/" + QUuid::createUuid().toString(QUuid::WithoutBraces)); workspace->setObjectName("agentWorkspace"); agentLayout->addWidget(new QLabel("New source-fix workspace")); agentLayout->addWidget(workspace);
+    auto *workspace = new QLineEdit(LauncherDiscovery::dataRoot() + "/source-fixes/" + QUuid::createUuid().toString(QUuid::WithoutBraces)); workspace->setObjectName("agentWorkspace"); agentLayout->addWidget(new QLabel("New source-fix workspace")); agentLayout->addWidget(workspace);
     auto *consent = new QCheckBox("I approve sharing the displayed troubleshooting data with the selected agent’s configured service."); consent->setObjectName("approveAgentData"); agentLayout->addWidget(consent);
     auto *background = new QCheckBox("Run in the background without opening a terminal"); background->setObjectName("backgroundAgent"); background->setChecked(missing); agentLayout->addWidget(background);
     auto *start = new QPushButton("Start selected agent"); start->setObjectName("startFixAgent"); start->setEnabled(false);

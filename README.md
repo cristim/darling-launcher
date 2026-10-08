@@ -25,7 +25,24 @@ The source browser reads bundle display names, `CFBundleIconFile` resources and 
 
 ## Building a prefix from VibeDarling branches and PRs
 
-Configure the external `all-vibedarling-pr-prefix.py` from the VibeDarling tooling tab, a clean independent clone at the current upstream default branch, a new workspace whose parent exists, and the job count. Choose default branches only or default branches plus all open PRs. The script resolves main/master where present and records exceptions for repositories with another default branch. Optional CMake settings are passed as one `-DNAME=VALUE` per line.
+The launcher includes a versioned GPL snapshot of `all-vibedarling-pr-prefix.py`
+from the VibeDarling tooling tab. No Darling installation or external builder path
+is required. On startup without a usable runtime, **Set up Darling** offers to
+build and install a private runtime or select an existing one. It proposes the
+launcher data directory in your home (`~/.local/share/Darling Launcher` by default).
+Configure this folder in the setup offer or Settings; sources, workspaces, runtime
+images, prefixes, mount points and AI workspaces use it. Existing data is never
+moved by changing that setting.
+
+Setup clones VibeDarling into `<data>/sources/vibedarling`, builds in a fresh
+`<data>/workspaces/...` and automatically selects the resulting runtime/prefix.
+No macOS volume is required for this build. Git, Python, CMake, Ninja and the
+Darling host build dependencies must be available; errors retain the workspace
+and appear in build progress. Compilation and private installation hold the shared
+heavy-build lock. The launcher cannot close during an active clone/build.
+
+Explicit external builder overrides remain supported. Configure a clean source
+clone, new workspace and job count. Choose default branches only or default branches plus all open PRs. The script resolves main/master where present and records exceptions for repositories with another default branch. Optional CMake settings are passed as one `-DNAME=VALUE` per line.
 
 The launcher snapshots the selected script and checks its CLI. It runs `resolve`, `checkout` and `build`, including `resolve-nested` and `checkout-nested` when that interface is available. For branch-only builds it creates separate top-level and nested locks with empty PR lists; original discovery locks are preserved. Existing workspaces and workspaces inside the source checkout are refused. Conflicts and script failures stop the workflow and retain the workspace for inspection.
 
@@ -37,7 +54,7 @@ You can preselect the external script when launching:
 ./build/darling-launcher --prefix-builder /path/to/all-vibedarling-pr-prefix.py
 ```
 
-The external builder requires GitHub network access and a full Darling build environment. It currently resolves the PR inventory for both choices; only the selected lock controls which PRs are integrated.
+The builder requires GitHub network access and a full Darling build environment. It currently resolves the PR inventory for both choices; only the selected lock controls which PRs are integrated.
 
 **Launch selected** uses `DPREFIX=<selected prefix> <selected darling> exec <guest executable>`. Each launch has a separate host `QProcess`, and the progress/output area shows its activity and exit status. If dyld reports `Symbol not found`, `Referenced from`, and `Expected in`, or an absolute `Library not loaded` path with `Reason: image not found`, the GUI offers to copy the named system library or framework from the selected mounted volume and retry. Each accepted import is added to a private chain at `<prefix>/.darling-launcher/catalog.json`. Loader errors are diagnosed as output arrives, even if the host wrapper remains running. **Stop selected prefix processes** explicitly shuts down all apps in that prefix before a retry. Library imports run in the background and record the source path and destination prefix. If the source has framework resources but no standalone library file, import stops with an explanation; extracting libraries from a dyld shared cache is outside this workflow. The proposed issue is saved locally under that directory for review. Nothing is submitted automatically.
 
@@ -163,8 +180,9 @@ prefix. A verified installed launcher/runtime pair is populated automatically;
 paths remain editable, and a prefix's build provenance takes priority when
 recovering its runtime paths.
 
-**Build and deploy Darling…** defaults the builder script, a clean VibeDarling
+**Build and deploy Darling…** defaults a bundled builder script, a clean VibeDarling
 main/master source clone (or a visible proposed clone path), and a fresh workspace.
+First-run setup proposes its own home-managed independent source clone.
 Building from a missing source path clones upstream first, then invokes the
 separate builder to integrate root and nested repositories, build, deploy a
 private image and initialize its prefix. Choose default branches or include open

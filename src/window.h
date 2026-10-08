@@ -32,6 +32,7 @@ class Window : public QMainWindow {
 public:
     explicit Window(const QString &builderScript = {}, bool mountAll = false, std::function<QList<SourceMount>()> mountProvider = LauncherSources::mounts);
     ~Window() override;
+    void offerRuntimeSetup();
 protected:
     void closeEvent(QCloseEvent *event) override;
 private:
@@ -40,6 +41,9 @@ private:
     QLabel *sourceSummary;
     QString sourceSignature;
     bool sourceChoicesInitialized = false;
+    QLineEdit *storageRoot;
+    QString prefixBuilderScript;
+    void openRuntimeBuilder(bool managed = false);
     QLineEdit *volume;
     QLineEdit *prefix;
     QLineEdit *darling;

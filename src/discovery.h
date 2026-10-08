@@ -5,6 +5,7 @@
 namespace LauncherDiscovery {
 struct Runtime { QString launcher; QString installRoot; };
 QList<Runtime> runtimes(const QStringList &roots, const QString &installedLauncher);
+QString dataRoot();
 QString managedPrefix(const QString &dataRoot);
 QString cleanSource(const QStringList &roots);
 QString helperExecutable(const QStringList &roots, const QString &name);

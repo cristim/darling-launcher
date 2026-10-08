@@ -3,6 +3,8 @@
 #include "prefixbuilder.h"
 #include "discovery.h"
 #include <QProcess>
+#include <QCryptographicHash>
+#include <QSaveFile>
 #include <QDateTime>
 #include <QSharedPointer>
 #include <QComboBox>
@@ -21,7 +23,8 @@
 #include <QTextEdit>
 #include <QVBoxLayout>
 
-PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOverride, QWidget *parent) : QDialog(parent) {
+PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOverride, QWidget *parent, bool managed) : QDialog(parent) {
+    setObjectName("prefixBuildDialog");
     setWindowTitle("Build an isolated VibeDarling prefix"); resize(730, 560);
     auto *layout = new QVBoxLayout(this);
     layout->addWidget(new QLabel("Use all-vibedarling-pr-prefix.py to resolve inputs, clone independently,\nbuild a private runtime image and initialize a new prefix."));
@@ -71,16 +74,28 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
         if (!checkout.isEmpty()) source->setText(checkout);
         status->setText("Detected paths selected. The builder checks that the source is clean and uses VibeDarling refs.");
     });
-    QString data = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    QString data = LauncherDiscovery::dataRoot();
     QDir().mkpath(data + "/workspaces");
     workspace->setText(LauncherDiscovery::newWorkspace(data + "/workspaces"));
+    if (script->text().isEmpty() || !QFileInfo(script->text()).isFile() || (managed && scriptOverride.isEmpty())) {
+        QFile bundled(":/launcher/tools/all-vibedarling-pr-prefix.py");
+        if (bundled.open(QIODevice::ReadOnly)) {
+            const QByteArray bytes = bundled.readAll();
+            const QString tool = data + "/tools/all-vibedarling-pr-prefix-" + QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()) + ".py";
+            if (QDir().mkpath(data + "/tools")) {
+                if (!QFileInfo::exists(tool)) { QSaveFile file(tool); if (file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size() && file.commit()) script->setText(tool); }
+                else { QFile file(tool); if (file.open(QIODevice::ReadOnly) && file.readAll() == bytes) script->setText(tool); }
+            }
+        }
+    }
+    if (managed) source->setText(data + "/sources/vibedarling");
     auto tools = LauncherDiscovery::scripts(LauncherDiscovery::roots());
     if ((script->text().isEmpty() || !QFileInfo(script->text()).isFile()) && !tools.isEmpty()) script->setText(tools.first());
-    if (source->text().isEmpty() || !QFileInfo(source->text()).isDir()) {
+    if (!managed && (source->text().isEmpty() || !QFileInfo(source->text()).isDir())) {
         QString detected = LauncherDiscovery::cleanSource(LauncherDiscovery::roots());
         source->setText(detected.isEmpty() ? data + "/sources/vibedarling" : detected);
     }
-    auto *defaults = new QLabel("Paths are populated from installed tools and clean default-branch clones. A missing source path is a proposed new clone location.");
+    auto *defaults = new QLabel("Sources, runtime images and prefixes are proposed under your launcher data folder. A missing source is cloned automatically when you choose Build. Existing paths remain configurable.");
     defaults->setWordWrap(true); layout->insertWidget(2, defaults);
     auto buildAfterClone = QSharedPointer<bool>::create(false);
     connect(clone, &QPushButton::clicked, this, [=] {
@@ -142,3 +157,10 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
 PrefixDialog::~PrefixDialog() {
     for (auto *process : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) process->disconnect(this);
 }
+
+bool PrefixDialog::isBusy() const {
+    for (auto *builder : findChildren<PrefixBuilder *>()) if (builder->isRunning()) return true;
+    for (auto *process : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) if (process->state() != QProcess::NotRunning) return true;
+    return false;
+}
+void PrefixDialog::done(int result) { if (!isBusy()) QDialog::done(result); }

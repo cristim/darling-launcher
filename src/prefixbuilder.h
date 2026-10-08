@@ -24,6 +24,7 @@ class PrefixBuilder : public QObject {
 public:
     explicit PrefixBuilder(QObject *parent = nullptr);
     ~PrefixBuilder() override;
+    bool isRunning() const;
     void start(const PrefixBuildRequest &request);
 signals:
     void output(const QString &text);

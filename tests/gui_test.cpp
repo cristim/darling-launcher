@@ -5,6 +5,7 @@
 #include "mountdialog.h"
 #include "troubleshooting.h"
 #include <QCheckBox>
+#include <QCryptographicHash>
 #include <QSplitter>
 #include <QApplication>
 #include <QFile>
@@ -474,6 +475,30 @@ private slots:
         QTRY_VERIFY(dialog->findChild<QTextEdit *>("mountOutput")->toPlainText().contains("No macOS partitions detected"));
         QVERIFY(window.findChild<QDialog *>("settingsDialog")->isVisible());
     }
+    void firstRunOffersManagedCloneBuildAndAdoptsRuntime() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings settings("cristim", "darling-launcher"); settings.clear();
+        const QString data = temporary.path() + "/managed home"; settings.setValue("dataRoot", data);
+        QFile git(temporary.path() + "/git"); QVERIFY(git.open(QIODevice::WriteOnly)); git.write("#!/bin/sh\nif [ \"$1\" = clone ]; then /usr/bin/sleep 0.1; /usr/bin/mkdir -p \"$5\"; exit 0; fi\nexit 1\n"); git.close(); QVERIFY(git.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        const auto path = qgetenv("PATH"); auto restore = qScopeGuard([=] { qputenv("PATH", path); }); qputenv("PATH", temporary.path().toUtf8() + ':' + path);
+        Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py", false, [] { return QList<SourceMount>{}; }); window.show(); window.findChild<QLineEdit *>("darlingField")->clear(); window.findChild<QLineEdit *>("runtimeRootField")->clear(); window.findChild<QLineEdit *>("volumeField")->clear();
+        window.offerRuntimeSetup(); auto *offer = window.findChild<QDialog *>("firstRunSetup"); QVERIFY(offer && offer->isVisible()); QCOMPARE(offer->findChild<QLineEdit *>("setupDataRoot")->text(), data);
+        offer->findChild<QPushButton *>("setupBuildDarling")->click(); auto *builder = window.findChild<PrefixDialog *>(); QVERIFY(builder && builder->isVisible());
+        QCOMPARE(builder->findChild<QLineEdit *>("prefixBuilderSource")->text(), data + "/sources/vibedarling");
+        const QString workspace = builder->findChild<QLineEdit *>("prefixBuilderWorkspace")->text(); QVERIFY(workspace.startsWith(data + "/workspaces/"));
+        builder->findChild<QComboBox *>("prefixBuilderScope")->setCurrentIndex(1); builder->findChild<QPushButton *>("buildPrefix")->click(); QVERIFY(builder->isBusy()); QVERIFY(!window.close()); builder->close(); QVERIFY(builder->isVisible());
+        QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLineEdit *>("prefixField")->text(), workspace + "/prefix", 5000);
+        QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), workspace + "/build/src/startup/darling"); QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), workspace + "/image/usr/local"); QVERIFY(QFileInfo(data + "/sources/vibedarling").isDir()); QVERIFY(!builder->isBusy());
+        QVERIFY(QDir().mkpath(workspace + "/image/usr/local/libexec/darling/private/etc")); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); window.offerRuntimeSetup(); QVERIFY(!window.findChild<QDialog *>("firstRunSetup"));
+    }
+    void bundledBuilderNeedsNoExternalScript() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings settings("cristim", "darling-launcher"); settings.clear(); settings.setValue("dataRoot", temporary.path());
+        PrefixDialog builder({}, {}, nullptr, true);
+        const QString script = builder.findChild<QLineEdit *>("prefixBuilderScript")->text(); QVERIFY(script.startsWith(temporary.path() + "/tools/")); QFile file(script); QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex()), QString("be593c04751aa26e3b650d84442b62e2db8eb0b5888f4bc3cd281d4a850ae880"));
+        QProcess process; process.start(QStandardPaths::findExecutable("python3"), {script, "--help"}); QVERIFY(process.waitForFinished(3000)); QCOMPARE(process.exitCode(), 0); QVERIFY(process.readAllStandardOutput().contains("resolve-nested"));
+        QCOMPARE(builder.findChild<QLineEdit *>("prefixBuilderSource")->text(), temporary.path() + "/sources/vibedarling");
+    }
+
     void cloneThenBuildAndDeploy() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import hashlib
+import fcntl
 
 parser = argparse.ArgumentParser()
 parser.add_argument("command", choices=("resolve", "checkout", "resolve-nested", "checkout-nested", "build"))
@@ -44,6 +45,13 @@ elif args.command == "checkout-nested":
     shutil.copyfile(args.lock, workspace / "nested.refs.lock.json")
     (workspace / "nested.integrated.json").write_text("[]")
 elif args.command == "build":
+    with open("/tmp/agent-locks/darling-heavy-build.lock", "a") as shared_lock:
+        try:
+            fcntl.flock(shared_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            raise RuntimeError("Host adapter did not hold the shared heavy-build lock")
     workspace = Path(args.workspace)
     (workspace / "prefix/private/etc").mkdir(parents=True)
     (workspace / "prefix/private/etc/passwd").write_text("synthetic fixture\n")

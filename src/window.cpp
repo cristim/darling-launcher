@@ -43,6 +43,7 @@
 #include <QtConcurrent>
 
 Window::Window(const QString &builderScript, bool mountAll, std::function<QList<SourceMount>()> provider) : mountProvider(std::move(provider)) {
+    prefixBuilderScript = builderScript;
     setWindowTitle("Darling Launcher — host application");
     resize(1050, 720);
     restoreGeometry(QSettings("cristim", "darling-launcher").value("windowGeometry").toByteArray());
@@ -72,6 +73,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         });
         form->addRow(label, row);
     };
+    locationRow("Launcher data folder", storageRoot, false); storageRoot->setObjectName("dataRootField"); storageRoot->setText(LauncherDiscovery::dataRoot());
     locationRow("Mounted macOS volume", volume, false);
     locationRow("Darling prefix", prefix, false);
     locationRow("Darling executable", darling, true);
@@ -93,7 +95,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     prefix->setText(settings.value("prefix").toString());
     darling->setText(settings.value("darling").toString());
     runtimeRoot->setText(settings.value("runtimeRoot").toString());
-    const QString dataRoot = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    const QString dataRoot = LauncherDiscovery::dataRoot();
     if (prefix->text().isEmpty()) prefix->setText(LauncherDiscovery::managedPrefix(dataRoot));
     volume->setPlaceholderText("Select a mounted source with apps or libraries");
     auto *runtimeChoices = new QComboBox; runtimeChoices->setObjectName("detectedRuntimes");
@@ -167,22 +169,13 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     add("Stop background agents", [this] { for (auto *job : findChildren<BackgroundFix *>()) if (job->isRunning()) job->stop(); });
     add("Detect paths", [this, detectPaths] { detectPaths(); updateSourceChoices(); refresh(); load(); });
     add("Apply settings", [this] {
-        QSettings settings("cristim", "darling-launcher");
+        if (!QDir::isAbsolutePath(storageRoot->text()) || QDir::cleanPath(storageRoot->text()) == "/") { statusBar()->showMessage("Choose an absolute launcher data folder."); return; }
+        QSettings settings("cristim", "darling-launcher"); settings.setValue("dataRoot", QDir::cleanPath(storageRoot->text()));
         settings.setValue("volume", volume->text()); settings.setValue("prefix", prefix->text());
         settings.setValue("darling", darling->text()); settings.setValue("runtimeRoot", runtimeRoot->text());
         refresh(); load(); settingsDialog->hide();
     });
-    add("Create prefix", [this, builderScript] {
-        if (!prefixDialog) {
-            prefixDialog = new PrefixDialog(volume->text(), builderScript, this);
-            connect(prefixDialog, &PrefixDialog::prefixReady, this, [this](const QString &path, const QString &launcher, const QString &runtime) {
-                prefix->setText(path); darling->setText(launcher); runtimeRoot->setText(runtime); load();
-                QSettings settings("cristim", "darling-launcher"); settings.setValue("prefix", path); settings.setValue("darling", launcher); settings.setValue("runtimeRoot", runtime);
-                setBusy(activeProcesses > 0 || importRunning, "New isolated prefix ready: " + path);
-            });
-        }
-        prefixDialog->show(); prefixDialog->raise(); prefixDialog->activateWindow();
-    });
+    add("Create prefix", [this] { openRuntimeBuilder(); });
     add("Initialize selected prefix", [this] {
         QString path = prefix->text();
         QString mounted = QFileInfo(volume->text()).canonicalFilePath();
@@ -299,6 +292,41 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         mountDialog->mountAllWhenReady();
     });
 }
+void Window::openRuntimeBuilder(bool managed) {
+    if (managed && prefixDialog && !prefixDialog->isBusy()) { delete prefixDialog; prefixDialog = nullptr; }
+    if (!prefixDialog) {
+        prefixDialog = new PrefixDialog(volume->text(), prefixBuilderScript, this, managed);
+        connect(prefixDialog, &PrefixDialog::prefixReady, this, [this](const QString &path, const QString &launcher, const QString &runtime) {
+            prefix->setText(path); darling->setText(launcher); runtimeRoot->setText(runtime); load();
+            QSettings settings("cristim", "darling-launcher"); settings.setValue("prefix", path); settings.setValue("darling", launcher); settings.setValue("runtimeRoot", runtime);
+            setBusy(activeProcesses > 0 || importRunning, "New isolated prefix and runtime ready: " + path);
+        });
+    }
+    prefixDialog->show(); prefixDialog->raise(); prefixDialog->activateWindow();
+}
+void Window::offerRuntimeSetup() {
+    QString root = runtimeRoot->text();
+    if (root.isEmpty()) { QDir install(QFileInfo(darling->text()).absolutePath()); install.cdUp(); root = install.absolutePath(); }
+    if (QFileInfo(darling->text()).isExecutable() && QFileInfo(root + "/libexec/darling/private/etc").isDir()) return;
+    if (auto *existing = findChild<QDialog *>("firstRunSetup")) { existing->show(); existing->raise(); return; }
+    auto *dialog = new QDialog(this); dialog->setObjectName("firstRunSetup"); dialog->setWindowTitle("Set up Darling"); dialog->setAttribute(Qt::WA_DeleteOnClose);
+    auto *layout = new QVBoxLayout(dialog);
+    auto *description = new QLabel("No usable Darling runtime is selected. Build and install a private runtime without preinstalling Darling. Sources, builds, runtime images, prefixes, mounts and AI workspaces use the launcher data folder below. Building needs network access and host build dependencies; a macOS volume is optional for setup."); description->setWordWrap(true); layout->addWidget(description);
+    auto *folder = new QLineEdit(LauncherDiscovery::dataRoot()); folder->setObjectName("setupDataRoot"); layout->addWidget(new QLabel("Launcher data folder (defaults to your home directory)")); layout->addWidget(folder);
+    auto *result = new QLabel; result->setWordWrap(true); layout->addWidget(result);
+    auto *build = new QPushButton("Build and install Darling…"); build->setObjectName("setupBuildDarling"); layout->addWidget(build);
+    connect(build, &QPushButton::clicked, this, [this, dialog, folder, result] {
+        const QString path = QDir::cleanPath(folder->text());
+        if (!QDir::isAbsolutePath(path) || path == "/") { result->setText("Choose an absolute folder for private launcher data."); return; }
+        const QString source = QFileInfo(volume->text()).canonicalFilePath();
+        if (!source.isEmpty() && (path == source || path.startsWith(source + '/'))) { result->setText("Choose a folder outside the mounted macOS source."); return; }
+        QSettings("cristim", "darling-launcher").setValue("dataRoot", path); storageRoot->setText(path); dialog->close(); openRuntimeBuilder(true);
+    });
+    auto *select = new QPushButton("Select an existing runtime…"); select->setObjectName("setupSelectRuntime"); layout->addWidget(select); connect(select, &QPushButton::clicked, this, [this, dialog] { dialog->close(); settingsDialog->show(); settingsDialog->raise(); });
+    auto *later = new QPushButton("Set up later"); later->setObjectName("setupLater"); layout->addWidget(later); connect(later, &QPushButton::clicked, dialog, &QDialog::reject);
+    dialog->show(); dialog->raise();
+}
+
 Window::~Window() {
     for (auto *process : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) process->disconnect(this);
 }
@@ -306,7 +334,7 @@ Window::~Window() {
 void Window::updatePrefixChoices() {
     QSettings settings("cristim", "darling-launcher");
     QStringList paths = settings.value("knownPrefixes").toStringList();
-    const QString managed = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/prefixes";
+    const QString managed = LauncherDiscovery::dataRoot() + "/prefixes";
     for (const auto &entry : QDir(managed).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks)) paths << entry.absoluteFilePath();
     if (!prefix->text().isEmpty()) paths.prepend(prefix->text());
     paths.removeDuplicates(); QStringList valid;
@@ -672,6 +700,7 @@ void Window::openTroubleshooting() {
 }
 
 void Window::closeEvent(QCloseEvent *event) {
+    if (prefixDialog && prefixDialog->isBusy()) { statusBar()->showMessage("Keep the launcher open while Darling is cloning or building."); event->ignore(); return; }
     for (auto *dialog : findChildren<QDialog *>("issueApprovalDialog"))
         for (auto *process : dialog->findChildren<QProcess *>()) if (process->state() != QProcess::NotRunning) { statusBar()->showMessage("Wait for the approved issue submission to finish before closing."); event->ignore(); return; }
     for (auto *job : findChildren<BackgroundFix *>()) if (job->isRunning()) { statusBar()->showMessage("A source-fix agent is running. Finish it or use Settings → Stop background agents before closing."); event->ignore(); return; }

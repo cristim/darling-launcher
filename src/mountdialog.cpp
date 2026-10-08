@@ -62,7 +62,7 @@ MountDialog::MountDialog(QWidget *parent, std::function<QList<SourceMount>()> pr
     auto *fusePath = new QLineEdit(QSettings("cristim", "darling-launcher").value("apfsFuse", LauncherDiscovery::helperExecutable(LauncherDiscovery::roots(), "apfs-fuse")).toString());
     auto *utilityPath = new QLineEdit(QSettings("cristim", "darling-launcher").value("apfsUtil", LauncherDiscovery::helperExecutable(LauncherDiscovery::roots(), "apfsutil")).toString());
     fusePath->setObjectName("apfsFuseField"); utilityPath->setObjectName("apfsUtilField");
-    auto *batchRoot = new QLineEdit(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/mounts");
+    auto *batchRoot = new QLineEdit(LauncherDiscovery::dataRoot() + "/mounts");
     form->addRow("APFS FUSE executable", fusePath); form->addRow("APFS metadata utility", utilityPath); form->addRow("Batch mount root", batchRoot);
     connect(fusePath, &QLineEdit::editingFinished, this, [=] { QSettings("cristim", "darling-launcher").setValue("apfsFuse", fusePath->text()); });
     connect(utilityPath, &QLineEdit::editingFinished, this, [=] { QSettings("cristim", "darling-launcher").setValue("apfsUtil", utilityPath->text()); });
