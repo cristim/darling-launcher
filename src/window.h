@@ -41,9 +41,8 @@ private:
     QLabel *sourceSummary;
     QString sourceSignature;
     bool sourceChoicesInitialized = false;
-    QLineEdit *storageRoot;
     QString prefixBuilderScript;
-    void openRuntimeBuilder(bool managed = false);
+    void openRuntimeBuilder(bool fresh = false);
     QLineEdit *volume;
     QLineEdit *prefix;
     QLineEdit *darling;

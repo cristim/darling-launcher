@@ -9,10 +9,7 @@
 namespace LauncherDiscovery {
 QStringList cloneArguments(const QString &repository, const QString &destination) { return {"clone", "--progress", "--", repository, destination}; }
 QString defaultVolume(const QStringList &mounts, const QString &current) { return mounts.size() == 1 ? mounts.first() : current; }
-QString dataRoot() {
-    const QString selected = QSettings("cristim", "darling-launcher").value("dataRoot").toString();
-    return QDir::isAbsolutePath(selected) && QDir::cleanPath(selected) != "/" ? QDir::cleanPath(selected) : QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-}
+QString dataRoot() { return QDir::homePath() + "/.darling-launcher"; }
 QStringList roots() { return {QDir::homePath()+"/src", dataRoot()+"/sources", dataRoot()+"/workspaces", QDir::tempPath()}; }
 static QStringList candidates(const QStringList &roots) {
     QStringList result;

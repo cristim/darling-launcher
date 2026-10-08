@@ -25,14 +25,12 @@ The source browser reads bundle display names, `CFBundleIconFile` resources and 
 
 ## Building a prefix from VibeDarling branches and PRs
 
-The launcher includes a versioned GPL snapshot of `all-vibedarling-pr-prefix.py`
-from the VibeDarling tooling tab. No Darling installation or external builder path
-is required. On startup without a usable runtime, **Set up Darling** offers to
-build and install a private runtime or select an existing one. It proposes the
-launcher data directory in your home (`~/.local/share/Darling Launcher` by default).
-Configure this folder in the setup offer or Settings; sources, workspaces, runtime
-images, prefixes, mount points and AI workspaces use it. Existing data is never
-moved by changing that setting.
+The launcher includes a versioned GPL snapshot of `all-vibedarling-pr-prefix.py`.
+No Darling installation or external builder path is required. On startup without a
+usable runtime, **Set up Darling** offers to build and install a private runtime or
+select an existing one. Everything the launcher creates lives in `~/.darling-launcher`
+(sources, workspaces, runtime images, prefixes, mount points and AI workspaces); this
+location is fixed and not configurable.
 
 Setup clones VibeDarling into `<data>/sources/vibedarling`, builds in a fresh
 `<data>/workspaces/...` and automatically selects the resulting runtime/prefix.
@@ -41,18 +39,11 @@ Darling host build dependencies must be available; errors retain the workspace
 and appear in build progress. Compilation and private installation hold the shared
 heavy-build lock. The launcher cannot close during an active clone/build.
 
-Explicit external builder overrides remain supported. Configure a clean source
-clone, new workspace and job count. Choose default branches only or default branches plus all open PRs. The script resolves main/master where present and records exceptions for repositories with another default branch. Optional CMake settings are passed as one `-DNAME=VALUE` per line.
+Choose default branches only or default branches plus all open PRs, a job count and optional CMake settings (one `-DNAME=VALUE` per line). The script resolves main/master where present and records exceptions for repositories with another default branch.
 
 The launcher snapshots the selected script and checks its CLI. It runs `resolve`, `checkout` and `build`, including `resolve-nested` and `checkout-nested` when that interface is available. For branch-only builds it creates separate top-level and nested locks with empty PR lists; original discovery locks are preserved. Existing workspaces and workspaces inside the source checkout are refused. Conflicts and script failures stop the workflow and retain the workspace for inspection.
 
 The output prefix is `<workspace>/prefix`, the executable is `<workspace>/build/src/startup/darling`, and the install root is `<workspace>/image/usr/local`. The GUI selects these together after successful verification and sets `DARLING_INSTALL_PREFIX` for guest launches. Script, lock and integration-manifest hashes are recorded under the private prefix's `.darling-launcher/build-provenance.json`. No existing source checkout or installed runtime is modified by this integration. Keep the GUI open while imports and builds are active.
-
-You can preselect the external script when launching:
-
-```sh
-./build/darling-launcher --prefix-builder /path/to/all-vibedarling-pr-prefix.py
-```
 
 The builder requires GitHub network access and a full Darling build environment. It currently resolves the PR inventory for both choices; only the selected lock controls which PRs are integrated.
 
@@ -82,16 +73,11 @@ mount action.
 **Detect paths** also finds an installed `darling` executable and reads runtime
 paths from the selected prefix's launcher build provenance.
 
-In **Create prefix**, **Find local tools and sources** searches immediate Darling
-folders in `~/src`, the launcher's data sources folder, and `/tmp`. Multiple
-matches are presented for selection. Paths remain editable. A fresh workspace
-under the launcher's application data folder is proposed visibly.
-**Clone VibeDarling…** clones `https://github.com/VibeDarling/darling.git` into a
-new folder under a parent you select, streams Git progress, and fills the source
-field. Existing checkouts are not modified. Submodule integration remains the
-prefix builder's responsibility. The prefix-builder script must be present in
-that clone or selected from the separate tooling checkout; the launcher does
-not assume the tooling branch has been merged upstream. Clone failures retain
+**Create prefix** clones `https://github.com/VibeDarling/darling.git` into
+`~/.darling-launcher/sources/vibedarling` when it is missing, streams Git progress and
+builds in a new `~/.darling-launcher/workspaces/` folder. Existing checkouts are not
+modified. Submodule integration remains the prefix builder's responsibility. The builder
+script is the bundled snapshot until it is merged upstream. Clone failures retain
 partial folders for inspection, and require an explicit retry.
 
 ### Apps, settings and contributions

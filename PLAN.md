@@ -102,3 +102,10 @@ Embed the ready separate-tab GPL builder with exact commit/hash provenance;
 external overrides remain optional. Protect clone/build lifetime and hold the
 shared heavy-build lock for compilation/private installation. Verify synthetic
 first-run clone/build, path adoption, embedded helper CLI/hash and real Wayland UI.
+
+Fixed data location: all launcher data lives in ~/.darling-launcher (not configurable).
+Create prefix has no script/source/workspace fields: source clone is
+<data>/sources/vibedarling (auto-cloned), workspace is generated per build, script is the
+bundled snapshot. Removed the dataRoot setting, the --prefix-builder CLI option and the
+tool/source detection and browse buttons. Pending: builder script moves into VibeDarling
+upstream via a PR from its author; the launcher will fetch it from that PR until merged.
