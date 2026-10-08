@@ -120,3 +120,8 @@ are automatic. Agent source-fix workspace is generated, not edited.
 Background builds: while cloning/building, "Continue in the background" (or closing the
 build dialog or the main window) hides the windows; both reappear when the clone or build
 finishes or fails. Quitting remains blocked until then (closing only hides).
+
+Diagnostic log: ~/.darling-launcher/logs/launcher.log (build output, launch commands and
+loader output, agent output, Qt messages), path shown in Settings, README documents it.
+First run: "I already have a Darling checkout and prefix..." takes a checkout root (must
+contain build/src/startup/darling and a runtime image) and an optional existing prefix.

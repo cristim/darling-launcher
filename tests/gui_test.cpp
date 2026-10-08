@@ -490,6 +490,19 @@ private slots:
         QVERIFY(builder->isVisible()); QVERIFY(window.isVisible()); QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), workspace + "/build/src/startup/darling"); QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), workspace + "/image/usr/local"); QVERIFY(QFileInfo(data + "/sources/vibedarling").isDir()); QVERIFY(!builder->isBusy());
         QVERIFY(QDir().mkpath(workspace + "/image/usr/local/libexec/darling/private/etc")); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); window.offerRuntimeSetup(); QVERIFY(!window.findChild<QDialog *>("firstRunSetup"));
     }
+    void existingCheckoutAndPrefixAreAdopted() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear();
+        const QString checkout = temporary.path() + "/darling", existingPrefix = temporary.path() + "/my prefix";
+        QVERIFY(QDir().mkpath(checkout + "/build/src/startup")); QVERIFY(QDir().mkpath(checkout + "/image/usr/local/libexec/darling/private/etc")); QVERIFY(QDir().mkpath(existingPrefix));
+        QFile launcher(checkout + "/build/src/startup/darling"); QVERIFY(launcher.open(QIODevice::WriteOnly)); launcher.close(); QVERIFY(launcher.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        Window window({}, false, [] { return QList<SourceMount>{}; }); window.show(); window.findChild<QLineEdit *>("darlingField")->clear(); window.findChild<QLineEdit *>("runtimeRootField")->clear();
+        window.offerRuntimeSetup(); auto *offer = window.findChild<QDialog *>("firstRunSetup"); QVERIFY(offer);
+        offer->findChild<QPushButton *>("setupSelectRuntime")->click(); auto *existing = window.findChild<QDialog *>("existingDarling"); QVERIFY(existing && existing->isVisible());
+        existing->findChild<QLineEdit *>("existingCheckout")->setText(temporary.path() + "/missing"); existing->findChild<QPushButton *>("useExistingDarling")->click();
+        QVERIFY(existing->findChild<QLabel *>("existingMessage")->text().contains("No built Darling")); QVERIFY(window.findChild<QLineEdit *>("darlingField")->text().isEmpty());
+        existing->findChild<QLineEdit *>("existingCheckout")->setText(checkout); existing->findChild<QLineEdit *>("existingPrefix")->setText(existingPrefix); existing->findChild<QPushButton *>("useExistingDarling")->click();
+        QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), checkout + "/build/src/startup/darling"); QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), checkout + "/image/usr/local"); QCOMPARE(window.findChild<QLineEdit *>("prefixField")->text(), existingPrefix);
+    }
     void bundledBuilderNeedsNoExternalScript() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings settings("cristim", "darling-launcher"); settings.clear(); qputenv("HOME", temporary.path().toUtf8());
         PrefixDialog builder({}, {}, nullptr);

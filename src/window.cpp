@@ -298,14 +298,36 @@ void Window::offerRuntimeSetup() {
         if (!source.isEmpty() && (path == source || path.startsWith(source + '/'))) { result->setText("The launcher folder " + path + " is inside the mounted macOS source."); return; }
         dialog->close(); openRuntimeBuilder(true);
     });
-    auto *select = new QPushButton("Select an existing runtime…"); select->setObjectName("setupSelectRuntime"); layout->addWidget(select); connect(select, &QPushButton::clicked, this, [this, dialog] {
-        const QString launcher = QFileDialog::getOpenFileName(dialog, "Select the darling executable of an installed runtime");
-        if (launcher.isEmpty()) return;
-        QDir install(QFileInfo(launcher).absolutePath()); install.cdUp();
-        if (!QFileInfo(launcher).isExecutable() || !QFileInfo(install.absolutePath() + "/libexec/darling/private/etc").isDir()) { QMessageBox::warning(dialog, "Darling runtime", "That file is not the darling executable of a usable runtime."); return; }
-        darling->setText(launcher); runtimeRoot->setText(install.absolutePath());
-        QSettings settings("cristim", "darling-launcher"); settings.setValue("darling", launcher); settings.setValue("runtimeRoot", install.absolutePath());
-        dialog->close(); load();
+    auto *select = new QPushButton("I already have a Darling checkout and prefix…"); select->setObjectName("setupSelectRuntime"); layout->addWidget(select);
+    connect(select, &QPushButton::clicked, this, [this, dialog] {
+        auto *existing = new QDialog(dialog); existing->setObjectName("existingDarling"); existing->setWindowTitle("Use existing Darling"); existing->setAttribute(Qt::WA_DeleteOnClose);
+        auto *box = new QVBoxLayout(existing); auto *form = new QFormLayout; box->addLayout(form);
+        auto row = [&](const QString &label, const QString &name, const QString &placeholder) {
+            auto *edit = new QLineEdit; edit->setObjectName(name); edit->setPlaceholderText(placeholder);
+            auto *browse = new QPushButton("Browse…"); auto *line = new QWidget; auto *hbox = new QHBoxLayout(line); hbox->setContentsMargins(0, 0, 0, 0); hbox->addWidget(edit); hbox->addWidget(browse);
+            connect(browse, &QPushButton::clicked, existing, [existing, edit, label] { const QString path = QFileDialog::getExistingDirectory(existing, label); if (!path.isEmpty()) edit->setText(path); });
+            form->addRow(label, line); return edit;
+        };
+        auto *checkout = row("Darling checkout root", "existingCheckout", "Folder containing build/src/startup/darling");
+        auto *existingPrefix = row("Darling prefix (optional)", "existingPrefix", "Leave empty to create " + LauncherDiscovery::managedPrefix(LauncherDiscovery::dataRoot()));
+        auto *message = new QLabel; message->setObjectName("existingMessage"); message->setWordWrap(true); box->addWidget(message);
+        auto *use = new QPushButton("Use these"); use->setObjectName("useExistingDarling"); box->addWidget(use);
+        connect(use, &QPushButton::clicked, existing, [this, dialog, existing, checkout, existingPrefix, message] {
+            const auto found = LauncherDiscovery::runtimes({QDir::cleanPath(checkout->text())}, {});
+            if (checkout->text().isEmpty() || found.isEmpty()) { message->setText("No built Darling found there. Expected build/src/startup/darling next to image/usr/local or install/usr/local."); return; }
+            const QString chosenPrefix = QDir::cleanPath(existingPrefix->text());
+            if (!existingPrefix->text().isEmpty()) {
+                const QString source = QFileInfo(volume->text()).canonicalFilePath(), canonical = QFileInfo(chosenPrefix).canonicalFilePath();
+                if (!QDir::isAbsolutePath(chosenPrefix) || !QFileInfo(chosenPrefix).isDir()) { message->setText("The prefix must be an existing folder."); return; }
+                if (!source.isEmpty() && (canonical == source || canonical.startsWith(source + '/'))) { message->setText("The prefix cannot be inside the macOS source volume."); return; }
+                prefix->setText(chosenPrefix);
+            }
+            darling->setText(found.first().launcher); runtimeRoot->setText(found.first().installRoot);
+            QSettings settings("cristim", "darling-launcher"); settings.setValue("darling", darling->text()); settings.setValue("runtimeRoot", runtimeRoot->text()); settings.setValue("prefix", prefix->text());
+            LauncherLog::write("app", "using existing Darling " + darling->text() + " with prefix " + prefix->text());
+            existing->close(); dialog->close(); updatePrefixChoices(); load();
+        });
+        existing->open();
     });
     auto *later = new QPushButton("Set up later"); later->setObjectName("setupLater"); layout->addWidget(later); connect(later, &QPushButton::clicked, dialog, &QDialog::reject);
     dialog->show(); dialog->raise();
