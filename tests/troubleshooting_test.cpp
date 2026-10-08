@@ -56,6 +56,9 @@ private slots:
         QVERIFY(write("gh", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + temporary.path().toUtf8() + "/gh-calls'\nif [ \"$1\" = issue ]; then while [ \"$#\" -gt 0 ]; do if [ \"$1\" = --body-file ]; then /usr/bin/cat \"$2\" > '" + temporary.path().toUtf8() + "/approved-body'; fi; shift; done; echo https://example.invalid/issues/1; fi\n"));
         qputenv("PATH", temporary.path().toUtf8());
         QVERIFY(LauncherTroubleshooting::backgroundArguments("codex", "test").contains("workspace-write")); QCOMPARE(LauncherTroubleshooting::backgroundArguments("claude", "test").first(), "--print"); QCOMPARE(LauncherTroubleshooting::backgroundArguments("opencode", "test").first(), "run"); QVERIFY(LauncherTroubleshooting::backgroundArguments("unknown", "test").isEmpty());
+        { const auto args = LauncherTroubleshooting::backgroundArguments("claude", "the prompt", {{"/clone", "/prefix"}, "/usr/local/bin/darling"});
+          QCOMPARE(args.last(), "the prompt"); QCOMPARE(args.at(args.size() - 2), "--"); QVERIFY(args.indexOf("--add-dir") >= 0); QVERIFY(args.contains("/clone")); QVERIFY(args.contains("/prefix"));
+          const QString tools = args.at(args.indexOf("--allowedTools") + 1); QVERIFY(tools.contains("Bash(git:*)")); QVERIFY(tools.contains("Bash(/usr/local/bin/darling:*)")); QVERIFY(!tools.contains("Bash(rm")); }
         QWidget owner; owner.show();
         const QString prefix = temporary.path() + "/prefix", source = temporary.path() + "/source"; QVERIFY(QDir().mkpath(prefix)); QVERIFY(QDir().mkpath(source));
         QJsonObject data{{"app", "Fixture"}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}, {"sourceBundle", "Applications/Fixture.app"}, {"prefix", prefix}, {"sourceVolume", source}, {"launcher", "/fake/darling"}, {"missingLibrary", "/usr/lib/fixture.dylib"}, {"missingSymbol", "_Fixture"}, {"sourceMounted", true}, {"loaderOutput", "Symbol not found: _Fixture"}};
@@ -100,7 +103,8 @@ private slots:
         QTest::newRow("stays-running") << "stays-running" << true << "stayed running";
         QTest::newRow("crashes") << "crashes" << false << "139";
         QTest::newRow("loader-error") << "loader-error" << false << "still fails to load";
-        QTest::newRow("no-declaration") << "no-declaration" << false << "verification.json";
+        QTest::newRow("no-declaration") << "no-declaration" << false << "No usable launcher";
+        QTest::newRow("default-runtime") << "default-runtime" << true << "stayed running";
     }
     void verifierRunsTheFailedAppWithThePatchedRuntime() {
         QFETCH(QString, mode); QFETCH(bool, verified); QFETCH(QString, reason);
@@ -109,11 +113,12 @@ private slots:
         auto write = [&](const QString &path, const QByteArray &contents) { QDir().mkpath(QFileInfo(path).absolutePath()); QFile file(path); if (!file.open(QIODevice::WriteOnly)) return false; file.write(contents); file.close(); return file.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner); };
         QVERIFY(write(temporary.path() + "/bin/git", "#!/bin/sh\necho patched-sha\n")); qputenv("PATH", (temporary.path() + "/bin:" + QString::fromLocal8Bit(previousPath)).toLocal8Bit());
         const QString workspace = temporary.path() + "/work", prefix = temporary.path() + "/prefix"; QVERIFY(QDir().mkpath(prefix)); QVERIFY(QDir().mkpath(workspace + "/image"));
-        const QString body = mode == "stays-running" ? "if [ \"$1\" = shutdown ]; then touch \"$DPREFIX/stopped\"; exit 0; fi\nexec sleep 30" : mode == "crashes" ? "exit 139" : "printf 'Library not loaded: /usr/lib/x.dylib\\n  Referenced from: /Applications/Fixture.app/Contents/MacOS/Fixture\\n  Reason: image not found\\n'\nexit 1";
+        const QString body = mode == "stays-running" || mode == "default-runtime" ? "if [ \"$1\" = shutdown ]; then touch \"$DPREFIX/stopped\"; exit 0; fi\nexec sleep 30" : mode == "crashes" ? "exit 139" : "printf 'Library not loaded: /usr/lib/x.dylib\\n  Referenced from: /Applications/Fixture.app/Contents/MacOS/Fixture\\n  Reason: image not found\\n'\nexit 1";
         QVERIFY(write(workspace + "/build/darling", ("#!/bin/sh\n" + body + "\n").toUtf8()));
         QVERIFY(write(workspace + "/proposal.json", QJsonDocument(QJsonObject{{"source", workspace + "/clone"}}).toJson()));
-        if (mode != "no-declaration") QVERIFY(write(workspace + "/verification.json", QJsonDocument(QJsonObject{{"launcher", workspace + "/build/darling"}, {"runtimeRoot", workspace + "/image"}}).toJson()));
-        FixVerifier verifier(workspace, QJsonObject{{"prefix", prefix}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}}, 1);
+        if (mode != "no-declaration" && mode != "default-runtime") QVERIFY(write(workspace + "/verification.json", QJsonDocument(QJsonObject{{"launcher", workspace + "/build/darling"}, {"runtimeRoot", workspace + "/image"}}).toJson()));
+        QJsonObject diagnostic{{"prefix", prefix}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}}; if (mode == "default-runtime") { diagnostic.insert("launcher", workspace + "/build/darling"); diagnostic.insert("runtime", workspace + "/image"); }
+        FixVerifier verifier(workspace, diagnostic, 1);
         QSignalSpy spy(&verifier, &FixVerifier::finished); verifier.start(); QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 8000);
         const auto result = spy.first().first().value<FixVerification>(); QCOMPARE(result.verified, verified); QVERIFY2(result.reason.contains(reason), qPrintable(result.reason));
         QFile report(workspace + "/LAUNCHER-VERIFICATION.json"); QVERIFY(report.open(QIODevice::ReadOnly)); const auto saved = QJsonDocument::fromJson(report.readAll()).object();

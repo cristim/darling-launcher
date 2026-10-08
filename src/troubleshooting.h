@@ -61,7 +61,8 @@ namespace LauncherTroubleshooting {
 QString verificationFile(const QString &workspace, const QString &commit);
 QStringList agents();
 QStringList agentArguments(const QString &agent, const QString &prompt);
-QStringList backgroundArguments(const QString &agent, const QString &prompt);
+struct AgentAccess { QStringList directories; QString launcher; };
+QStringList backgroundArguments(const QString &agent, const QString &prompt, const AgentAccess &access = {});
 PrProposal reviewProposal(const QString &file);
 }
 struct RecoveryChoices {

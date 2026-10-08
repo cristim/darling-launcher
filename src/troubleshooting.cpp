@@ -62,9 +62,16 @@ QStringList LauncherTroubleshooting::agentArguments(const QString &agent, const 
     if (agent == "claude") return {prompt};
     return {};
 }
-QStringList LauncherTroubleshooting::backgroundArguments(const QString &agent, const QString &prompt) {
+QStringList LauncherTroubleshooting::backgroundArguments(const QString &agent, const QString &prompt, const AgentAccess &access) {
     if (agent == "codex") return {"exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "--model", "gpt-6.1-sol", "--config", "model_reasoning_effort=\"low\"", "--json", prompt};
-    if (agent == "claude") return {"--print", "--permission-mode", "acceptEdits", prompt};
+    if (agent == "claude") {
+        if (access.directories.isEmpty()) return {"--print", "--permission-mode", "acceptEdits", prompt};
+        QStringList tools{"Read", "Edit", "Write", "Glob", "Grep", "Bash(git:*)", "Bash(cmake:*)", "Bash(ninja:*)", "Bash(make:*)", "Bash(flock:*)", "Bash(timeout:*)", "Bash(env:*)", "Bash(cp:*)", "Bash(mkdir:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(coredumpctl:*)"};
+        if (!access.launcher.isEmpty()) tools << "Bash(" + access.launcher + ":*)";
+        QStringList result{"--print", "--permission-mode", "acceptEdits", "--allowedTools", tools.join(',')};
+        for (const QString &dir : access.directories) if (!dir.isEmpty()) result << "--add-dir" << dir;
+        return result << "--" << prompt;
+    }
     if (agent == "opencode") return {"run", "--format", "json", prompt};
     return {};
 }
@@ -86,10 +93,14 @@ void FixVerifier::start() {
     running = true;
     const QString root = QFileInfo(workspace).canonicalFilePath() + '/';
     QFile input(workspace + "/verification.json");
-    if (!input.open(QIODevice::ReadOnly)) { finish(false, "The agent did not write verification.json naming the patched launcher and runtime it built."); return; }
-    const auto declared = QJsonDocument::fromJson(input.readAll()).object();
-    launcher = QFileInfo(declared.value("launcher").toString()).canonicalFilePath(); runtimeRoot = QFileInfo(declared.value("runtimeRoot").toString()).canonicalFilePath();
-    if (!launcher.startsWith(root) || !runtimeRoot.startsWith(root) || !QFileInfo(launcher).isExecutable() || !QFileInfo(runtimeRoot).isDir()) { finish(false, "verification.json must name an executable launcher and a runtime built inside the agent workspace."); return; }
+    if (input.open(QIODevice::ReadOnly)) {
+        const auto declared = QJsonDocument::fromJson(input.readAll()).object();
+        launcher = QFileInfo(declared.value("launcher").toString()).canonicalFilePath(); runtimeRoot = QFileInfo(declared.value("runtimeRoot").toString()).canonicalFilePath();
+        if (!launcher.startsWith(root) || !runtimeRoot.startsWith(root) || !QFileInfo(launcher).isExecutable() || !QFileInfo(runtimeRoot).isDir()) { finish(false, "verification.json must name an executable launcher and a runtime built inside the agent workspace."); return; }
+    } else {
+        launcher = diagnostic.value("launcher").toString(); runtimeRoot = diagnostic.value("runtime").toString();
+        if (!QFileInfo(launcher).isExecutable()) { finish(false, "No usable launcher is configured to run the app in the prefix."); return; }
+    }
     QFile proposal(workspace + "/proposal.json"); QJsonObject fields;
     if (proposal.open(QIODevice::ReadOnly)) fields = QJsonDocument::fromJson(proposal.readAll()).object();
     bool ok = false;
@@ -107,7 +118,7 @@ void FixVerifier::start() {
         if (!running) return;
         output += QString::fromLocal8Bit(process.readAllStandardOutput());
         const auto missing = LauncherCore::diagnose(output);
-        if (exit == QProcess::NormalExit && code == 0 && !missing.valid()) finish(true, "The app ran and exited cleanly with the patched runtime.");
+        if (exit == QProcess::NormalExit && code == 0 && !missing.valid()) finish(true, "The app ran and exited cleanly in the prefix.");
         else finish(false, missing.valid() ? "The app still fails to load: " + (missing.missingLibrary ? missing.expectedIn : missing.symbol) : exit == QProcess::CrashExit ? "The launcher crashed." : "The app exited with status " + QString::number(code) + (code > 128 ? QString(" (") + strsignal(code - 128) + ")" : QString()));
     });
     QTimer::singleShot(stableSeconds * 1000, this, [this, prefix, env] {
@@ -118,7 +129,7 @@ void FixVerifier::start() {
         stop->start(launcher, {"shutdown"});
         process.disconnect(this); process.terminate();
         if (missing.valid()) finish(false, "The app still fails to load: " + (missing.missingLibrary ? missing.expectedIn : missing.symbol));
-        else finish(true, "The app stayed running for " + QString::number(stableSeconds) + " seconds with the patched runtime and no loader errors.");
+        else finish(true, "The app stayed running for " + QString::number(stableSeconds) + " seconds in the prefix with no loader errors.");
     });
     process.start(launcher, {"exec", "/" + bundle + "/Contents/MacOS/" + executable});
 }
@@ -133,7 +144,6 @@ BackgroundFix::BackgroundFix(const QString &agent, const QStringList &args, cons
         const bool success = exit == QProcess::NormalExit && code == 0;
         emit statusChanged(agent + (success ? " finished. Trying its fix inside the imported prefix before offering a PR…" : " stopped without a verified fix. Check its permissions/authentication and log in ") + workspace);
         if (!success || diagnostic.isEmpty()) return;
-        if (!QFileInfo::exists(workspace + "/verification.json")) { emit statusChanged("The agent declared no patched runtime to try, so no PR is offered. See " + workspace); return; }
         emit verificationOffered();
     });
     connect(&process, &QProcess::errorOccurred, this, [this, agent](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) emit statusChanged(agent + " failed to start: " + process.errorString()); });
@@ -306,11 +316,20 @@ TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWi
         }
         QSaveFile report(directory + "/TROUBLESHOOTING.json");
         if (!report.open(QIODevice::WriteOnly) || report.write(QJsonDocument(diagnostic).toJson()) < 0 || !report.commit()) { status->setText("Cannot save diagnostic report."); return; }
-        const QString instructions = "Use TROUBLESHOOTING.json to investigate this Darling app failure. Clone relevant VibeDarling source repositories independently inside this workspace; do not modify existing checkouts or shared runtimes. Read their AGENTS.md. Work only from source, published APIs, headers, interface metadata and loader output. Never disassemble, decompile, inspect machine code, dump Apple symbols or commit Apple apps/libraries. Do not inspect dyld cache implementation bytes. Use private prefixes; do not unlock or change encrypted volumes. Hold /tmp/agent-locks/darling-heavy-build.lock for heavy builds. Prepare a source fix with meaningful tests and a local completed PR draft; no push, issue or PR submission is authorized. If a source fix cannot be specified without binary inspection, explain the blocker. Write proposal.json beside this report with string fields source (absolute independent clone path), repo (VibeDarling/repo), base (explicit branch), head (fork-owner:branch), title, body. Commit the reviewed source patch on that head branch. A branch must be published separately with explicit user approval before the launcher's PR submission can succeed. After the fix, build the patched Darling in a private build directory inside this workspace and write verification.json beside this report with string fields launcher (absolute path to the patched darling executable you built) and runtimeRoot (its absolute install root, containing libexec/darling/private/etc). The launcher itself will then run the failed app from the imported prefix with that patched runtime for about 20 seconds; a pull request is offered only if that run succeeds, so do not claim success you have not seen. Do not run the app inside the imported prefix yourself.";
+        const QString prefixPath = diagnostic.value("prefix").toString(), runtimePath = diagnostic.value("runtime").toString(), launcherPath = diagnostic.value("launcher").toString(), bundlePath = diagnostic.value("bundle").toString(), executableName = diagnostic.value("executable").toString();
+        const QString clone = LauncherDiscovery::dataRoot() + "/sources/vibedarling", slug = QFileInfo(directory).fileName().left(8);
+        const QString instructions = "Use TROUBLESHOOTING.json (exit status, signal and loader output of the failed launch) to investigate and fix this Darling app failure. "
+            "WORK IN THE IMPORTED PREFIX: the prefix is " + prefixPath + " and the failing app is /" + bundlePath + ". Reproduce the failure exactly as the launcher runs it: `env DPREFIX=" + prefixPath + " DARLING_INSTALL_PREFIX=" + runtimePath + " " + launcherPath + " exec /" + bundlePath + "/Contents/MacOS/" + executableName + "` under `timeout 60`. "
+            "Fix it in place as far as you can WITHOUT IMPACTING OTHER APPS: prefer changes scoped to this app (app-local libraries, per-app environment); if a shared file in the prefix must change, first back up the original under " + prefixPath + "/.darling-launcher/backups/ keeping its relative path, and list every changed prefix path in " + directory + "/PREFIX-CHANGES.txt so it can be reverted. Never change /usr/local, the system runtime, other prefixes or other imported apps. "
+            "THE SOURCE IS ALREADY CLONED at " + clone + ". Do not clone it again and do not modify that checkout directly: create your own git worktree on it with `git -C " + clone + " worktree add -b fix/" + slug + " " + directory + "/darling` and make and commit your source changes there. Read its AGENTS.md. Build in a private build directory inside this workspace (hold /tmp/agent-locks/darling-heavy-build.lock for heavy builds) and deploy the built result back into the prefix, scoped as above. "
+            "Work only from source, published APIs, headers, interface metadata, loader output and process exit status. Never disassemble, decompile, inspect machine code, dump Apple symbols or commit Apple apps/libraries; `coredumpctl info` module names are fine but do not open core dumps in a debugger. Do not inspect dyld cache implementation bytes. Do not unlock or change encrypted volumes. "
+            "Add meaningful tests, prepare a completed local PR draft, and do not push or submit any issue or PR. If a fix cannot be specified without binary inspection, explain the blocker. "
+            "Write proposal.json beside this report with string fields source (absolute worktree path " + directory + "/darling), repo (VibeDarling/repo), base (explicit branch), head (fork-owner:branch), title, body, and commit the reviewed patch on that branch. The branch must be published separately with explicit user approval before PR submission can succeed. "
+            "When done the launcher itself runs the app in the prefix for about 20 seconds; a PR is offered only if that run succeeds, so do not claim success you have not seen. Only if you deployed a patched runtime outside the prefix, also write verification.json with string fields launcher and runtimeRoot (inside this workspace).";
         QSaveFile prompt(directory + "/FIX-INSTRUCTIONS.txt");
         if (!prompt.open(QIODevice::WriteOnly) || prompt.write(instructions.toUtf8()) < 0 || !prompt.commit()) { status->setText("Cannot save agent instructions."); return; }
         const QString chosen = agents->currentText(), executable = QStandardPaths::findExecutable(chosen);
-        const auto arguments = background->isChecked() ? LauncherTroubleshooting::backgroundArguments(chosen, instructions) : LauncherTroubleshooting::agentArguments(chosen, instructions);
+        const auto arguments = background->isChecked() ? LauncherTroubleshooting::backgroundArguments(chosen, instructions, {{clone, prefixPath, runtimePath, directory}, launcherPath}) : LauncherTroubleshooting::agentArguments(chosen, instructions);
         if (executable.isEmpty() || arguments.isEmpty()) { status->setText("Selected agent is no longer installed."); return; }
         if (background->isChecked()) {
             auto *job = new BackgroundFix(chosen, arguments, directory, parentWidget() ? parentWidget() : this, diagnostic);
@@ -319,8 +338,12 @@ TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWi
             if (auto *window = qobject_cast<QMainWindow *>(parentWidget())) connect(job, &BackgroundFix::statusChanged, window, [window](const QString &message) { window->statusBar()->showMessage(message); });
             const QJsonObject failure = diagnostic; QWidget *window = parentWidget();
             connect(job, &BackgroundFix::verificationOffered, job, [window, job] {
-                const auto answer = QMessageBox::question(window, "Try the agent's fix", "The agent says it built a patched Darling in its workspace (" + job->property("workspace").toString() + ").\n\nTrying the fix runs that agent-built program against your imported prefix for about 20 seconds. Run it?");
-                if (answer == QMessageBox::Yes) job->verify(); else if (auto *bar = qobject_cast<QMainWindow *>(window)) bar->statusBar()->showMessage("Fix not tried; no PR is offered until it has been verified in the prefix.");
+                auto *box = new QMessageBox(QMessageBox::Question, "Try the agent's fix", "The agent finished working in " + job->property("workspace").toString() + ".\n\nTry its fix now? The launcher will run the app in your imported prefix for about 20 seconds (using an agent-built runtime if the agent declared one).", QMessageBox::Yes | QMessageBox::No, window);
+                box->setAttribute(Qt::WA_DeleteOnClose);
+                connect(box, &QDialog::finished, job, [window, job](int answer) {
+                    if (answer == QMessageBox::Yes) job->verify(); else if (auto *main = qobject_cast<QMainWindow *>(window)) main->statusBar()->showMessage("Fix not tried; no PR is offered until it has been verified in the prefix.");
+                });
+                box->open();
             });
             connect(job, &BackgroundFix::verified, job, [window, failure](const QString &proposalFile) {
                 if (QMessageBox::question(window, "Fix verified", "The fix ran successfully inside your imported prefix.\n\nReview the completed patch and PR draft now? Nothing is submitted until you approve the completed draft.") != QMessageBox::Yes) return;
