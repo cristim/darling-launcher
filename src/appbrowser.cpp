@@ -12,6 +12,7 @@
 #include <QStyle>
 #include <QPainter>
 #include <QMouseEvent>
+#include <QApplication>
 #include <QRubberBand>
 
 namespace {
@@ -94,7 +95,12 @@ bool AppBrowser::onContent(const QModelIndex &index, const QPoint &point) const 
 void AppBrowser::mousePressEvent(QMouseEvent *event) {
     if (event->button() == Qt::LeftButton && !(event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier))) {
         const QModelIndex index = indexAt(event->pos());
-        if (index.isValid() && onContent(index, event->pos())) { QListWidget::mousePressEvent(event); return; }
+        if (index.isValid() && onContent(index, event->pos())) {
+            if (!selectionModel()->isSelected(index)) selectionModel()->select(index, QItemSelectionModel::ClearAndSelect);
+            selectionModel()->setCurrentIndex(index, QItemSelectionModel::NoUpdate);
+            dragCandidate = true; pressPosition = event->pos(); pressedItem = index;
+            event->accept(); return;
+        }
         clearSelection(); setCurrentIndex(QModelIndex());
         rubberOrigin = event->pos();
         if (!rubberBand) rubberBand = new QRubberBand(QRubberBand::Rectangle, viewport());
@@ -104,6 +110,11 @@ void AppBrowser::mousePressEvent(QMouseEvent *event) {
     QListWidget::mousePressEvent(event);
 }
 void AppBrowser::mouseMoveEvent(QMouseEvent *event) {
+    if (dragCandidate) {
+        if (!(event->buttons() & Qt::LeftButton)) { dragCandidate = false; return; }
+        if ((event->pos() - pressPosition).manhattanLength() >= QApplication::startDragDistance()) { dragCandidate = false; startDrag(Qt::CopyAction); }
+        event->accept(); return;
+    }
     if (rubberBand && rubberBand->isVisible()) {
         const QRect area = QRect(rubberOrigin, event->pos()).normalized().intersected(viewport()->rect());
         rubberBand->setGeometry(area);
@@ -118,7 +129,17 @@ void AppBrowser::mouseMoveEvent(QMouseEvent *event) {
     }
     QListWidget::mouseMoveEvent(event);
 }
+void AppBrowser::mouseDoubleClickEvent(QMouseEvent *event) {
+    const QModelIndex index = indexAt(event->pos());
+    if (event->button() == Qt::LeftButton && index.isValid() && onContent(index, event->pos())) { emit itemDoubleClicked(item(index.row())); event->accept(); return; }
+    mousePressEvent(event);
+}
 void AppBrowser::mouseReleaseEvent(QMouseEvent *event) {
+    if (dragCandidate) {
+        dragCandidate = false;
+        if (pressedItem.isValid()) selectionModel()->select(pressedItem, QItemSelectionModel::ClearAndSelect);
+        event->accept(); return;
+    }
     if (rubberBand && rubberBand->isVisible()) { rubberBand->hide(); event->accept(); return; }
     QListWidget::mouseReleaseEvent(event);
 }

@@ -31,12 +31,16 @@ private:
     Filter filter = Filter::All;
     QStringList importedBundles;
     void applyFilter();
+    bool dragCandidate = false;
+    QPoint pressPosition;
+    QPersistentModelIndex pressedItem;
     QRubberBand *rubberBand = nullptr;
     QPoint rubberOrigin;
 protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
     QMimeData *mimeData(const QList<QListWidgetItem *> &items) const override;
     QStringList mimeTypes() const override;
     virtual QString dragMimeType() const;

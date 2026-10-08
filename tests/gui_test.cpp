@@ -34,6 +34,7 @@
 #include <QtTest>
 #include <QtEndian>
 
+struct RecordingBrowser : AppBrowser { bool dragged = false; int selectedAtDrag = 0; void startDrag(Qt::DropActions) override { dragged = true; selectedAtDrag = selectedItems().size(); } };
 class GuiTest : public QObject {
     Q_OBJECT
     static void launchSelected(Window &window) { auto *apps = window.findChild<ImportedBrowser *>("importedApps"); for (auto *item : apps->selectedItems()) emit apps->itemDoubleClicked(item); }
@@ -245,6 +246,18 @@ private slots:
         QTest::mouseRelease(browser.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(cell.center().x(), cell.top() + 30));
         QTest::mousePress(browser.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(cell.left() - 3, cell.top() + 40)); QCOMPARE(browser.selectedItems().size(), 0);
         QTest::mouseRelease(browser.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(cell.left() - 3, cell.top() + 40));
+    }
+    void draggingSelectedAppsKeepsSelection_data() { QTest::addColumn<bool>("grid"); QTest::newRow("list") << false; QTest::newRow("grid") << true; }
+    void draggingSelectedAppsKeepsSelection() {
+        QFETCH(bool, grid);
+        RecordingBrowser browser; browser.resize(600, 400);
+        browser.showPreviews({{"Applications/A.app", "Calculator", {}, 10}, {"Applications/B.app", "Calendar", {}, 20}, {"Applications/C.app", "Notes", {}, 30}}); browser.setGridView(grid); browser.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&browser)); if (grid) QTRY_VERIFY(browser.visualRect(browser.model()->index(0, 0)).width() <= 130);
+        browser.selectAll(); const QPoint start = browser.contentRect(browser.model()->index(1, 0)).center();
+        QTest::mousePress(browser.viewport(), Qt::LeftButton, Qt::NoModifier, start);
+        QTest::mouseMove(browser.viewport(), start + QPoint(30, 30)); QTest::mouseMove(browser.viewport(), start + QPoint(60, 60));
+        QVERIFY(browser.dragged); QCOMPARE(browser.selectedAtDrag, 3);
+        QTest::mouseRelease(browser.viewport(), Qt::LeftButton, Qt::NoModifier, start + QPoint(60, 60));
     }
     void iconViewsAndSelection() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
