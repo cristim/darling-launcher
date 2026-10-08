@@ -189,9 +189,10 @@ LauncherTroubleshooting::AgentTools LauncherTroubleshooting::prepareAgentTools(c
         "src=$(realpath -e -- \"$1\"); rel=$2; pfx=$(realpath -m -- " + q + prefix + q + ")\n"
         "case \"$rel\" in /*|*..*) echo 'use a plain relative path inside the prefix' >&2; exit 2;; esac\n"
         "case \"$src\" in " + q + workspace + q + "/*) ;; *) echo 'source must be inside the agent workspace' >&2; exit 2;; esac\n"
+        "exe=$(realpath -m -- \"$pfx\"/" + q + bundle + q + "/Contents/MacOS/" + q + executable + q + ")\n"
         "dest=\"$pfx/$rel\"; parent=$(realpath -m -- \"$(dirname -- \"$dest\")\"); full=\"$parent/$(basename -- \"$dest\")\"\n"
         "case \"$parent\" in \"$pfx\"|\"$pfx\"/*) ;; *) echo 'destination escapes the prefix' >&2; exit 2;; esac\n"
-        "case \"$full\" in \"$pfx/.darling-launcher\"|\"$pfx/.darling-launcher/\"*|\"$pfx\"/" + q + bundle + q + "/Contents/MacOS/" + q + executable + q + ") echo 'refusing to replace launcher metadata or the failing app itself' >&2; exit 2;; esac\n"
+        "case \"$full\" in \"$pfx/.darling-launcher\"|\"$pfx/.darling-launcher/\"*|\"$exe\") echo 'refusing to replace launcher metadata or the failing app itself' >&2; exit 2;; esac\n"
         "backup=\"$pfx/.darling-launcher/backups/" + QFileInfo(workspace).fileName() + "/$rel\"\n"
         "if [ -e \"$full\" ] && [ ! -e \"$backup\" ]; then mkdir -p -- \"$(dirname -- \"$backup\")\"; cp -a -- \"$full\" \"$backup\"; fi\n"
         "mkdir -p -- \"$parent\"; [ ! -L \"$full\" ] || rm -f -- \"$full\"\n"
@@ -261,9 +262,9 @@ PrProposal LauncherTroubleshooting::reviewProposal(const QString &file) {
     if (!verified.value("verified").toBool() || verified.value("mac").toString() != LauncherTroubleshooting::verificationMac(workspace, result.commit, true)) { result.error = "No PR is offered until the fix is verified: the launcher has not run the app successfully with this patch in the imported prefix."; return result; }
     if (verified.value("proposalCommit").toString() != result.commit) { result.error = "The patch changed after it was verified. Verify the current commit before offering a PR."; return result; }
     const QString range = fields.value("base").toString() + "...HEAD";
-    const QString numbers = run({"diff", "--numstat", range});
+    const QString numbers = run({"diff", "--numstat", "--no-ext-diff", "--no-textconv", range});
     if (!ok || numbers.isEmpty() || QRegularExpression("(^|\\n)-\\t").match(numbers).hasMatch()) { result.error = "Proposal must contain source changes and no binary patches."; return result; }
-    result.patch = run({"diff", range});
+    result.patch = run({"diff", "--no-ext-diff", "--no-textconv", range});
     if (!ok || result.patch.isEmpty()) result.error = "Cannot read the complete proposed source patch.";
     result.fields.insert("source", source);
     return result;
