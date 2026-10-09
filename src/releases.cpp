@@ -151,9 +151,10 @@ QString vetMembers(const QStringList &listing, qint64 *regularBytes) {
     static const QRegularExpression row(R"(^(\S)\S{9}\s+\d+/\d+\s+(\d+|\d+,\s*\d+)\s+\d{4}-\d\d-\d\d\s\d\d:\d\d\s(.+)$)");
     QSet<QString> symlinks;
     QString error;
-    qint64 total = 0;
+    qint64 total = 0, members = 0;
     for (const QString &line : listing) {
         if (line.isEmpty()) continue;
+        if (++members > maxArchiveMembers) return "archive has more than " + QString::number(maxArchiveMembers) + " members";
         const auto match = row.match(line);
         if (!match.hasMatch()) return "unparsable archive member: " + line;
         const QChar type = match.captured(1).at(0);

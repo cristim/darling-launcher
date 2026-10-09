@@ -482,6 +482,15 @@ private slots:
         for (const char *line : {"crw-r--r-- 0/0 1,3 2026-10-09 14:32 usr/local/c", "brw-r--r-- 0/0 8, 0 2026-10-09 14:32 usr/local/b"})
             QVERIFY2(vetMembers({line}).contains("hard link or device member"), line);
     }
+    // Security re-check item 2: nothing bounded how many members an archive could have.
+    void memberCountIsCapped() {
+        using namespace LauncherReleases;
+        QStringList listing{"drwxr-xr-x 0/0 0 2026-10-09 14:32 usr/local/d"};
+        for (qint64 i = 1; i < maxArchiveMembers; ++i) listing << "-rw-r--r-- 0/0 0 2026-10-09 14:32 usr/local/d/" + QString::number(i);
+        QCOMPARE(vetMembers(listing), QString());
+        listing << "-rw-r--r-- 0/0 0 2026-10-09 14:32 usr/local/d/one-more";
+        QVERIFY(vetMembers(listing).contains("more than 200000 members"));
+    }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
         for (const char *good : {"v2026.10.09-3721b65", "v2026.10.09-3721b65-r2"}) QVERIFY2(validTag(good), good);
