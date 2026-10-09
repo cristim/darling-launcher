@@ -15,6 +15,37 @@
 
 namespace {
 QJsonObject readJson(const QString &path) { QFile file(path); if (!file.open(QIODevice::ReadOnly)) return {}; return QJsonDocument::fromJson(file.readAll()).object(); }
+QString sha256File(const QString &path) { QFile f(path); if (!f.open(QIODevice::ReadOnly)) return {}; return QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex(); }
+// Python's tarfile can write member names and owner names that GNU tar would not produce itself.
+const char *archiveWriter = R"(
+import io, json, sys, tarfile
+out, spec = sys.argv[1], json.loads(sys.argv[2])
+with tarfile.open(out, "w", format=tarfile.GNU_FORMAT) as archive:
+    for member in spec:
+        info = tarfile.TarInfo(member["name"]); info.mtime = 1760000000; info.uname = member.get("uname", "u"); info.gname = member.get("gname", "g")
+        info.mode = int(member.get("mode", "644"), 8); data = b""
+        if member.get("type") == "dir": info.type = tarfile.DIRTYPE; info.mode = 0o755
+        elif member.get("type") == "link": info.type = tarfile.SYMTYPE; info.linkname = member["target"]
+        else: data = member.get("data", "x").encode(); info.size = len(data)
+        archive.addfile(info, io.BytesIO(data))
+)";
+// Writes <dir>/<name>.tar.zst; members are {name, type: file|dir|link, target, gname, mode}.
+QString makeArchive(const QString &dir, const QString &name, const QJsonArray &members) {
+    const QString tar = dir + "/" + name + ".tar", zst = tar + ".zst";
+    if (QProcess::execute("python3", {"-c", archiveWriter, tar, QJsonDocument(members).toJson(QJsonDocument::Compact)}) != 0) return {};
+    if (QProcess::execute("zstd", {"-q", "-f", "--rm", tar, "-o", zst}) != 0) return {};
+    return zst;
+}
+QJsonObject dirMember(const QString &name) { return {{"name", name}, {"type", "dir"}}; }
+QJsonObject fileMember(const QString &name) { return {{"name", name}}; }
+QJsonObject linkMember(const QString &name, const QString &target) { return {{"name", name}, {"type", "link"}, {"target", target}}; }
+// The skeleton every installable fixture needs.
+QJsonArray runtimeMembers() { return {dirMember("usr"), dirMember("usr/local"), dirMember("usr/local/bin"), fileMember("usr/local/bin/darling")}; }
+QString writeScript(const QString &path, const QString &body) {
+    QFile f(path); if (!f.open(QIODevice::WriteOnly)) return {};
+    f.write(("#!/bin/sh\n" + body + "\n").toUtf8()); f.close();
+    return f.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner) ? path : QString();
+}
 }
 class PrefixTest : public QObject {
     Q_OBJECT
@@ -52,10 +83,10 @@ private slots:
         QVERIFY(QFile::link("/etc", root + "/evil/dir")); { QFile f(root + "/evil/payload"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
         run({"tar", "--zstd", "-cf", "through.tar.zst", "-C", "evil", "dir", "--transform", "s,^payload,dir/payload,", "payload"});
         run({"tar", "--zstd", "-cf", "escape.tar.zst", "-C", "evil", "--transform", "s,^payload,../payload,", "payload"});
-        const QString link = "lrwxrwxrwx u/g 0 2026-10-09 14:32 dir -> /etc", file = "-rw-r--r-- u/g 1 2026-10-09 14:32 ";
+        const QString link = "lrwxrwxrwx 0/0 0 2026-10-09 14:32 dir -> /etc", file = "-rw-r--r-- 0/0 1 2026-10-09 14:32 ";
         for (const char *path : {"dir/payload", "./dir/./payload", "dir//payload", "dir/sub/../payload"}) QVERIFY2(!vetMembers({link, file + path}).isEmpty(), path);
         QVERIFY(vetMembers({link, file + "other/payload"}).isEmpty());
-        QVERIFY(!vetMembers({"lrwxrwxrwx u/g 0 2026-10-09 14:32 a -> b -> /home/u/.ssh", file + "a -> b/authorized_keys"}).isEmpty());
+        QVERIFY(!vetMembers({"lrwxrwxrwx 0/0 0 2026-10-09 14:32 a -> b -> /home/u/.ssh", file + "a -> b/authorized_keys"}).isEmpty());
         QVERIFY(!vetMembers({file + "a -> b"}).isEmpty());
         QVERIFY(!vetMembers({file + "a\\nb"}).isEmpty());
         auto script = [&](const QString &name, const QString &body) { QFile f(root + "/" + name); f.open(QIODevice::WriteOnly); f.write(("#!/bin/sh\n" + body + "\n").toUtf8()); f.close(); f.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner); return f.fileName(); };
@@ -77,6 +108,27 @@ private slots:
         QVERIFY(QFile(root + "/gh-args").open(QIODevice::ReadOnly)); { QFile args(root + "/gh-args"); args.open(QIODevice::ReadOnly); QVERIFY(args.readAll().contains("--signer-workflow VibeDarling/darling/.github/workflows/release-binaries.yml")); }
         QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/libz").isSymLink());
         QVERIFY(installArchive(good, digest(good), runtimes, tag, ghOk, repo).contains("already exists"));
+    }
+    // Review F1: tar prints uname/gname unescaped, so a gname shaped like "<size> <date> <time> <name>" shifted
+    // the parsed path and hid an absolute member and a write through a symlink from vetMembers.
+    void ownerNameSpoofIsRefused() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString gh = writeScript(root + "/gh-ok", "exit 0"); QVERIFY(!gh.isEmpty());
+        const QString spoof = "g 1 2026-10-09 14:32 usr/zz";
+        QJsonObject absolute = fileMember(root + "/outside/pwn-abs"); absolute.insert("gname", spoof);
+        QJsonObject through = fileMember("usr/local/a/pwn-rel"); through.insert("gname", spoof);
+        QJsonArray absMembers = runtimeMembers(), chainMembers = runtimeMembers();
+        absMembers.append(absolute);
+        chainMembers.append(dirMember("usr/local/share")); chainMembers.append(linkMember("usr/local/a", "share")); chainMembers.append(through);
+        const QString abs = makeArchive(root, "gnameabs", absMembers), chain = makeArchive(root, "relchain", chainMembers);
+        QVERIFY(!abs.isEmpty()); QVERIFY(!chain.isEmpty());
+        const QString absError = installArchive(abs, sha256File(abs), runtimes, "v2026.10.09-0000016", gh, "VibeDarling/darling");
+        QVERIFY2(absError.contains("escapes the runtime folder"), qPrintable(absError));
+        const QString chainError = installArchive(chain, sha256File(chain), runtimes, "v2026.10.09-0000018", gh, "VibeDarling/darling");
+        QVERIFY2(chainError.contains("writes through the symlink usr/local/a"), qPrintable(chainError));
+        QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-0000016")); QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-0000018"));
+        QVERIFY(vetMembers({"-rw-r--r-- u/" + spoof + " 1 2025-10-09 10:53 /abs"}).contains("unparsable"));
     }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;

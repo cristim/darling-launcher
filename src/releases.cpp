@@ -74,7 +74,8 @@ static QString sha256Of(const QString &path, QString *error) {
     return hash.result().toHex();
 }
 QString vetMembers(const QStringList &listing) {
-    static const QRegularExpression row(R"(^(\S)\S+\s+\S+\s+\d+\s+\d{4}-\d\d-\d\d\s+\d\d:\d\d\s(.+)$)");
+    // Owners must be numeric: tar prints uname/gname unescaped, so a name with spaces could shift the path column.
+    static const QRegularExpression row(R"(^(\S)\S{9}\s+\d+/\d+\s+\d+\s+\d{4}-\d\d-\d\d\s\d\d:\d\d\s(.+)$)");
     QStringList symlinks;
     for (const QString &line : listing) {
         if (line.isEmpty()) continue;
@@ -108,7 +109,7 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     const QString target = runtimesRoot + "/" + tag;
     if (QFileInfo::exists(target)) return target + " already exists";
     QProcess list;
-    list.start("tar", {"--zstd", "--quoting-style=escape", "-tvf", archive});
+    list.start("tar", {"--zstd", "--quoting-style=escape", "--numeric-owner", "-tvf", archive});
     if (!list.waitForFinished(600000) || list.exitStatus() != QProcess::NormalExit || list.exitCode() != 0)
         return "cannot list " + archive + ": " + QString::fromUtf8(list.readAllStandardError());
     error = vetMembers(QString::fromUtf8(list.readAllStandardOutput()).split('\n'));

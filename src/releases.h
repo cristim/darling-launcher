@@ -24,6 +24,7 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 // into <runtimesRoot>/<tag>. Absolute symlink targets are allowed because the runtime image uses them.
 // Returns an empty string on success, otherwise the reason.
 QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo);
-// Takes `tar --zstd --quoting-style=escape -tv` lines; returns why the archive is unsafe, or "".
+// Takes `tar --zstd --quoting-style=escape --numeric-owner -tv` lines; returns why the archive is unsafe, or "".
+// A line that does not parse (including a non-numeric owner) is refused.
 QString vetMembers(const QStringList &verboseListing);
 }
