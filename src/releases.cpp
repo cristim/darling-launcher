@@ -130,6 +130,13 @@ QString extractedTreeError(const QString &dir) {
     }
     return runtimeLayoutError(dir);
 }
+// Gives the owner rwx on every folder below dir, so an archive folder extracted read-only cannot block removal.
+static void openFolders(const QString &dir) {
+    struct stat info;
+    if (lstat(QFile::encodeName(dir).constData(), &info) != 0 || !S_ISDIR(info.st_mode)) return;
+    chmod(QFile::encodeName(dir).constData(), (info.st_mode & 07777) | S_IRWXU);
+    for (const QString &name : QDir(dir).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)) openFolders(dir + "/" + name);
+}
 QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo) {
     if (!validTag(tag)) return "not a release tag: " + tag;
     if (sha256.isEmpty()) return "release asset has no SHA-256 digest";
@@ -151,14 +158,17 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     if (!QDir().mkpath(runtimesRoot)) return "cannot create " + runtimesRoot;
     // mkdir fails when the folder exists, so creating staging is the exclusive claim on this tag.
     if (!QDir().mkdir(staging)) return "cannot create " + staging + ": another install of " + tag + " is running, or an earlier one left it behind";
-    if (QFileInfo::exists(target)) return target + " already exists, partial files left in " + staging;
+    // Staging is ours from here on; removing it on failure lets a retry claim it again. Symlinks are removed, not followed.
+    auto abandon = [&](const QString &reason) { openFolders(staging); return QDir(staging).removeRecursively() ? reason : reason + "; cannot remove " + staging + ", remove it by hand"; };
+    if (QFileInfo::exists(target)) return abandon(target + " already exists");
     QProcess extract;
     extract.start("tar", {"--zstd", "-xf", archive, "-C", staging, "--no-same-owner", "--no-same-permissions", "--no-overwrite-dir"});
-    if (!extract.waitForFinished(1800000) || extract.exitStatus() != QProcess::NormalExit || extract.exitCode() != 0)
-        return "extraction failed, partial files left in " + staging + ": " + QString::fromUtf8(extract.readAllStandardError());
+    if (!extract.waitForFinished(1800000)) { extract.kill(); extract.waitForFinished(); return abandon("extraction timed out"); }
+    if (extract.exitStatus() != QProcess::NormalExit || extract.exitCode() != 0)
+        return abandon("extraction failed: " + QString::fromUtf8(extract.readAllStandardError()));
     error = extractedTreeError(staging);
-    if (!error.isEmpty()) return error + ", partial files left in " + staging;
-    if (!QDir().rename(staging, target)) return "cannot move " + staging + " to " + target;
+    if (!error.isEmpty()) return abandon(error);
+    if (!QDir().rename(staging, target)) return abandon("cannot move " + staging + " to " + target);
     return {};
 }
 }
