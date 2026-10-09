@@ -19,3 +19,13 @@ QString hostArchitecture();
 // without the asset or its SHA-256 digest, or two newest releases that cannot be ordered, is an error.
 Selection latest(const QJsonArray &releases, const QString &component, const QString &arch);
 }
+
+namespace LauncherReleases {
+// Verifies archive against the release's SHA-256 digest, vets the member list (relative paths only, no
+// device or hard-link members, nothing written through a symlink member), then extracts into
+// <runtimesRoot>/<tag>. Absolute symlink targets are allowed because the runtime image uses them.
+// Returns an empty string on success, otherwise the reason. An existing <tag> directory is an error.
+QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag);
+// Lists tar --zstd members (type character + path + link target) and returns the reason the archive is unsafe, or "".
+QString vetMembers(const QStringList &verboseListing);
+}

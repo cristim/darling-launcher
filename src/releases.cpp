@@ -47,3 +47,66 @@ Selection latest(const QJsonArray &releases, const QString &component, const QSt
     return result;
 }
 }
+
+#include <QCryptographicHash>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QProcess>
+#include <QSet>
+namespace LauncherReleases {
+static QString sha256Of(const QString &path, QString *error) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) { *error = "cannot read " + path + ": " + file.errorString(); return {}; }
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    if (!hash.addData(&file)) { *error = "cannot hash " + path; return {}; }
+    return hash.result().toHex();
+}
+QString vetMembers(const QStringList &listing) {
+    QStringList symlinks;
+    for (const QString &line : listing) {
+        if (line.isEmpty()) continue;
+        const QChar type = line.at(0);
+        // GNU tar -tv: "<mode> <owner/group> <size> <date> <time> <path>[ -> target]"
+        const QStringList parts = line.split(' ', Qt::SkipEmptyParts);
+        if (parts.size() < 6) return "unparsable archive member: " + line;
+        QString path = line.section(parts.at(4) + ' ', 1).trimmed();
+        if (type == QLatin1Char('l')) path = path.section(" -> ", 0, 0);
+        if (type == QLatin1Char('h') || type == QLatin1Char('c') || type == QLatin1Char('b') || type == QLatin1Char('p'))
+            return "archive contains a hard link or device member: " + path;
+        if (type != QLatin1Char('-') && type != QLatin1Char('d') && type != QLatin1Char('l')) return "unsupported archive member type: " + line;
+        if (path.startsWith('/') || path.split('/').contains("..")) return "archive member escapes the runtime folder: " + path;
+        for (const QString &link : symlinks)
+            if (path == link || path.startsWith(link + '/')) return "archive writes through the symlink " + link + ": " + path;
+        if (type == QLatin1Char('l')) symlinks << (path.endsWith('/') ? path.chopped(1) : path);
+    }
+    return {};
+}
+QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag) {
+    if (!parseTag(tag)) return "not a release tag: " + tag;
+    if (sha256.isEmpty()) return "release asset has no SHA-256 digest";
+    QString error;
+    const QString actual = sha256Of(archive, &error);
+    if (!error.isEmpty()) return error;
+    if (actual.compare(sha256, Qt::CaseInsensitive) != 0) return "SHA-256 mismatch for " + archive + ": expected " + sha256 + ", got " + actual;
+    const QString target = runtimesRoot + "/" + tag;
+    if (QFileInfo::exists(target)) return target + " already exists";
+    QProcess list;
+    list.start("tar", {"--zstd", "-tvf", archive});
+    if (!list.waitForFinished(600000) || list.exitStatus() != QProcess::NormalExit || list.exitCode() != 0)
+        return "cannot list " + archive + ": " + QString::fromUtf8(list.readAllStandardError());
+    error = vetMembers(QString::fromUtf8(list.readAllStandardOutput()).split('\n'));
+    if (!error.isEmpty()) return error;
+    const QString staging = target + ".partial";
+    if (QFileInfo::exists(staging)) return staging + " is left over from an earlier attempt; remove it by hand";
+    if (!QDir().mkpath(staging)) return "cannot create " + staging;
+    QProcess extract;
+    extract.start("tar", {"--zstd", "-xf", archive, "-C", staging, "--no-same-owner", "--no-same-permissions", "--no-overwrite-dir"});
+    if (!extract.waitForFinished(1800000) || extract.exitStatus() != QProcess::NormalExit || extract.exitCode() != 0)
+        return "extraction failed, partial files left in " + staging + ": " + QString::fromUtf8(extract.readAllStandardError());
+    if (!QFileInfo(staging + "/usr/local/bin/darling").isFile())
+        return "archive has no usr/local/bin/darling, partial files left in " + staging;
+    if (!QDir().rename(staging, target)) return "cannot move " + staging + " to " + target;
+    return {};
+}
+}
