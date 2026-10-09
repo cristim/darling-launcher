@@ -11,6 +11,7 @@
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QtTest>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -228,6 +229,40 @@ private slots:
         QCOMPARE(LauncherReleases::verifyAttestation(gh, root + "/archive.tar.zst", "cristim/darling"), QString());
         QFile args(root + "/gh-args"); QVERIFY(args.open(QIODevice::ReadOnly));
         QCOMPARE(args.readAll().trimmed(), QByteArray("attestation verify " + (root + "/archive.tar.zst").toUtf8() + " --repo cristim/darling --signer-workflow VibeDarling/darling/.github/workflows/release-binaries.yml --source-ref refs/heads/master --deny-self-hosted-runners"));
+    }
+    // Review F5: two installs of one tag could both pass exists(staging) before either mkpath()ed it; the loser's
+    // tar then kept writing into the folder the winner had already renamed into place.
+    void concurrentSameTagInstallsAreExclusive() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path();
+        const QString gh = writeScript(root + "/gh", "exit 0"), archive = makeArchive(root, "good", runtimeMembers()), realTar = QStandardPaths::findExecutable("tar");
+        QVERIFY(!gh.isEmpty()); QVERIFY(!archive.isEmpty()); QVERIFY(!realTar.isEmpty()); QVERIFY(QDir().mkpath(root + "/bin"));
+        // Listings wait for each other so both installs reach the staging claim together; extractions are counted and slowed.
+        QVERIFY(!writeScript(root + "/bin/tar", "case \"$*\" in\n"
+            "*-tvf*) \"" + realTar + "\" \"$@\" || exit $?; : > \"$BARRIER/$$\"; i=0\n"
+            "  while [ $i -lt 500 ]; do set -- \"$BARRIER\"/*; [ $# -ge 2 ] && exit 0; i=$((i+1)); sleep 0.01; done; exit 0;;\n"
+            "*-xf*) echo x >> \"$BARRIER/../extracts\"; sleep 0.3;;\nesac\nexec \"" + realTar + "\" \"$@\"").isEmpty());
+        const QByteArray path = qgetenv("PATH");
+        struct Restore { QByteArray path; ~Restore() { qputenv("PATH", path); qunsetenv("BARRIER"); } } restore{path};
+        qputenv("PATH", (root + "/bin:").toUtf8() + path);
+        const QString digest = sha256File(archive), tag = "v2026.10.09-0000005";
+        int doubleExtractions = 0, wrongWinners = 0, unclearLosers = 0;
+        for (int round = 0; round < 20; ++round) {
+            const QString work = root + "/round" + QString::number(round), runtimes = work + "/runtimes";
+            QVERIFY(QDir().mkpath(work + "/barrier")); qputenv("BARRIER", (work + "/barrier").toUtf8());
+            QString first, second;
+            QThread *a = QThread::create([&] { first = installArchive(archive, digest, runtimes, tag, gh, "VibeDarling/darling"); });
+            QThread *b = QThread::create([&] { second = installArchive(archive, digest, runtimes, tag, gh, "VibeDarling/darling"); });
+            a->start(); b->start(); const bool finished = a->wait(60000) && b->wait(60000); a->wait(); b->wait(); delete a; delete b; QVERIFY(finished);
+            QFile log(work + "/extracts"); QVERIFY(log.open(QIODevice::ReadOnly));
+            if (log.readAll().count('x') != 1) ++doubleExtractions;
+            if (first.isEmpty() == second.isEmpty()) ++wrongWinners;
+            const QString loser = first.isEmpty() ? second : first;
+            if (!loser.contains("another install of " + tag)) { ++unclearLosers; qInfo() << "round" << round << "loser:" << loser; }
+            QVERIFY(QFileInfo(runtimes + "/" + tag + "/" + launcherPath).isFile()); QVERIFY(!QFileInfo::exists(runtimes + "/" + tag + ".partial"));
+        }
+        qInfo() << "rounds with two extractions:" << doubleExtractions << "without exactly one winner:" << wrongWinners << "loser not told about the other install:" << unclearLosers;
+        QCOMPARE(doubleExtractions, 0); QCOMPARE(wrongWinners, 0); QCOMPARE(unclearLosers, 0);
     }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
