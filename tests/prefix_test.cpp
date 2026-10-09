@@ -437,6 +437,20 @@ private slots:
         for (const char *tag : {"v2026.10.09-00000b1", "v2026.10.09-00000b2"})
             QVERIFY2(!QFileInfo::exists(runtimes + "/" + tag) && !QFileInfo::exists(runtimes + "/" + tag + ".partial"), tag);
     }
+    // QA Gate 2 N5: under a UTF-8 locale tar printed non-ASCII names raw and they installed; under C they were
+    // escaped and refused. The listing now always runs under C.
+    void vettingDoesNotDependOnLocale() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString gh = writeScript(root + "/gh", "exit 0"); QVERIFY(!gh.isEmpty());
+        QJsonArray members = runtimeMembers(); members.append(fileMember(QString::fromUtf8("usr/local/caf\xc3\xa9")));
+        const QString archive = makeArchive(root, "utf8", members); QVERIFY(!archive.isEmpty());
+        const QByteArray previous = qgetenv("LC_ALL");
+        struct Restore { QByteArray value; ~Restore() { if (value.isNull()) qunsetenv("LC_ALL"); else qputenv("LC_ALL", value); } } restore{previous};
+        qputenv("LC_ALL", "C.UTF-8");
+        const QString error = installArchive(archive, sha256File(archive), runtimes, "v2026.10.09-00000c1", gh, "VibeDarling/darling", roomyUnpackedSize);
+        QVERIFY2(error.contains("needs escaping"), qPrintable(error));
+    }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
         for (const char *good : {"v2026.10.09-3721b65", "v2026.10.09-3721b65-r2"}) QVERIFY2(validTag(good), good);
