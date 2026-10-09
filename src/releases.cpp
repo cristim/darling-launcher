@@ -65,6 +65,8 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 #include <QFileInfo>
 #include <QProcess>
 #include <QSet>
+#include <QDirIterator>
+#include <sys/stat.h>
 namespace LauncherReleases {
 static QString sha256Of(const QString &path, QString *error) {
     QFile file(path);
@@ -73,6 +75,7 @@ static QString sha256Of(const QString &path, QString *error) {
     if (!hash.addData(&file)) { *error = "cannot hash " + path; return {}; }
     return hash.result().toHex();
 }
+static bool insideInstallRoot(const QString &path) { return path == "usr" || path == installRoot || path.startsWith(QString(installRoot) + '/'); }
 QString vetMembers(const QStringList &listing) {
     // Owners must be numeric: tar prints uname/gname unescaped, so a name with spaces could shift the path column.
     static const QRegularExpression row(R"(^(\S)\S{9}\s+\d+/\d+\s+\d+\s+\d{4}-\d\d-\d\d\s\d\d:\d\d\s(.+)$)");
@@ -91,7 +94,7 @@ QString vetMembers(const QStringList &listing) {
         if (type != QLatin1Char('-') && type != QLatin1Char('d') && type != QLatin1Char('l')) return "unsupported archive member type: " + line;
         if (path.startsWith('/') || path.split('/').contains("..")) return "archive member escapes the runtime folder: " + path;
         path = QDir::cleanPath(path);
-        if (path != "usr" && path != installRoot && !path.startsWith(QString(installRoot) + '/')) return "archive member is outside usr/local: " + path;
+        if (!insideInstallRoot(path)) return "archive member is outside usr/local: " + path;
         for (const QString &link : symlinks)
             if (path == link || path.startsWith(link + '/')) return "archive writes through the symlink " + link + ": " + path;
         if (type == QLatin1Char('l')) {
@@ -109,6 +112,23 @@ QString runtimeLayoutError(const QString &dir) {
         if (QFileInfo(dir + "/" + relative).canonicalFilePath() != root + "/" + relative) return QString(relative) + " is missing or leaves the runtime folder through a symlink";
     if (!QFileInfo(dir + "/" + launcherPath).isFile()) return QString(launcherPath) + " is not a regular file";
     return {};
+}
+QString extractedTreeError(const QString &dir) {
+    const QDir base(dir);
+    QDirIterator entries(dir, QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    while (entries.hasNext()) {
+        const QString path = entries.next(), relative = base.relativeFilePath(path);
+        if (!insideInstallRoot(relative)) return "extracted entry is outside usr/local: " + relative;
+        struct stat info;
+        if (lstat(QFile::encodeName(path).constData(), &info) != 0) return "cannot inspect extracted entry " + relative;
+        // QDirIterator silently skips a folder it cannot open, so such a folder would hide its contents from this walk.
+        if (S_ISDIR(info.st_mode) && (info.st_mode & S_IRWXU) != S_IRWXU) return "extracted folder is not readable, writable and searchable by its owner: " + relative;
+        if (S_ISLNK(info.st_mode) || S_ISDIR(info.st_mode)) continue;
+        if (!S_ISREG(info.st_mode)) return "extracted entry is not a file, folder or symlink: " + relative;
+        if (info.st_nlink != 1) return "extracted file has another hard link: " + relative;
+        if (info.st_mode & (S_ISUID | S_ISGID)) return "extracted file is setuid or setgid: " + relative;
+    }
+    return runtimeLayoutError(dir);
 }
 QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo) {
     if (!validTag(tag)) return "not a release tag: " + tag;
@@ -134,7 +154,7 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     extract.start("tar", {"--zstd", "-xf", archive, "-C", staging, "--no-same-owner", "--no-same-permissions", "--no-overwrite-dir"});
     if (!extract.waitForFinished(1800000) || extract.exitStatus() != QProcess::NormalExit || extract.exitCode() != 0)
         return "extraction failed, partial files left in " + staging + ": " + QString::fromUtf8(extract.readAllStandardError());
-    error = runtimeLayoutError(staging);
+    error = extractedTreeError(staging);
     if (!error.isEmpty()) return error + ", partial files left in " + staging;
     if (!QDir().rename(staging, target)) return "cannot move " + staging + " to " + target;
     return {};
