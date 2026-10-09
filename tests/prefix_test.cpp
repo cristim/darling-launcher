@@ -54,49 +54,68 @@ private slots:
         run({"tar", "--zstd", "-cf", "escape.tar.zst", "-C", "evil", "--transform", "s,^payload,../payload,", "payload"});
         const QString link = "lrwxrwxrwx u/g 0 2026-10-09 14:32 dir -> /etc", file = "-rw-r--r-- u/g 1 2026-10-09 14:32 ";
         for (const char *path : {"dir/payload", "./dir/./payload", "dir//payload", "dir/sub/../payload"}) QVERIFY2(!vetMembers({link, file + path}).isEmpty(), path);
-        QVERIFY(!vetMembers({link, file + "other/payload"}).isEmpty() == false);
+        QVERIFY(vetMembers({link, file + "other/payload"}).isEmpty());
+        QVERIFY(!vetMembers({"lrwxrwxrwx u/g 0 2026-10-09 14:32 a -> b -> /home/u/.ssh", file + "a -> b/authorized_keys"}).isEmpty());
+        QVERIFY(!vetMembers({file + "a -> b"}).isEmpty());
         QVERIFY(!vetMembers({file + "a\\nb"}).isEmpty());
-        const QString tag = "2026-10-09-14-32-3721b65", good = root + "/good.tar.zst", runtimes = root + "/runtimes";
-        QVERIFY(installArchive(good, digest(good), runtimes, "latest").contains("not a release tag"));
-        QVERIFY2(installArchive(good, QString(64, '0'), runtimes, tag).contains("SHA-256 mismatch"), "digest");
+        auto script = [&](const QString &name, const QString &body) { QFile f(root + "/" + name); f.open(QIODevice::WriteOnly); f.write(("#!/bin/sh\n" + body + "\n").toUtf8()); f.close(); f.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner); return f.fileName(); };
+        const QString ghOk = script("gh-ok", "echo \"$@\" > '" + root + "/gh-args'"), ghBad = script("gh-bad", "echo untrusted >&2; exit 1"), repo = "VibeDarling/darling";
+        const QString tag = "v2026.10.09-3721b65", good = root + "/good.tar.zst", runtimes = root + "/runtimes";
+        QVERIFY(QDir().mkpath(root + "/linked/usr/local/bin")); QVERIFY(QFile::link("/usr/local/bin/darling", root + "/linked/usr/local/bin/darling"));
+        run({"tar", "--zstd", "-cf", "linked.tar.zst", "-C", "linked", "usr"});
+        const QString linked = root + "/linked.tar.zst";
+        QVERIFY(installArchive(linked, digest(linked), runtimes, "v2026.10.09-aaaaaaa", ghOk, repo).contains("non-symlink"));
+        QVERIFY(installArchive(good, digest(good), runtimes, "latest", ghOk, repo).contains("not a release tag"));
+        QVERIFY2(installArchive(good, QString(64, '0'), runtimes, tag, ghOk, repo).contains("SHA-256 mismatch"), "digest");
+        QVERIFY(installArchive(good, digest(good), runtimes, tag, ghBad, repo).contains("attestation verification failed"));
+        QVERIFY(installArchive(good, digest(good), runtimes, tag, {}, repo).contains("gh is required"));
         QVERIFY(!QFileInfo::exists(runtimes + "/" + tag));
-        for (const char *name : {"through", "escape"}) { const QString archive = root + "/" + name + ".tar.zst"; const QString error = installArchive(archive, digest(archive), runtimes, tag); QVERIFY2(!error.isEmpty() && (error.contains("symlink") || error.contains("escapes")), name); QVERIFY(!QFileInfo::exists(runtimes + "/" + tag)); }
-        QCOMPARE(installArchive(good, digest(good), runtimes, tag), QString());
+        QVERIFY(!QFileInfo::exists(runtimes + "/" + tag));
+        for (const char *name : {"through", "escape"}) { const QString archive = root + "/" + name + ".tar.zst"; const QString error = installArchive(archive, digest(archive), runtimes, tag, ghOk, repo); QVERIFY2(!error.isEmpty() && (error.contains("symlink") || error.contains("escapes")), name); QVERIFY(!QFileInfo::exists(runtimes + "/" + tag)); }
+        QCOMPARE(installArchive(good, digest(good), runtimes, tag, ghOk, repo), QString());
         QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/bin/darling").isFile());
+        QVERIFY(QFile(root + "/gh-args").open(QIODevice::ReadOnly)); { QFile args(root + "/gh-args"); args.open(QIODevice::ReadOnly); QVERIFY(args.readAll().contains("--signer-workflow VibeDarling/darling/.github/workflows/release-binaries.yml")); }
         QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/libz").isSymLink());
-        QVERIFY(installArchive(good, digest(good), runtimes, tag).contains("already exists"));
+        QVERIFY(installArchive(good, digest(good), runtimes, tag, ghOk, repo).contains("already exists"));
     }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
-        QVERIFY(parseTag("2026-10-09-14-32-3721b65")); QCOMPARE(parseTag("2026-10-09-14-32-3721b65")->time, QDateTime(QDate(2026, 10, 9), QTime(14, 32), Qt::UTC));
-        for (const char *bad : {"v2026.10.09-3721b65", "2026-10-09-14-32", "2026-13-09-14-32-3721b65", "2026-10-09-25-32-3721b65", "2026-10-09-14-32-XYZ", "2026-10-09T14:32-3721b65"}) QVERIFY2(!parseTag(bad), bad);
-        auto release = [](const QString &tag, const QString &published, bool draft, const QStringList &assets) {
-            QJsonArray list; for (const auto &name : assets) list.append(QJsonObject{{"name", name}, {"browser_download_url", "https://example.invalid/" + tag + "/" + name}, {"digest", "sha256:" + QString(64, 'a')}});
-            return QJsonObject{{"tag_name", tag}, {"published_at", published}, {"draft", draft}, {"assets", list}};
-        };
-        const QString arm = assetName("runtime", "arm64");
-        QCOMPARE(arm, QString("darling-runtime-arm64.tar.zst"));
-        QJsonArray list{release("2026-10-08-10-00-aaaaaaa", "2026-10-08T10:01:00Z", false, {arm}), release("2026-10-09-14-32-3721b65", "2026-10-09T14:35:00Z", false, {arm, assetName("runtime", "x86_64")}),
-                        release("2026-10-10-09-00-bbbbbbb", "2026-10-10T09:01:00Z", true, {arm}), release("garbage", "2026-10-11T09:01:00Z", false, {arm})};
-        auto chosen = latest(list, "runtime", "arm64"); QVERIFY2(chosen.valid(), qPrintable(chosen.error));
-        QCOMPARE(chosen.release.tag, QString("2026-10-09-14-32-3721b65")); QCOMPARE(chosen.asset.sha256, QString(64, 'a')); QVERIFY(chosen.asset.url.endsWith(arm));
-        QVERIFY(latest(list, "runtime", "x86_64").valid());
-        QVERIFY(latest(list, "runtime", "riscv64").error.contains("has no darling-runtime-riscv64.tar.zst"));
-        QVERIFY(latest(QJsonArray{release("2026-10-09-14-32-3721b65", "2026-10-09T14:35:00Z", false, {})}, "runtime", "arm64").error.contains("has no"));
-        QVERIFY(latest({}, "runtime", "arm64").error.contains("No usable release"));
-        auto noDigest = release("2026-10-09-14-32-3721b65", "2026-10-09T14:35:00Z", false, {arm}); auto assets = noDigest.value("assets").toArray(); auto first = assets.first().toObject(); first.remove("digest"); assets.replace(0, first); noDigest.insert("assets", assets);
-        QVERIFY(latest(QJsonArray{noDigest}, "runtime", "arm64").error.contains("SHA-256"));
-        QVERIFY(latest(QJsonArray{release("2026-10-09-14-32-aaaaaaa", "2026-10-09T14:35:00Z", false, {arm}), release("2026-10-09-14-32-bbbbbbb", "2026-10-09T14:35:00Z", false, {arm})}, "runtime", "arm64").error.contains("cannot be ordered"));
-        QCOMPARE(latest(QJsonArray{release("2026-10-09-14-32-aaaaaaa", "2026-10-09T14:35:00Z", false, {arm}), release("2026-10-09-14-32-bbbbbbb", "2026-10-09T14:40:00Z", false, {arm})}, "runtime", "arm64").release.sha, QString("bbbbbbb"));
+        for (const char *good : {"v2026.10.09-3721b65", "v2026.10.09-3721b65-r2"}) QVERIFY2(validTag(good), good);
+        for (const char *bad : {"2026-10-09-14-32-3721b65", "v2026.10.09-3721b6", "v2026.10.09-3721b65.partial", "v2026.10.09-XYZ1234", "latest", "../v2026.10.09-3721b65"}) QVERIFY2(!validTag(bad), bad);
+        QVERIFY(!hostArchitecture().isEmpty());
+        const QString tag = "v2026.10.09-3721b65", file = "darling-runtime-" + tag + "-linux-aarch64.tar.zst", url = "https://github.com/VibeDarling/darling/releases/download/" + tag + "/" + file;
+        const QJsonObject entry{{"file", file}, {"url", url}, {"sha256", QString(64, 'a')}, {"size", 1}, {"unpacked_size", 2}, {"install_root", "usr/local"}, {"launcher", "usr/local/bin/darling"}};
+        const QJsonObject manifest{{"schema", 1}, {"version", tag}, {"artifacts", QJsonObject{{"aarch64", entry}}}};
+        const QJsonObject release{{"tag_name", tag}, {"assets", QJsonArray{QJsonObject{{"name", file}, {"browser_download_url", url}, {"digest", "sha256:" + QString(64, 'a')}}}}};
+        auto chosen = select(release, manifest, "aarch64", false); QVERIFY2(chosen.valid(), qPrintable(chosen.error));
+        QCOMPARE(chosen.tag, tag); QCOMPARE(chosen.artifact.sha256, QString(64, 'a')); QCOMPARE(chosen.artifact.url, url);
+        auto with = [](QJsonObject object, const QString &key, const QJsonValue &value) { object.insert(key, value); return object; };
+        auto entryWith = [&](const QString &key, const QJsonValue &value) { return with(manifest, "artifacts", QJsonObject{{"aarch64", with(entry, key, value)}}); };
+        QVERIFY(select(release, manifest, "x86_64", false).error.contains("no runtime for x86_64"));
+        QVERIFY(select(with(release, "prerelease", true), manifest, "aarch64", false).error.contains("prerelease"));
+        QVERIFY(select(with(release, "prerelease", true), manifest, "aarch64", true).valid());
+        QVERIFY(select(with(release, "draft", true), manifest, "aarch64", true).error.contains("draft"));
+        QVERIFY(select(release, with(manifest, "schema", 2), "aarch64", false).error.contains("schema"));
+        QVERIFY(select(release, with(manifest, "version", "v2026.10.08-aaaaaaa"), "aarch64", false).error.contains("does not match"));
+        QVERIFY(select(release, entryWith("install_root", "opt"), "aarch64", false).error.contains("install_root"));
+        QVERIFY(select(release, entryWith("launcher", "usr/local/bin/other"), "aarch64", false).error.contains("install_root"));
+        QVERIFY(select(release, entryWith("file", "other.tar.zst"), "aarch64", false).error.contains("file name"));
+        QVERIFY(select(release, entryWith("sha256", "bb"), "aarch64", false).error.contains("SHA-256"));
+        QVERIFY(select(release, entryWith("sha256", QString(64, 'b')), "aarch64", false).error.contains("differs from the GitHub digest"));
+        QVERIFY(select(release, entryWith("url", "https://evil.invalid/x"), "aarch64", false).error.contains("url differs"));
+        QVERIFY(select(with(release, "assets", QJsonArray{}), manifest, "aarch64", false).error.contains("does not list"));
+        QVERIFY(select(with(release, "tag_name", "2026-10-09-14-32-3721b65"), manifest, "aarch64", false).error.contains("not vYYYY"));
     }
     void prebuiltRuntimesAreDiscoveredByTag() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("HOME", temporary.path().toUtf8());
-        const QString tag = LauncherDiscovery::dataRoot() + "/runtimes/2026-10-09-14-32-3721b65";
+        const QString tag = LauncherDiscovery::dataRoot() + "/runtimes/v2026.10.09-3721b65";
         QVERIFY(QDir().mkpath(tag + "/usr/local/bin")); QVERIFY(QDir().mkpath(tag + "/usr/local/libexec/darling/private/etc"));
         QFile launcher(tag + "/usr/local/bin/darling"); QVERIFY(launcher.open(QIODevice::WriteOnly)); launcher.close(); QVERIFY(launcher.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         const auto found = LauncherDiscovery::runtimes({}, {}); QCOMPARE(found.size(), 1);
         QCOMPARE(found.first().launcher, launcher.fileName()); QCOMPARE(found.first().installRoot, tag + "/usr/local");
-        QVERIFY(QFile::remove(launcher.fileName())); QVERIFY(LauncherDiscovery::runtimes({}, {}).isEmpty());
+        const QString partial = tag + ".partial"; QVERIFY(QDir().mkpath(partial + "/usr/local/bin")); QVERIFY(QDir().mkpath(partial + "/usr/local/libexec/darling/private/etc"));
+        QVERIFY(QFile::copy(launcher.fileName(), partial + "/usr/local/bin/darling")); QCOMPARE(LauncherDiscovery::runtimes({}, {}).size(), 1);
+        QVERIFY(QFile::remove(launcher.fileName())); QVERIFY(QFile::link("/bin/true", launcher.fileName())); QVERIFY(LauncherDiscovery::runtimes({}, {}).isEmpty());
     }
     void runtimeDefaults() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());

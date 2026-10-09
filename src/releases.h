@@ -1,31 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
-#include <QDateTime>
-#include <QJsonArray>
-#include <QList>
+#include <QJsonObject>
 #include <QString>
-#include <optional>
+#include <QStringList>
 namespace LauncherReleases {
-struct Tag { QDateTime time; QString sha; };
-struct Asset { QString name, url, sha256; };
-struct Release { QString tag; QDateTime time, published; QString sha; QList<Asset> assets; };
-struct Selection { Release release; Asset asset; QString error; bool valid() const { return error.isEmpty(); } };
-// Release tags are YYYY-MM-DD-HH-MM-<sha> in UTC.
-std::optional<Tag> parseTag(const QString &tag);
-QString assetName(const QString &component, const QString &arch);
+// The CI release contract: tag vYYYY.MM.DD-<sha7>[-rN], manifest.json with artifacts keyed by `uname -m`.
+struct Artifact { QString file, url, sha256, installRoot, launcher; qint64 size = 0, unpackedSize = 0; };
+struct Selection { QString tag; Artifact artifact; QString error; bool valid() const { return error.isEmpty(); } };
+constexpr const char *installRoot = "usr/local";
+constexpr const char *launcherPath = "usr/local/bin/darling";
+// Also guards runtime directory names: only tags pass.
+bool validTag(const QString &tag);
+// `uname -m` (aarch64, x86_64); the manifest keys are never aliased.
 QString hostArchitecture();
-// Picks the newest release (by tag time, then publication time) from a GitHub releases listing and its
-// darling-<component>-<arch>.tar.zst asset. Drafts and unparsable tags are skipped; a newest release
-// without the asset or its SHA-256 digest, or two newest releases that cannot be ordered, is an error.
-Selection latest(const QJsonArray &releases, const QString &component, const QString &arch);
-}
-
-namespace LauncherReleases {
-// Verifies archive against the release's SHA-256 digest, vets the member list (relative paths only, no
-// device or hard-link members, nothing written through a symlink member), then extracts into
-// <runtimesRoot>/<tag>. Absolute symlink targets are allowed because the runtime image uses them.
-// Returns an empty string on success, otherwise the reason. An existing <tag> directory is an error.
-QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag);
-// Lists tar --zstd members (type character + path + link target) and returns the reason the archive is unsafe, or "".
+// Selects this architecture's artifact from a releases/latest document and its manifest.json. Drafts,
+// prereleases (unless allowPrerelease), unknown schemas, a missing architecture, a manifest that
+// disagrees with the release or the API digest, and install_root/launcher other than the fixed values are errors.
+Selection select(const QJsonObject &release, const QJsonObject &manifest, const QString &arch, bool allowPrerelease);
+// Runs `gh attestation verify`, pinned to repo's release-binaries.yml workflow. Empty string = verified.
+QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo);
+// Verifies the digest and attestation, vets the member list (relative paths only, no device or
+// hard-link members, nothing written through a symlink, a regular usr/local/bin/darling), then extracts
+// into <runtimesRoot>/<tag>. Absolute symlink targets are allowed because the runtime image uses them.
+// Returns an empty string on success, otherwise the reason.
+QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo);
+// Takes `tar --zstd --quoting-style=escape -tv` lines; returns why the archive is unsafe, or "".
 QString vetMembers(const QStringList &verboseListing);
 }
