@@ -18,7 +18,15 @@ QString hostArchitecture();
 // prereleases (unless allowPrerelease), unknown schemas, a missing architecture, a manifest that
 // disagrees with the release or the API digest, and install_root/launcher other than the fixed values are errors.
 Selection select(const QJsonObject &release, const QJsonObject &manifest, const QString &arch, bool allowPrerelease);
-// Runs `gh attestation verify`, pinned to repo's release-binaries.yml workflow. Empty string = verified.
+// Trust root for prebuilt runtimes: only builds attested by this workflow install, whatever repo they are
+// fetched from (DESIGN sec 6). Accepting a fork's own workflow must be an explicit, user-visible exception.
+constexpr const char *signerWorkflow = "VibeDarling/darling/.github/workflows/release-binaries.yml";
+// Only master builds count: a workflow edited on another branch can sign anything. Prereleases dispatched from
+// another ref (DESIGN sec 5) therefore fail verification even with allowPrerelease; accepting one needs the
+// same explicit, user-visible exception as a fork.
+constexpr const char *signerSourceRef = "refs/heads/master";
+// Runs `gh attestation verify <archive> --repo <repo> --signer-workflow <signerWorkflow> --source-ref <signerSourceRef>
+// --deny-self-hosted-runners`. Empty string = verified.
 QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo);
 // Verifies the digest and attestation, vets the member list (relative paths under usr/local only, no device or
 // hard-link members, nothing written through a symlink, no symlink at usr/local/bin/darling, the private/etc
