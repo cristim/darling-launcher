@@ -22,7 +22,7 @@ void showTraceLog(QWidget *parent, const QString &prefix) {
     auto *files = new QComboBox; files->setObjectName("traceFiles");
     for (const auto &info : QDir(directory).entryInfoList({"*.jsonl"}, QDir::Files | QDir::NoSymLinks, QDir::Time)) files->addItem(info.fileName(), info.absoluteFilePath());
     auto *note = new QLabel; note->setObjectName("traceNote"); note->setWordWrap(true);
-    auto *table = new QTableWidget(0, 4); table->setObjectName("traceTable"); table->setHorizontalHeaderLabels({"Framework / image", "Symbol", "Count", "Details (raw words, hex text)"}); table->setEditTriggers(QAbstractItemView::NoEditTriggers); table->horizontalHeader()->setStretchLastSection(true);
+    auto *table = new QTableWidget(0, 4); table->setObjectName("traceTable"); table->setHorizontalHeaderLabels({"Framework / image", "Symbol", "Count", "First call #"}); table->setEditTriggers(QAbstractItemView::NoEditTriggers); table->horizontalHeader()->setStretchLastSection(true);
     auto summary = std::make_shared<LauncherTrace::Summary>();
     auto load = [=] {
         *summary = LauncherTrace::parse(files->currentData().toString());
@@ -30,7 +30,7 @@ void showTraceLog(QWidget *parent, const QString &prefix) {
         for (int i = 0; i < summary->rows.size(); ++i) {
             const auto &row = summary->rows.at(i);
             table->setItem(i, 0, new QTableWidgetItem(row.image)); table->setItem(i, 1, new QTableWidgetItem(row.symbol));
-            table->setItem(i, 2, new QTableWidgetItem(QString::number(row.count))); table->setItem(i, 3, new QTableWidgetItem(row.details));
+            table->setItem(i, 2, new QTableWidgetItem(QString::number(row.count))); table->setItem(i, 3, new QTableWidgetItem(QString::number(row.order + 1)));
         }
         QStringList parts; if (summary->unreadable) parts << "Cannot read this file"; if (files->count() == 0) parts << "No trace logs in " + directory;
         if (summary->skipped > 0) parts << QString::number(summary->skipped) + " lines skipped";

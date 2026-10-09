@@ -35,6 +35,7 @@
 #include <QtConcurrent>
 #include <QtTest>
 #include <QtEndian>
+#include <sys/stat.h>
 
 struct RecordingBrowser : AppBrowser { bool dragged = false; int selectedAtDrag = 0; void startDrag(Qt::DropActions) override { dragged = true; selectedAtDrag = selectedItems().size(); } };
 class GuiTest : public QObject {
@@ -74,12 +75,12 @@ private slots:
         QSettings settings("cristim", "darling-launcher"); settings.clear();
         {
             LaunchChoicesDialog dialog("Fixture", false); auto *box = dialog.findChild<QCheckBox *>("launchTraceOption"), *remember = dialog.findChild<QCheckBox *>("rememberLaunchChoices"); auto *mode = dialog.findChild<QComboBox *>("launchTraceMode");
-            QVERIFY(!box->isChecked()); QVERIFY(!mode->isEnabled()); QCOMPARE(mode->currentText(), QString("log"));
-            box->setChecked(true); QVERIFY(mode->isEnabled()); mode->setCurrentText("trap"); remember->setChecked(true);
+            QVERIFY(!box->isChecked());  
+            box->setChecked(true); remember->setChecked(true);
             LauncherTroubleshooting::saveRecoveryChoices(dialog.choices());
         }
         LaunchChoicesDialog reopened("Fixture", false);
-        QVERIFY(reopened.findChild<QCheckBox *>("launchTraceOption")->isChecked()); QCOMPARE(reopened.findChild<QComboBox *>("launchTraceMode")->currentText(), QString("trap"));
+        QVERIFY(reopened.findChild<QCheckBox *>("launchTraceOption")->isChecked());
         auto saved = LauncherTroubleshooting::recoveryChoices(); saved.trace = false; LauncherTroubleshooting::saveRecoveryChoices(saved);
         const QString prefix = temporary.path() + "/prefix", fake = QString(TEST_SOURCE_DIR) + "/tests/fake-darling";
         QVERIFY(QDir().mkpath(prefix));
@@ -91,10 +92,14 @@ private slots:
         launchSelected(window); QTRY_COMPARE_WITH_TIMEOUT(modeSeen(), QString("unset"), 5000); QTRY_VERIFY_WITH_TIMEOUT(apps->status("Applications/Fixture.app").contains("Exited"), 5000);
         QVERIFY(!QFileInfo::exists(prefix + "/.darling-launcher/trace"));
         saved.trace = true; LauncherTroubleshooting::saveRecoveryChoices(saved);
-        QFile::remove(prefix + "/fake-mode.txt"); launchSelected(window); QTRY_COMPARE_WITH_TIMEOUT(modeSeen(), QString("trap"), 5000);
+        QFile::remove(prefix + "/fake-mode.txt"); launchSelected(window); QTRY_COMPARE_WITH_TIMEOUT(modeSeen(), QString("log"), 5000);
         const auto logs = QDir(prefix + "/.darling-launcher/trace").entryList({"Fixture-*.jsonl"}); QCOMPARE(logs.size(), 1);
         QTRY_VERIFY_WITH_TIMEOUT(QFileInfo(prefix + "/.darling-launcher/trace/" + logs.first()).size() > 0, 5000);
         QVERIFY(!qEnvironmentVariableIsSet("DARLING_MISSING_SYMBOLS"));
+        const QString suid = temporary.path() + "/suid-darling"; QVERIFY(QFile::copy(fake, suid)); QVERIFY(::chmod(QFile::encodeName(suid).constData(), 04755) == 0);
+        LaunchChoicesDialog plain("Fixture", false); plain.setDarling(fake); QVERIFY(plain.findChild<QCheckBox *>("launchTraceOption")->isEnabled()); QVERIFY(!plain.findChild<QLabel *>("launchTraceNotice")->isVisibleTo(&plain));
+        LaunchChoicesDialog elevated("Fixture", false); elevated.setDarling(suid); auto *box = elevated.findChild<QCheckBox *>("launchTraceOption");
+        QVERIFY(!box->isEnabled()); QVERIFY(elevated.findChild<QLabel *>("launchTraceNotice")->isVisibleTo(&elevated)); box->setChecked(true); QVERIFY(!elevated.choices().trace);
     }
     void rememberedImportRetriesAndMountLossHidesAction() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());

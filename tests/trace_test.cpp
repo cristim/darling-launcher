@@ -5,37 +5,40 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <sys/stat.h>
 #include <unistd.h>
 
 class TraceTest : public QObject {
     Q_OBJECT
+    QTemporaryDir tools;
+    QString plain() { return fake(0755); }
+    QString fake(int mode, const QString &name = "darling") { const QString path = tools.path() + "/" + name + QString::number(mode, 8); if (!QFileInfo::exists(path)) { write(path, "#!/bin/sh\n"); QFile::setPermissions(path, QFileDevice::Permissions::fromInt(mode & 0777)); chmod(QFile::encodeName(path).constData(), mode); } return path; }
     static QString write(const QString &path, const QByteArray &data) { QFile f(path); if (f.open(QIODevice::WriteOnly)) f.write(data); return path; }
 private slots:
     void offLeavesEnvironmentIdentical() {
         QTemporaryDir prefix; QVERIFY(prefix.isValid());
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment(); env.insert("DPREFIX", prefix.path()); const auto before = env.toStringList();
-        QString error; QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", false, "log", nullptr, &error));
+        QString error; QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", false, plain(), nullptr, &error));
         QCOMPARE(env.toStringList(), before); QVERIFY(!QFileInfo::exists(prefix.path() + "/.darling-launcher"));
     }
     void onSetsBothVariablesUnderPrivateDirectory() {
         QTemporaryDir prefix; QVERIFY(prefix.isValid());
         QProcessEnvironment env; QString path, error;
-        QVERIFY2(LauncherTrace::applyTrace(env, prefix.path(), "My App/../x", true, "trap", &path, &error), qPrintable(error));
-        QCOMPARE(env.value(TraceVars::Mode), QString("trap")); QCOMPARE(env.value(TraceVars::Log), path);
+        QVERIFY2(LauncherTrace::applyTrace(env, prefix.path(), "My App/../x", true, plain(), &path, &error), qPrintable(error));
+        QCOMPARE(env.value(TraceVars::Mode), QString("log")); QCOMPARE(env.value(TraceVars::Log), path);
         QVERIFY(path.startsWith(LauncherTrace::traceDirectory(prefix.path()) + "/My_App_.._x-")); QVERIFY(path.endsWith("Z.jsonl"));
         QCOMPARE(QFileInfo(LauncherTrace::traceDirectory(prefix.path())).permissions() & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther), QFileDevice::Permissions());
         QCOMPARE(QFileInfo(path).permissions() & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther | QFile::ExeOwner), QFileDevice::Permissions()); QVERIFY(QFileInfo(path).permissions() & QFile::WriteOwner);
-        QVERIFY(!LauncherTrace::applyTrace(env, prefix.path(), "App", true, "bogus", nullptr, &error));
     }
     void refusesSymlinkedOrExposedDirectory() {
         QTemporaryDir prefix, other; QVERIFY(prefix.isValid() && other.isValid());
         QVERIFY(QDir().mkpath(prefix.path() + "/.darling-launcher"));
         QVERIFY(QFile::link(other.path(), LauncherTrace::traceDirectory(prefix.path())));
         QProcessEnvironment env; QString error;
-        QVERIFY(!LauncherTrace::applyTrace(env, prefix.path(), "App", true, "log", nullptr, &error)); QVERIFY(env.isEmpty()); QVERIFY(QDir(other.path()).isEmpty());
+        QVERIFY(!LauncherTrace::applyTrace(env, prefix.path(), "App", true, plain(), nullptr, &error)); QVERIFY(env.isEmpty()); QVERIFY(QDir(other.path()).isEmpty());
         QTemporaryDir open; QVERIFY(QDir().mkpath(open.path() + "/.darling-launcher/trace"));
         QVERIFY(QFile::setPermissions(open.path() + "/.darling-launcher/trace", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::ReadOther | QFile::ExeOther));
-        QVERIFY(!LauncherTrace::applyTrace(env, open.path(), "App", true, "log", nullptr, &error)); QVERIFY(error.contains("other users"));
+        QVERIFY(!LauncherTrace::applyTrace(env, open.path(), "App", true, plain(), nullptr, &error)); QVERIFY(error.contains("other users"));
     }
     void refusesForeignOwnedDirectory() {
         if (::geteuid() == 0) QSKIP("root owns everything it can create");
@@ -44,20 +47,31 @@ private slots:
     void parserToleratesGarbageAndAggregates() {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         const QString path = write(dir.path() + "/t.jsonl",
-            "{\"image\":\"/F\",\"symbol\":\"_a\",\"count\":2,\"regs\":[\"0x10\",255,\"rm -rf\",{\"x\":1}],\"unknown\":[1]}\n"
+            "{\"image\":\"/F\",\"symbol\":\"_a\",\"count\":2,\"regs\":[\"0x10\"],\"unknown\":[1]}\n"
             "not json\n{\"image\":\"/F\"}\n\n[1,2]\n{\"image\":\"/F\",\"symbol\":\"_a\"}\n{\"image\":\"/G\",\"symbol\":\"_b\",\"count\":-5}\n\xff\xfe\n");
         const auto summary = LauncherTrace::parse(path);
         QCOMPARE(summary.skipped, 4); QVERIFY(!summary.truncated); QCOMPARE(summary.rows.size(), 2);
-        QCOMPARE(summary.rows[0].symbol, QString("_a")); QCOMPARE(summary.rows[0].count, 3); QCOMPARE(summary.rows[0].details, QString("0x10 0xff"));
+        QCOMPARE(summary.rows[0].symbol, QString("_a")); QCOMPARE(summary.rows[0].count, 3); QCOMPARE(summary.rows[0].order, 0); QCOMPARE(summary.rows[1].order, 1);
         QCOMPARE(summary.rows[1].count, 1);
         QVERIFY(!LauncherTrace::exportSummary(summary).contains("0x10"));
+        QVERIFY(LauncherTrace::exportSummary(summary).startsWith("image\tsymbol\tcount\n/F\t_a\t3\n"));
+    }
+    void elevatedDarlingNeverGetsVariables() {
+        QTemporaryDir prefix; QVERIFY(prefix.isValid()); QString error;
+        for (const QString &darling : {fake(04755), fake(02755)}) {
+            QProcessEnvironment env; env.insert(TraceVars::Log, "/x");
+            QVERIFY(LauncherTrace::elevated(darling)); QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", true, darling, nullptr, &error)); QVERIFY(env.isEmpty());
+        }
+        QVERIFY(!LauncherTrace::elevated(plain())); QVERIFY(LauncherTrace::elevated(plain(), 0)); QVERIFY(LauncherTrace::elevated(tools.path() + "/missing"));
+        QProcessEnvironment env; QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", true, plain(), nullptr, &error)); QVERIFY(env.contains(TraceVars::Log));
+        QVERIFY(!QFileInfo::exists(LauncherTrace::traceDirectory(prefix.path())) || QDir(LauncherTrace::traceDirectory(prefix.path())).entryList(QDir::Files).size() == 1);
     }
     void offStripsInheritedVariables() {
         QTemporaryDir prefix; QVERIFY(prefix.isValid());
         QProcessEnvironment env; env.insert("KEEP", "1"); env.insert(TraceVars::Mode, "trap"); env.insert(TraceVars::Log, "/x"); env.insert(QString(TraceVars::Mode) + "_FUTURE", "1");
-        QString error; QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", false, "log", nullptr, &error));
+        QString error; QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", false, plain(), nullptr, &error));
         QCOMPARE(env.keys(), QStringList{"KEEP"});
-        env.insert(TraceVars::Log, "/elsewhere"); QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", true, "log", nullptr, &error));
+        env.insert(TraceVars::Log, "/elsewhere"); QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", true, plain(), nullptr, &error));
         QVERIFY(env.value(TraceVars::Log).startsWith(LauncherTrace::traceDirectory(prefix.path())));
     }
     void countersSaturateAndLongLinesAreSkipped() {

@@ -73,7 +73,6 @@ struct RecoveryChoices {
     bool importLibrary = false, report = false, ai = false, remember = false;
     QString agent;
     bool trace = false;
-    QString traceMode = "log";
 };
 class LaunchChoicesDialog : public QDialog {
     Q_OBJECT
@@ -81,12 +80,14 @@ public:
     LaunchChoicesDialog(const QString &app, bool mounted, QWidget *parent = nullptr, bool failed = false);
     RecoveryChoices choices() const;
     void setMounted(bool mounted);
+    void setDarling(const QString &darling);
     void setSourceAvailability(bool mounted, bool possible);
 signals:
     void mountRequested();
 private:
     QCheckBox *copy, *report, *ai, *remember, *trace;
-    QComboBox *agent, *traceMode;
+    QComboBox *agent;
+    QLabel *traceNotice;
     QPushButton *mount;
     bool macOSPossible = true;
 };

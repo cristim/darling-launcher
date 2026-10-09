@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QMap>
 #include <QRegularExpression>
+#include <algorithm>
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -47,16 +48,12 @@ QString clean(const QString &text) {
     for (QChar &c : out) if (!c.isPrint() || c.category() == QChar::Other_Format || c.category() == QChar::Separator_Line || c.category() == QChar::Separator_Paragraph) c = '?';
     return out;
 }
-// Raw words are shown as hex text only; anything else is dropped rather than interpreted.
-QString hexWord(const QJsonValue &value) {
-    if (value.isString()) { static const QRegularExpression pattern("^(0[xX])?[0-9a-fA-F]{1,16}$"); return pattern.match(value.toString()).hasMatch() ? value.toString() : QString(); }
-    if (value.isDouble() && value.toDouble() >= 0 && value.toDouble() < 9007199254740992.0) return "0x" + QString::number(static_cast<quint64>(value.toDouble()), 16);
-    return {};
-}
 }
 
-QStringList LauncherTrace::modes() { return {TraceVars::ModeLog, TraceVars::ModeTrap, TraceVars::ModeContinue}; }
-bool LauncherTrace::validMode(const QString &mode) { return modes().contains(mode); }
+bool LauncherTrace::elevated(const QString &darling, uid_t euid) {
+    struct stat info;
+    return euid == 0 || ::stat(QFile::encodeName(darling).constData(), &info) != 0 || (info.st_mode & (S_ISUID | S_ISGID));
+}
 QString LauncherTrace::traceDirectory(const QString &prefix) { return prefix + "/.darling-launcher/" + TraceVars::TraceDirName; }
 
 bool LauncherTrace::ensurePrivateDirectory(const QString &path, QString *error, bool requirePrivate) {
@@ -73,13 +70,12 @@ bool LauncherTrace::prepareLog(const QString &prefix, const QString &app, QStrin
     return true;
 }
 
-bool LauncherTrace::applyTrace(QProcessEnvironment &env, const QString &prefix, const QString &app, bool enabled, const QString &mode, QString *logPath, QString *error) {
+bool LauncherTrace::applyTrace(QProcessEnvironment &env, const QString &prefix, const QString &app, bool enabled, const QString &darling, QString *logPath, QString *error) {
     for (const auto &name : env.keys()) if (name.startsWith(TraceVars::Mode)) env.remove(name);
-    if (!enabled) return true;
-    if (!validMode(mode)) return fail(error, "Unknown trace mode: " + mode);
+    if (!enabled || elevated(darling)) return true;
     QString path;
     if (!prepareLog(prefix, app, &path, error)) return false;
-    env.insert(TraceVars::Mode, mode); env.insert(TraceVars::Log, path);
+    env.insert(TraceVars::Mode, TraceVars::ModeLog); env.insert(TraceVars::Log, path);
     if (logPath) *logPath = path;
     return true;
 }
@@ -103,16 +99,13 @@ LauncherTrace::Summary LauncherTrace::parse(const QString &path, qint64 maxBytes
         const QPair<QString, QString> key{image, symbol};
         if (!rows.contains(key) && rows.size() >= MaxRows) { ++summary.skipped; summary.truncated = true; continue; }
         auto &row = rows[key];
-        if (row.symbol.isEmpty()) { row.image = image; row.symbol = symbol; }
+        if (row.symbol.isEmpty()) { row.image = image; row.symbol = symbol; row.order = rows.size() - 1; }
         const double count = object.value("count").toDouble(1);
         const qint64 add = count >= 1 && count <= MaxLineCount ? static_cast<qint64>(count) : 1;
         row.count = qMin<qint64>(MaxCount, row.count + add);
-        if (row.details.isEmpty()) {
-            QStringList words; for (const auto &value : object.value("regs").toArray()) { const QString word = hexWord(value); if (!word.isEmpty()) words << word; }
-            row.details = words.mid(0, 16).join(' ');
-        }
     }
     summary.rows = rows.values();
+    std::sort(summary.rows.begin(), summary.rows.end(), [](const Row &x, const Row &y) { return x.order < y.order; });
     return summary;
 }
 

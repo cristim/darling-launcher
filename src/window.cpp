@@ -159,7 +159,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         return button;
     };
     add("Launch recovery preferences…", [this] {
-        LaunchChoicesDialog choices("future apps", hasMountedSource(), settingsDialog);
+        LaunchChoicesDialog choices("future apps", hasMountedSource(), settingsDialog); choices.setDarling(darling->text());
         choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource());
         connect(&choices, &LaunchChoicesDialog::mountRequested, this, [this] { findChild<QPushButton *>("Mount macOS source…")->click(); });
         connect(volume, &QLineEdit::textChanged, &choices, [this, &choices] { choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource()); });
@@ -619,7 +619,7 @@ QString Window::selectedKey() const { return apps->currentItem() ? apps->current
 bool Window::confirmLaunch(const QString &key, bool failed) {
     auto saved = LauncherTroubleshooting::recoveryChoices();
     if (!saved.remember) {
-        LaunchChoicesDialog choices(entries.value(key).name, hasMountedSource(), this, failed);
+        LaunchChoicesDialog choices(entries.value(key).name, hasMountedSource(), this, failed); choices.setDarling(darling->text());
         choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource());
         connect(&choices, &LaunchChoicesDialog::mountRequested, this, [this] { findChild<QPushButton *>("Mount macOS source…")->click(); });
         connect(volume, &QLineEdit::textChanged, &choices, [this, &choices] { choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource()); });
@@ -665,7 +665,7 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     env.insert("DPREFIX", p);
     if (!key.isEmpty() && args.value(0) == "exec") {
         const auto chosen = launchChoices.value(key); QString traceError;
-        if (!LauncherTrace::applyTrace(env, p, label, chosen.trace, chosen.traceMode, nullptr, &traceError)) { delete process; invalid(traceError); return; }
+        if (!LauncherTrace::applyTrace(env, p, label, chosen.trace, darling->text(), nullptr, &traceError)) { delete process; invalid(traceError); return; }
     }
     process->setProcessEnvironment(env); process->setProcessChannelMode(QProcess::MergedChannels);
     ++activeProcesses;
