@@ -52,9 +52,9 @@ Selection select(const QJsonObject &release, const QJsonObject &manifest, const 
 QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo) {
     if (gh.isEmpty()) return "gh is required to verify the build attestation; install GitHub CLI or build from source";
     QProcess process;
-    process.start(gh, {"attestation", "verify", archive, "--repo", repo, "--signer-workflow", repo + "/.github/workflows/release-binaries.yml"});
+    process.start(gh, {"attestation", "verify", archive, "--repo", repo, "--signer-workflow", signerWorkflow, "--source-ref", signerSourceRef, "--deny-self-hosted-runners"});
     if (!process.waitForFinished(120000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
-        return "attestation verification failed for " + archive + ": " + QString::fromUtf8(process.readAllStandardError());
+        return "attestation verification failed for " + archive + " (needs a gh with --source-ref and --deny-self-hosted-runners): " + QString::fromUtf8(process.readAllStandardError());
     return {};
 }
 }

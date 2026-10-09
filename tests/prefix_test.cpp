@@ -221,6 +221,14 @@ private slots:
         QVERIFY(runtime(root + "/host")); QVERIFY(QDir().mkpath(root + "/split/usr")); QVERIFY(QFile::link(root + "/host/usr/local", root + "/split/usr/local"));
         QVERIFY(extractedTreeError(root + "/split").contains("leaves the runtime folder"));
     }
+    // Review F4: the signer pin followed the repo argument, so a fork override also replaced the trust root.
+    void signerPinIgnoresRepository() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path();
+        const QString gh = writeScript(root + "/gh", "echo \"$@\" > '" + root + "/gh-args'"); QVERIFY(!gh.isEmpty());
+        QCOMPARE(LauncherReleases::verifyAttestation(gh, root + "/archive.tar.zst", "cristim/darling"), QString());
+        QFile args(root + "/gh-args"); QVERIFY(args.open(QIODevice::ReadOnly));
+        QCOMPARE(args.readAll().trimmed(), QByteArray("attestation verify " + (root + "/archive.tar.zst").toUtf8() + " --repo cristim/darling --signer-workflow VibeDarling/darling/.github/workflows/release-binaries.yml --source-ref refs/heads/master --deny-self-hosted-runners"));
+    }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
         for (const char *good : {"v2026.10.09-3721b65", "v2026.10.09-3721b65-r2"}) QVERIFY2(validTag(good), good);
