@@ -3,6 +3,7 @@
 #include "discovery.h"
 #include "releases.h"
 #include "log.h"
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -38,6 +39,28 @@ private slots:
         clone.start(git, LauncherDiscovery::cloneArguments(original, destination));
         QVERIFY(clone.waitForFinished()); QVERIFY(clone.exitCode() != 0);
         QVERIFY(QFileInfo::exists(original + "/.git"));
+    }
+    void runtimeArchiveInstall() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path();
+        auto run = [&](const QStringList &args) { QProcess p; p.setWorkingDirectory(root); p.start(args.first(), args.mid(1)); QVERIFY2(p.waitForFinished(30000) && p.exitCode() == 0, qPrintable(p.readAllStandardError())); };
+        auto digest = [](const QString &path) { QFile f(path); f.open(QIODevice::ReadOnly); return QString(QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex()); };
+        QVERIFY(QDir().mkpath(root + "/good/usr/local/bin")); QVERIFY(QDir().mkpath(root + "/evil"));
+        { QFile f(root + "/good/usr/local/bin/darling"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
+        QVERIFY(QFile::link("/usr/lib/libz.so", root + "/good/usr/local/libz"));
+        run({"tar", "--zstd", "-cf", "good.tar.zst", "-C", "good", "usr"});
+        QVERIFY(QFile::link("/etc", root + "/evil/dir")); { QFile f(root + "/evil/payload"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
+        run({"tar", "--zstd", "-cf", "through.tar.zst", "-C", "evil", "dir", "--transform", "s,^payload,dir/payload,", "payload"});
+        run({"tar", "--zstd", "-cf", "escape.tar.zst", "-C", "evil", "--transform", "s,^payload,../payload,", "payload"});
+        const QString tag = "2026-10-09-14-32-3721b65", good = root + "/good.tar.zst", runtimes = root + "/runtimes";
+        QVERIFY(installArchive(good, digest(good), runtimes, "latest").contains("not a release tag"));
+        QVERIFY2(installArchive(good, QString(64, '0'), runtimes, tag).contains("SHA-256 mismatch"), "digest");
+        QVERIFY(!QFileInfo::exists(runtimes + "/" + tag));
+        for (const char *name : {"through", "escape"}) { const QString archive = root + "/" + name + ".tar.zst"; const QString error = installArchive(archive, digest(archive), runtimes, tag); QVERIFY2(!error.isEmpty() && (error.contains("symlink") || error.contains("escapes")), name); QVERIFY(!QFileInfo::exists(runtimes + "/" + tag)); }
+        QCOMPARE(installArchive(good, digest(good), runtimes, tag), QString());
+        QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/bin/darling").isFile());
+        QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/libz").isSymLink());
+        QVERIFY(installArchive(good, digest(good), runtimes, tag).contains("already exists"));
     }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
