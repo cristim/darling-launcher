@@ -147,7 +147,8 @@ QString symlinkTargetError(const QString &link, const QString &target) {
 }
 QString vetMembers(const QStringList &listing, qint64 *regularBytes) {
     // Owners must be numeric: tar prints uname/gname unescaped, so a name with spaces could shift the path column.
-    static const QRegularExpression row(R"(^(\S)\S{9}\s+\d+/\d+\s+(\d+)\s+\d{4}-\d\d-\d\d\s\d\d:\d\d\s(.+)$)");
+    // Devices list "major,minor" in the size column; they must parse so they are refused as devices below.
+    static const QRegularExpression row(R"(^(\S)\S{9}\s+\d+/\d+\s+(\d+|\d+,\s*\d+)\s+\d{4}-\d\d-\d\d\s\d\d:\d\d\s(.+)$)");
     QSet<QString> symlinks;
     QString error;
     qint64 total = 0;
