@@ -148,8 +148,10 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     error = vetMembers(QString::fromUtf8(list.readAllStandardOutput()).split('\n'));
     if (!error.isEmpty()) return error;
     const QString staging = target + ".partial";
-    if (QFileInfo::exists(staging)) return staging + " is left over from an earlier attempt; remove it by hand";
-    if (!QDir().mkpath(staging)) return "cannot create " + staging;
+    if (!QDir().mkpath(runtimesRoot)) return "cannot create " + runtimesRoot;
+    // mkdir fails when the folder exists, so creating staging is the exclusive claim on this tag.
+    if (!QDir().mkdir(staging)) return "cannot create " + staging + ": another install of " + tag + " is running, or an earlier one left it behind";
+    if (QFileInfo::exists(target)) return target + " already exists, partial files left in " + staging;
     QProcess extract;
     extract.start("tar", {"--zstd", "-xf", archive, "-C", staging, "--no-same-owner", "--no-same-permissions", "--no-overwrite-dir"});
     if (!extract.waitForFinished(1800000) || extract.exitStatus() != QProcess::NormalExit || extract.exitCode() != 0)
