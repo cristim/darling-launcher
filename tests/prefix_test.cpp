@@ -12,6 +12,8 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 QJsonObject readJson(const QString &path) { QFile file(path); if (!file.open(QIODevice::ReadOnly)) return {}; return QJsonDocument::fromJson(file.readAll()).object(); }
@@ -190,6 +192,34 @@ private slots:
         const auto found = LauncherDiscovery::runtimes({}, {});
         qputenv("HOME", isolatedHome.path().toUtf8());
         QCOMPARE(found.size(), 1); QCOMPARE(found.first().launcher, good + "/bin/darling");
+    }
+    // Security view property 1: what tar wrote is checked again, so a listing-parser gap cannot reach discovery.
+    void extractedTreeIsVerified() {
+        using namespace LauncherReleases;
+        auto runtime = [](const QString &dir) {
+            if (!QDir().mkpath(dir + "/usr/local/bin") || !QDir().mkpath(dir + "/" + runtimeMarker)) return false;
+            QFile launcher(dir + "/" + launcherPath); return launcher.open(QIODevice::WriteOnly);
+        };
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path();
+        QVERIFY(runtime(root + "/ok")); QVERIFY(QFile::link("/System/Library/Frameworks", root + "/ok/usr/local/abs-link"));
+        QCOMPARE(extractedTreeError(root + "/ok"), QString());
+        QVERIFY(runtime(root + "/fifo")); QCOMPARE(::mkfifo(QFile::encodeName(root + "/fifo/usr/local/p").constData(), 0600), 0);
+        QVERIFY(extractedTreeError(root + "/fifo").contains("not a file, folder or symlink"));
+        QVERIFY(runtime(root + "/hard")); QCOMPARE(::link(QFile::encodeName(root + "/hard/" + launcherPath).constData(), QFile::encodeName(root + "/hard/usr/local/h").constData()), 0);
+        QVERIFY(extractedTreeError(root + "/hard").contains("hard link"));
+        QVERIFY(runtime(root + "/suid")); QCOMPARE(::chmod(QFile::encodeName(root + "/suid/" + launcherPath).constData(), 04755), 0);
+        QVERIFY(extractedTreeError(root + "/suid").contains("setuid"));
+        QVERIFY(runtime(root + "/hidden")); QVERIFY(QDir().mkpath(root + "/hidden/usr/local/h/x"));
+        QCOMPARE(::mkfifo(QFile::encodeName(root + "/hidden/usr/local/h/x/p").constData(), 0600), 0); QCOMPARE(::chmod(QFile::encodeName(root + "/hidden/usr/local/h").constData(), 0), 0);
+        const QString hiddenError = extractedTreeError(root + "/hidden");
+        QCOMPARE(::chmod(QFile::encodeName(root + "/hidden/usr/local/h").constData(), 0700), 0);
+        QVERIFY(hiddenError.contains("not readable, writable and searchable"));
+        for (const char *outside : {"/etc", "/usr/lib"}) {
+            const QString dir = root + "/outside" + QString(outside).replace('/', '-'); QVERIFY(runtime(dir)); QVERIFY(QDir().mkpath(dir + outside));
+            QVERIFY2(extractedTreeError(dir).contains("outside usr/local"), outside);
+        }
+        QVERIFY(runtime(root + "/host")); QVERIFY(QDir().mkpath(root + "/split/usr")); QVERIFY(QFile::link(root + "/host/usr/local", root + "/split/usr/local"));
+        QVERIFY(extractedTreeError(root + "/split").contains("leaves the runtime folder"));
     }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
