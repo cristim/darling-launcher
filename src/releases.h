@@ -32,7 +32,7 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 // Verifies the digest and attestation, vets the member list (relative paths under usr/local only, no device or
 // hard-link members, nothing written through a symlink, no symlink at usr/local/bin/darling, the private/etc
 // marker or any of their parents), then extracts and checks extractedTreeError before moving it
-// into <runtimesRoot>/<tag>. Absolute and ".." symlink targets are allowed because the runtime image uses them.
+// into <runtimesRoot>/<tag>. Symlink targets must pass symlinkTargetError.
 // Extraction goes to <tag>.partial, created with an exclusive mkdir, so one install of a tag runs at a time;
 // a failed install removes the .partial it created and never one that already existed.
 // Returns an empty string on success, otherwise the reason.
@@ -41,8 +41,13 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
 // private/etc marker must resolve to themselves inside <dir>, so no symlinked component can point elsewhere.
 QString runtimeLayoutError(const QString &dir);
 // Re-checks what tar actually wrote, independent of the listing: only usr/local/**, only regular files with
-// one link and no setuid/setgid bit, folders with u+rwx, and symlinks, then runtimeLayoutError.
+// one link and no setuid/setgid bit, folders with u+rwx, and symlinks passing symlinkTargetError, then
+// runtimeLayoutError.
 QString extractedTreeError(const QString &dir);
+// Why a symlink at <link> (relative to the runtime folder) must not point at <target>, or "". Absolute targets
+// must match the allow-list of the released image exactly; relative ones may only climb with leading ".." and
+// must stay in usr/local.
+QString symlinkTargetError(const QString &link, const QString &target);
 // Takes `tar --zstd --quoting-style=escape --numeric-owner -tv` lines; returns why the archive is unsafe, or "".
 // A line that does not parse (including a non-numeric owner) is refused.
 QString vetMembers(const QStringList &verboseListing);

@@ -95,12 +95,12 @@ private slots:
         auto run = [&](const QStringList &args) { QProcess p; p.setWorkingDirectory(root); p.start(args.first(), args.mid(1)); QVERIFY2(p.waitForFinished(30000) && p.exitCode() == 0, qPrintable(p.readAllStandardError())); };
         QVERIFY(QDir().mkpath(root + "/good/usr/local/bin")); QVERIFY(QDir().mkpath(root + "/good/usr/local/libexec/darling/private/etc")); QVERIFY(QDir().mkpath(root + "/evil"));
         { QFile f(root + "/good/usr/local/bin/darling"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
-        QVERIFY(QFile::link("/usr/lib/libz.so", root + "/good/usr/local/libz"));
+        QVERIFY(QFile::link("bin/darling", root + "/good/usr/local/libz"));
         run({"tar", "--zstd", "-cf", "good.tar.zst", "-C", "good", "usr"});
         QVERIFY(QFile::link("/etc", root + "/evil/dir")); { QFile f(root + "/evil/payload"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
         run({"tar", "--zstd", "-cf", "through.tar.zst", "-C", "evil", "--transform", "s,^dir,usr/local/dir,", "--transform", "s,^payload,usr/local/dir/payload,", "dir", "payload"});
         run({"tar", "--zstd", "-cf", "escape.tar.zst", "-C", "evil", "--transform", "s,^payload,../payload,", "payload"});
-        const QString link = "lrwxrwxrwx 0/0 0 2026-10-09 14:32 usr/local/dir -> /etc", file = "-rw-r--r-- 0/0 1 2026-10-09 14:32 ";
+        const QString link = "lrwxrwxrwx 0/0 0 2026-10-09 14:32 usr/local/dir -> bin", file = "-rw-r--r-- 0/0 1 2026-10-09 14:32 ";
         for (const char *path : {"usr/local/dir/payload", "./usr/local/dir/./payload", "usr/local/dir//payload"}) QVERIFY2(vetMembers({link, file + path}).contains("writes through the symlink"), path);
         QVERIFY(vetMembers({link, file + "usr/local/dir/sub/../payload"}).contains("escapes the runtime folder"));
         QVERIFY(vetMembers({link, file + "usr/local/other/payload"}).isEmpty());
@@ -208,7 +208,7 @@ private slots:
             QFile launcher(dir + "/" + launcherPath); return launcher.open(QIODevice::WriteOnly);
         };
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path();
-        QVERIFY(runtime(root + "/ok")); QVERIFY(QFile::link("/System/Library/Frameworks", root + "/ok/usr/local/abs-link"));
+        QVERIFY(runtime(root + "/ok")); QVERIFY(QFile::link("../local/bin/darling", root + "/ok/usr/local/rel-link"));
         QCOMPARE(extractedTreeError(root + "/ok"), QString());
         QVERIFY(runtime(root + "/fifo")); QCOMPARE(::mkfifo(QFile::encodeName(root + "/fifo/usr/local/p").constData(), 0600), 0);
         QVERIFY(extractedTreeError(root + "/fifo").contains("not a file, folder or symlink"));
@@ -226,7 +226,11 @@ private slots:
             QVERIFY2(extractedTreeError(dir).contains("outside usr/local"), outside);
         }
         QVERIFY(runtime(root + "/host")); QVERIFY(QDir().mkpath(root + "/split/usr")); QVERIFY(QFile::link(root + "/host/usr/local", root + "/split/usr/local"));
-        QVERIFY(extractedTreeError(root + "/split").contains("leaves the runtime folder"));
+        QVERIFY(extractedTreeError(root + "/split").contains("symlink usr/local has an absolute target"));
+        QVERIFY(runtime(root + "/abs")); QVERIFY(QFile::link("/etc", root + "/abs/usr/local/etc"));
+        QVERIFY(extractedTreeError(root + "/abs").contains("not on the allow-list"));
+        QVERIFY(runtime(root + "/up")); QVERIFY(QFile::link("../../../outside", root + "/up/usr/local/up"));
+        QVERIFY(extractedTreeError(root + "/up").contains("points outside usr/local"));
     }
     // Review F4: the signer pin followed the repo argument, so a fork override also replaced the trust root.
     void signerPinIgnoresRepository() {
@@ -275,14 +279,13 @@ private slots:
         using namespace LauncherReleases;
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
         const QString gh = writeScript(root + "/gh", "exit 0"); QVERIFY(!gh.isEmpty());
-        QVERIFY(QDir().mkpath(root + "/outside")); { QFile sentinel(root + "/outside/keep"); QVERIFY(sentinel.open(QIODevice::WriteOnly)); }
-        QJsonArray brokenMembers = runtimeMembers(); brokenMembers.removeLast(); brokenMembers.append(linkMember("usr/local/outside", root + "/outside"));
+        QJsonArray brokenMembers = runtimeMembers(); brokenMembers.removeLast();
         const QString broken = makeArchive(root, "nolauncher", brokenMembers), good = makeArchive(root, "good", runtimeMembers());
         QVERIFY(!broken.isEmpty()); QVERIFY(!good.isEmpty());
         const QString tag = "v2026.10.09-0000006";
         const QString error = installArchive(broken, sha256File(broken), runtimes, tag, gh, "VibeDarling/darling");
         QVERIFY2(error.contains("bin/darling"), qPrintable(error));
-        QVERIFY(!QFileInfo::exists(runtimes + "/" + tag + ".partial")); QVERIFY(QFileInfo::exists(root + "/outside/keep"));
+        QVERIFY(!QFileInfo::exists(runtimes + "/" + tag + ".partial"));
         QCOMPARE(installArchive(good, sha256File(good), runtimes, tag, gh, "VibeDarling/darling"), QString());
         const QString foreign = runtimes + "/v2026.10.09-0000007.partial"; QVERIFY(QDir().mkpath(foreign));
         { QFile mine(foreign + "/someone-elses"); QVERIFY(mine.open(QIODevice::WriteOnly)); }
@@ -295,6 +298,24 @@ private slots:
         const QString lockedError = installArchive(readOnly, sha256File(readOnly), runtimes, "v2026.10.09-000000d", gh, "VibeDarling/darling");
         QVERIFY2(!lockedError.isEmpty() && !lockedError.contains("remove it by hand"), qPrintable(lockedError));
         QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-000000d.partial"));
+    }
+    // Security P2: symlinks to absolute targets are refused unless they are one of the released image's own pairs,
+    // and relative ones may not leave usr/local.
+    void symlinkTargetsAreConfined() {
+        using namespace LauncherReleases;
+        const QString kerberos = "/System/Library/Frameworks/Kerberos.framework/Kerberos", libkrb5 = "usr/local/libexec/darling/usr/lib/libkrb5.dylib";
+        QCOMPARE(symlinkTargetError(libkrb5, kerberos), QString());
+        QCOMPARE(symlinkTargetError("usr/local/libexec/darling/usr/bin/ruby", "/System/Library/Frameworks/Ruby.framework/Versions/2.6/usr/bin/ruby"), QString());
+        QVERIFY(symlinkTargetError(libkrb5, "/etc/passwd").contains("not on the allow-list"));
+        QVERIFY(symlinkTargetError("usr/local/libexec/darling/usr/lib/other.dylib", kerberos).contains("not on the allow-list"));
+        QVERIFY(symlinkTargetError("usr/local/libexec/darling/private/etc/passwd", "/etc/passwd").contains("not on the allow-list"));
+        for (const char *target : {"darling", "../bin/darling", "../../local/lib", "../lib/x"}) QVERIFY2(symlinkTargetError("usr/local/bin/x", target).isEmpty(), target);
+        for (const char *target : {"../..", "../../../..", "../../../etc", "../../../../outside"}) QVERIFY2(symlinkTargetError("usr/local/bin/x", target).contains("outside usr/local"), target);
+        for (const char *target : {"a/../../../..", "./x", "a//b", "a/", "", "a/.", "a\\b"}) QVERIFY2(symlinkTargetError("usr/local/bin/x", target).contains("unsupported target"), target);
+        const QString line = "lrwxrwxrwx 0/0 0 2026-10-09 14:32 ";
+        QVERIFY(vetMembers({line + libkrb5 + " -> " + kerberos}).isEmpty());
+        QVERIFY(vetMembers({line + "usr/local/etc -> /etc"}).contains("not on the allow-list"));
+        QVERIFY(vetMembers({line + "usr/local/up -> ../../../tmp"}).contains("outside usr/local"));
     }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
