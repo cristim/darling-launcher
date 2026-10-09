@@ -317,6 +317,27 @@ private slots:
         QVERIFY(vetMembers({line + "usr/local/etc -> /etc"}).contains("not on the allow-list"));
         QVERIFY(vetMembers({line + "usr/local/up -> ../../../tmp"}).contains("outside usr/local"));
     }
+    // Security P2: the archive was opened four times (hash, gh, list, extract), so swapping the file after hashing
+    // installed bytes that were never verified. Only a private copy is read after hashing now.
+    void archiveSwappedAfterHashingIsNotInstalled() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        QJsonArray goodMembers = runtimeMembers(), evilMembers = runtimeMembers();
+        QJsonObject evilLauncher = evilMembers.last().toObject(); evilLauncher.insert("data", "evil"); evilMembers.replace(evilMembers.size() - 1, evilLauncher);
+        const QString good = makeArchive(root, "good", goodMembers), evil = makeArchive(root, "evil", evilMembers);
+        QVERIFY(!good.isEmpty()); QVERIFY(!evil.isEmpty());
+        const QString download = root + "/download.tar.zst"; QVERIFY(QFile::copy(good, download));
+        // The "attacker" replaces the downloaded file while the attestation check runs.
+        const QString gh = writeScript(root + "/gh", "cp '" + evil + "' '" + download + "'"); QVERIFY(!gh.isEmpty());
+        QCOMPARE(installArchive(download, sha256File(good), runtimes, "v2026.10.09-000000e", gh, "VibeDarling/darling"), QString());
+        QFile launcher(runtimes + "/v2026.10.09-000000e/" + launcherPath); QVERIFY(launcher.open(QIODevice::ReadOnly)); QCOMPARE(launcher.readAll(), QByteArray("x"));
+        QCOMPARE(sha256File(download), sha256File(evil));
+        QCOMPARE(QDir(runtimes).entryList(QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot), QStringList{"v2026.10.09-000000e"});
+        QCOMPARE(::mkfifo(QFile::encodeName(root + "/fifo.tar.zst").constData(), 0600), 0);
+        QVERIFY(installArchive(root + "/fifo.tar.zst", sha256File(good), runtimes, "v2026.10.09-000000f", gh, "VibeDarling/darling").contains("not a regular file"));
+        QVERIFY(QFile::link(good, root + "/link.tar.zst"));
+        QVERIFY(installArchive(root + "/link.tar.zst", sha256File(good), runtimes, "v2026.10.09-000000f", gh, "VibeDarling/darling").contains("it is a symlink"));
+    }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
         for (const char *good : {"v2026.10.09-3721b65", "v2026.10.09-3721b65-r2"}) QVERIFY2(validTag(good), good);
