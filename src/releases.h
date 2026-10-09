@@ -37,7 +37,12 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 // Extraction goes to <tag>.partial, created with an exclusive mkdir, so one install of a tag runs at a time;
 // a failed install removes the .partial it created and never one that already existed.
 // Returns an empty string on success, otherwise the reason.
-QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo);
+// unpackedSize is manifest.json's unpacked_size: the listed regular-file bytes may not exceed it, and extraction is
+// stopped once the files written exceed it by more than extractionSlack.
+QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize);
+// CI computes unpacked_size as the sum of regular-file sizes, so a correct archive never needs this; it only
+// absorbs rounding in a future packer.
+constexpr qint64 extractionSlack = 1 << 20;
 // Why <dir> is not a self-contained runtime, or "": usr/local, the launcher (a regular file) and the
 // private/etc marker must resolve to themselves inside <dir>, so no symlinked component can point elsewhere.
 QString runtimeLayoutError(const QString &dir);
@@ -51,5 +56,6 @@ QString extractedTreeError(const QString &dir);
 QString symlinkTargetError(const QString &link, const QString &target);
 // Takes `tar --zstd --quoting-style=escape --numeric-owner -tv` lines; returns why the archive is unsafe, or "".
 // A line that does not parse (including a non-numeric owner) is refused.
-QString vetMembers(const QStringList &verboseListing);
+// regularBytes, when given, receives the sum of the listed regular-file sizes.
+QString vetMembers(const QStringList &verboseListing, qint64 *regularBytes = nullptr);
 }
