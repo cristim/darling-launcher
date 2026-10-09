@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "troubleshooting.h"
 #include <QCheckBox>
+#include <QDialogButtonBox>
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
@@ -34,6 +35,20 @@ private slots:
         choices.findChild<QCheckBox *>("rememberLaunchChoices")->setChecked(false); LauncherTroubleshooting::saveRecoveryChoices(choices.choices()); QVERIFY(!LauncherTroubleshooting::recoveryChoices().remember);
     }
 
+    void pipelineConsentStatesIsolationHonestly() {
+        QTemporaryDir bin; QVERIFY(bin.isValid()); const auto oldPath = qgetenv("PATH"); auto restore = qScopeGuard([=] { qputenv("PATH", oldPath); });
+        for (const char *name : {"claude", "opencode"}) { QFile f(bin.path() + '/' + name); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("#!/bin/sh\n"); f.close(); QVERIFY(f.setPermissions(QFile::ReadOwner | QFile::ExeOwner)); }
+        qputenv("PATH", bin.path().toUtf8());
+        PipelineConsentDialog dialog("/home/u/.darling/trace.jsonl", "_CFFoo", "CoreFoundation"); dialog.show();
+        const QString text = dialog.findChild<QLabel *>("pipelineIsolation")->text();
+        for (const char *must : {"This is not a sandbox", "runs as your user account", "Codex and OpenCode can read outside the folder", "session history", "/home/u/.darling/trace.jsonl", "specification only"})
+            QVERIFY2(text.contains(must), must);
+        auto *ok = dialog.findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok);
+        QVERIFY(!ok->isEnabled()); dialog.findChild<QCheckBox *>("approvePipeline")->setChecked(true); QVERIFY(ok->isEnabled());
+        const auto options = dialog.options();
+        QCOMPARE(options.agents, QStringList({"claude", "opencode", "claude", "opencode"})); // providers alternate when several are installed
+        QCOMPARE(options.symbol, QString("_CFFoo")); QCOMPARE(options.trace, QString("/home/u/.darling/trace.jsonl"));
+    }
     void mountOfferTracksAvailability() {
         QJsonObject data{{"app", "Fixture"}, {"missingLibrary", "/usr/lib/fixture.dylib"}};
         TroubleshootingDialog popup(data); popup.show();

@@ -305,6 +305,38 @@ void LaunchChoicesDialog::setSourceAvailability(bool mounted, bool possible) {
     copy->setToolTip(possible ? QString() : "No APFS/HFS partition or usable macOS mount detected on this system.");
     mount->setVisible(!mounted && possible);
 }
+QString PipelineConsentDialog::isolationStatement(const QString &trace) {
+    return "How the stages are separated: research, specification, implementation and validation each get their own folder (mode 700) under " + PipelineWorkspace::defaultBase() + ". "
+        "While one stage's agent runs, the other folders are locked (mode 000) and the run folder cannot be listed. A fresh agent process starts for every stage. "
+        "Only files the launcher copied after its text check cross between stages: implementation receives the specification only, never the trace or the research facts. "
+        "Every step is recorded in a hash-chained audit log.\n\n"
+        "This is not a sandbox. Every stage runs as your user account, so an agent that ignores its instructions can unlock folders (the launcher detects that and discards the stage) "
+        "or read any other file your account can read. Claude is limited to the stage folder by --add-dir and keeps no session history (--no-session-persistence); "
+        "Codex and OpenCode can read outside the folder and keep their own session history in your home folder, outside the launcher's control. "
+        "Processes an agent leaves running are stopped when its stage ends. The trace itself stays where the tracer wrote it: " + trace + "\n\n"
+        "Starting sends each stage's inputs to the agent service chosen for that stage.";
+}
+PipelineConsentDialog::PipelineConsentDialog(const QString &tracePath, const QString &symbolName, const QString &libraryName, QWidget *parent) : QDialog(parent), trace(tracePath), symbol(symbolName), library(libraryName) {
+    setObjectName("pipelineConsentDialog"); setWindowTitle("Clean-room pipeline for " + symbol);
+    auto *layout = new QVBoxLayout(this);
+    auto *statement = new QLabel(isolationStatement(trace)); statement->setObjectName("pipelineIsolation"); statement->setWordWrap(true); statement->setTextFormat(Qt::PlainText); layout->addWidget(statement);
+    const QStringList installed = LauncherTroubleshooting::agents(), defaults = MissingSymbolPipeline::defaultAgents(installed);
+    for (int i = 0; i < HandoffStore::Stages.size(); ++i) {
+        auto *combo = new QComboBox; combo->setObjectName("pipelineAgent-" + HandoffStore::Stages[i]); combo->addItems(installed);
+        if (i < defaults.size()) combo->setCurrentText(defaults[i]);
+        layout->addWidget(new QLabel(HandoffStore::Stages[i] + " agent:")); layout->addWidget(combo); stageAgents << combo;
+    }
+    auto *approve = new QCheckBox("I understand this is not a sandbox and approve sending each stage's inputs to the chosen agents"); approve->setObjectName("approvePipeline"); layout->addWidget(approve);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); layout->addWidget(buttons);
+    buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
+    connect(approve, &QCheckBox::toggled, this, [buttons, installed](bool on) { buttons->button(QDialogButtonBox::Ok)->setEnabled(on && !installed.isEmpty()); });
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+}
+MissingSymbolPipeline::Options PipelineConsentDialog::options() const {
+    MissingSymbolPipeline::Options o; o.trace = trace; o.symbol = symbol; o.library = library;
+    for (auto *combo : stageAgents) o.agents << combo->currentText();
+    return o;
+}
 void TroubleshootingDialog::chooseActions(bool copy, bool report, bool ai, const QString &selectedAgent) {
     if (ai) {
         auto *workspace = findChild<QLineEdit *>("agentWorkspace");
@@ -367,6 +399,23 @@ TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWi
     auto *start = new QPushButton("Start selected agent"); start->setObjectName("startFixAgent"); start->setEnabled(false);
     connect(consent, &QCheckBox::toggled, this, [=](bool approved) { start->setEnabled(approved && agents->count() > 0 && (background->isChecked() || !QStandardPaths::findExecutable("xdg-terminal-exec").isEmpty())); }); agentLayout->addWidget(start);
     connect(background, &QCheckBox::toggled, this, [=] { start->setEnabled(consent->isChecked() && agents->count() > 0 && (background->isChecked() || !QStandardPaths::findExecutable("xdg-terminal-exec").isEmpty())); });
+    auto *pipelineStart = new QPushButton("Clean-room pipeline from a missing-symbol trace…"); pipelineStart->setObjectName("startCleanRoomPipeline"); pipelineStart->setEnabled(agents->count() > 0); agentLayout->addWidget(pipelineStart);
+    connect(pipelineStart, &QPushButton::clicked, this, [this] {
+        const QString trace = QFileDialog::getOpenFileName(this, "Choose the missing-symbol trace", {}, "Trace (*.jsonl);;All files (*)");
+        if (trace.isEmpty()) return;
+        PipelineConsentDialog consent(trace, diagnostic.value("missingSymbol").toString(), diagnostic.value("missingLibrary").toString(), this);
+        if (consent.exec() != QDialog::Accepted) return;
+        static bool recovered = false; // runs left locked by a crash; only safe before this process starts any run
+        if (!recovered) { recovered = true; PipelineWorkspace::recover(PipelineWorkspace::defaultBase()); }
+        QString error; const auto workspace = PipelineWorkspace::create(PipelineWorkspace::defaultBase(), &error);
+        if (!workspace.valid()) { status->setText("Cannot create the pipeline folders: " + error); return; }
+        QWidget *window = parentWidget() ? parentWidget() : this;
+        auto *pipeline = new MissingSymbolPipeline(workspace, consent.options(), window);
+        connect(pipeline, &MissingSymbolPipeline::statusChanged, this, [this](const QString &message) { status->setText(message); });
+        if (auto *main = qobject_cast<QMainWindow *>(window)) connect(pipeline, &MissingSymbolPipeline::statusChanged, main, [main](const QString &message) { main->statusBar()->showMessage(message); });
+        connect(pipeline, &MissingSymbolPipeline::finished, pipeline, &QObject::deleteLater);
+        pipeline->start();
+    });
     status = new QLabel; status->setObjectName("troubleshootingStatus"); status->setWordWrap(true); layout->addWidget(status);
     connect(start, &QPushButton::clicked, this, [=] {
         if (!consent->isChecked()) return;
