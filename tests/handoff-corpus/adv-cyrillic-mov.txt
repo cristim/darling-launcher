@@ -1,0 +1,3 @@
+mоv x0, x1
+ldг x2, [sp, #8]
+bl _fоo

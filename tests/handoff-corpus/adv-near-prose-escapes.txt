@@ -1,0 +1,1 @@
+Use \n for newlines and 100% of tests; &amp; is fine.
