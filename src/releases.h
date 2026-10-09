@@ -57,6 +57,9 @@ QString extractedTreeError(const QString &dir);
 QString symlinkTargetError(const QString &link, const QString &target);
 // Takes `tar --zstd --quoting-style=escape --numeric-owner -tv` lines; returns why the archive is unsafe, or "".
 // A line that does not parse (including a non-numeric owner) is refused.
+// Members (files, folders, symlinks) an archive may list: the pilot image has 41200, so this
+// leaves room to grow while bounding the work and inodes a hostile archive can cost.
+constexpr qint64 maxArchiveMembers = 200000;
 // regularBytes, when given, receives the sum of the listed regular-file sizes.
 QString vetMembers(const QStringList &verboseListing, qint64 *regularBytes = nullptr);
 }
