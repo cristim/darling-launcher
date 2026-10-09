@@ -29,10 +29,11 @@ with tarfile.open(out, "w", format=tarfile.GNU_FORMAT) as archive:
         info.mode = int(member.get("mode", "755" if member.get("type") == "dir" else "644"), 8); data = b""
         if member.get("type") == "dir": info.type = tarfile.DIRTYPE
         elif member.get("type") == "link": info.type = tarfile.SYMTYPE; info.linkname = member["target"]
+        elif member.get("type") in ("chr", "blk", "fifo"): info.type = {"chr": tarfile.CHRTYPE, "blk": tarfile.BLKTYPE, "fifo": tarfile.FIFOTYPE}[member["type"]]; info.devmajor, info.devminor = 1, 3
         else: data = bytes(member["zeros"]) if "zeros" in member else member.get("data", "x").encode(); info.size = len(data)
         archive.addfile(info, io.BytesIO(data))
 )";
-// Writes <dir>/<name>.tar.zst; members are {name, type: file|dir|link, target, gname, mode, data, zeros}.
+// Writes <dir>/<name>.tar.zst; members are {name, type: file|dir|link|chr|blk|fifo, target, gname, mode, data, zeros}.
 QString makeArchive(const QString &dir, const QString &name, const QJsonArray &members) {
     const QString tar = dir + "/" + name + ".tar", zst = tar + ".zst";
     if (QProcess::execute("python3", {"-c", archiveWriter, tar, QJsonDocument(members).toJson(QJsonDocument::Compact)}) != 0) return {};
@@ -462,6 +463,24 @@ private slots:
         QElapsedTimer clock; clock.start();
         QVERIFY(vetMembers(listing).contains("writes through the symlink usr/local/l9999: usr/local/l9999/through"));
         QVERIFY2(clock.elapsed() < 5000, qPrintable(QString::number(clock.elapsed()) + " ms"));
+    }
+    // Security re-check: devices were refused only because their "1,3" size column did not parse; the device
+    // check itself was unreachable for them.
+    void deviceMembersAreRefusedAsDevices() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString gh = writeScript(root + "/gh", "exit 0"); QVERIFY(!gh.isEmpty());
+        int index = 0;
+        for (const char *type : {"chr", "blk", "fifo"}) {
+            QJsonArray members = runtimeMembers(); members.append(QJsonObject{{"name", "usr/local/dev"}, {"type", type}});
+            const QString archive = makeArchive(root, type, members); QVERIFY(!archive.isEmpty());
+            const QString tag = "v2026.10.09-00000d" + QString::number(index++);
+            const QString error = installArchive(archive, sha256File(archive), runtimes, tag, gh, "VibeDarling/darling", roomyUnpackedSize);
+            QVERIFY2(error.contains("hard link or device member: usr/local/dev"), qPrintable(QString(type) + ": " + error));
+            QVERIFY(!QFileInfo::exists(runtimes + "/" + tag)); QVERIFY(!QFileInfo::exists(runtimes + "/" + tag + ".partial"));
+        }
+        for (const char *line : {"crw-r--r-- 0/0 1,3 2026-10-09 14:32 usr/local/c", "brw-r--r-- 0/0 8, 0 2026-10-09 14:32 usr/local/b"})
+            QVERIFY2(vetMembers({line}).contains("hard link or device member"), line);
     }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
