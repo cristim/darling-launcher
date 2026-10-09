@@ -1,0 +1,7 @@
+#!/bin/sh
+# Fake Darling host launcher for tests: no runtime support exists yet, so this stands in for the consumer of the trace variables.
+printf '%s' "${DARLING_MISSING_SYMBOLS-unset}" > "$DPREFIX/fake-mode.txt"
+if [ -n "${DARLING_MISSING_SYMBOLS-}" ]; then
+  printf '%s\n' '{"image":"/System/Library/Frameworks/Fixture.framework/Fixture","symbol":"_FixtureMissing","count":2,"regs":["0x1","ff"],"future":{"x":1}}' >> "$DARLING_MISSING_SYMBOLS_LOG"
+fi
+exit 0

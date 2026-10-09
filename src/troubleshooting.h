@@ -72,6 +72,8 @@ PrProposal reviewProposal(const QString &file);
 struct RecoveryChoices {
     bool importLibrary = false, report = false, ai = false, remember = false;
     QString agent;
+    bool trace = false;
+    QString traceMode = "log";
 };
 class LaunchChoicesDialog : public QDialog {
     Q_OBJECT
@@ -83,8 +85,8 @@ public:
 signals:
     void mountRequested();
 private:
-    QCheckBox *copy, *report, *ai, *remember;
-    QComboBox *agent;
+    QCheckBox *copy, *report, *ai, *remember, *trace;
+    QComboBox *agent, *traceMode;
     QPushButton *mount;
     bool macOSPossible = true;
 };

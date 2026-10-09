@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "troubleshooting.h"
+#include "trace.h"
+#include "tracevars.h"
 #include "log.h"
 #include <QRandomGenerator>
 #include <QMessageAuthenticationCode>
@@ -271,12 +273,13 @@ PrProposal LauncherTroubleshooting::reviewProposal(const QString &file) {
 }
 RecoveryChoices LauncherTroubleshooting::recoveryChoices() {
     QSettings settings("cristim", "darling-launcher");
-    return {settings.value("recovery/import", false).toBool(), settings.value("recovery/report", false).toBool(), settings.value("recovery/ai", false).toBool(), settings.value("recovery/remember", false).toBool(), settings.value("recovery/agent").toString()};
+    return {settings.value("recovery/import", false).toBool(), settings.value("recovery/report", false).toBool(), settings.value("recovery/ai", false).toBool(), settings.value("recovery/remember", false).toBool(), settings.value("recovery/agent").toString(), settings.value("recovery/trace", false).toBool(), LauncherTrace::validMode(settings.value("recovery/traceMode").toString()) ? settings.value("recovery/traceMode").toString() : QString(TraceVars::ModeLog)};
 }
 void LauncherTroubleshooting::saveRecoveryChoices(const RecoveryChoices &choices) {
     QSettings settings("cristim", "darling-launcher");
     settings.setValue("recovery/import", choices.importLibrary); settings.setValue("recovery/report", choices.report);
     settings.setValue("recovery/ai", choices.ai); settings.setValue("recovery/remember", choices.remember); settings.setValue("recovery/agent", choices.agent);
+    settings.setValue("recovery/trace", choices.trace); settings.setValue("recovery/traceMode", choices.traceMode);
 }
 LaunchChoicesDialog::LaunchChoicesDialog(const QString &app, bool mounted, QWidget *parent, bool failed) : QDialog(parent) {
     setObjectName("launchChoicesDialog"); setWindowTitle("Launch recovery choices");
@@ -289,13 +292,18 @@ LaunchChoicesDialog::LaunchChoicesDialog(const QString &app, bool mounted, QWidg
     ai = new QCheckBox("Use AI in the background to implement missing functionality"); ai->setObjectName("launchAiOption"); layout->addWidget(ai);
     agent = new QComboBox; agent->setObjectName("launchAgent"); agent->addItems(LauncherTroubleshooting::agents()); layout->addWidget(agent); ai->setEnabled(agent->count() > 0);
     auto *sharing = new QLabel("Choosing AI authorizes sharing subsequent loader output and local app/source/prefix paths with the selected agent’s configured service. No Apple payloads are shared. Work uses an independent workspace; completed issues and PRs still require separate explicit approval. The same actions cover the dependency chain, with a separate AI session for each missing library. Library import waits if the prefix must be stopped first."); sharing->setWordWrap(true); layout->addWidget(sharing);
+    trace = new QCheckBox("Trace missing symbols (record the names of unresolved functions this app imports, in a private log)"); trace->setObjectName("launchTraceOption"); layout->addWidget(trace);
+    auto *advanced = new QLabel("Advanced: log only records names and keeps the normal loader error. trap stops the app at the first missing function. continue returns a configured value only for approved functions."); advanced->setObjectName("launchTraceAdvanced"); advanced->setWordWrap(true); advanced->setTextFormat(Qt::PlainText); layout->addWidget(advanced);
+    traceMode = new QComboBox; traceMode->setObjectName("launchTraceMode"); traceMode->addItems(LauncherTrace::modes()); layout->addWidget(traceMode);
+    connect(trace, &QCheckBox::toggled, traceMode, &QWidget::setEnabled); traceMode->setEnabled(false);
     remember = new QCheckBox("Remember these choices for subsequent launches"); remember->setObjectName("rememberLaunchChoices"); layout->addWidget(remember);
     const auto saved = LauncherTroubleshooting::recoveryChoices(); copy->setChecked(saved.importLibrary); report->setChecked(saved.report); ai->setChecked(saved.ai && ai->isEnabled()); remember->setChecked(saved.remember);
     if (agent->findText(saved.agent) >= 0) agent->setCurrentText(saved.agent);
+    trace->setChecked(saved.trace); traceMode->setCurrentText(saved.traceMode);
     setMounted(mounted);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); layout->addWidget(buttons); connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 }
-RecoveryChoices LaunchChoicesDialog::choices() const { return {copy->isChecked(), report->isChecked(), ai->isChecked(), remember->isChecked(), agent->currentText()}; }
+RecoveryChoices LaunchChoicesDialog::choices() const { return {copy->isChecked(), report->isChecked(), ai->isChecked(), remember->isChecked(), agent->currentText(), trace->isChecked(), traceMode->currentText()}; }
 void LaunchChoicesDialog::setMounted(bool mounted) { setSourceAvailability(mounted, macOSPossible); }
 void LaunchChoicesDialog::setSourceAvailability(bool mounted, bool possible) {
     macOSPossible = possible; copy->setVisible(mounted || !possible); copy->setEnabled(mounted);

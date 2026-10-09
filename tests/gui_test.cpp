@@ -69,6 +69,33 @@ private slots:
         QCOMPARE(settings.value("splitterState").toByteArray(), splitter); QVERIFY(restored.findChild<QSplitter *>("browserSplitter")->restoreState(splitter));
         QVERIFY(!restored.findChild<QDialog *>("settingsDialog")->isVisible());
     }
+    void traceOptionPersistsAndOnlyTracedLaunchGetsVariables() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        QSettings settings("cristim", "darling-launcher"); settings.clear();
+        {
+            LaunchChoicesDialog dialog("Fixture", false); auto *box = dialog.findChild<QCheckBox *>("launchTraceOption"), *remember = dialog.findChild<QCheckBox *>("rememberLaunchChoices"); auto *mode = dialog.findChild<QComboBox *>("launchTraceMode");
+            QVERIFY(!box->isChecked()); QVERIFY(!mode->isEnabled()); QCOMPARE(mode->currentText(), QString("log"));
+            box->setChecked(true); QVERIFY(mode->isEnabled()); mode->setCurrentText("trap"); remember->setChecked(true);
+            LauncherTroubleshooting::saveRecoveryChoices(dialog.choices());
+        }
+        LaunchChoicesDialog reopened("Fixture", false);
+        QVERIFY(reopened.findChild<QCheckBox *>("launchTraceOption")->isChecked()); QCOMPARE(reopened.findChild<QComboBox *>("launchTraceMode")->currentText(), QString("trap"));
+        auto saved = LauncherTroubleshooting::recoveryChoices(); saved.trace = false; LauncherTroubleshooting::saveRecoveryChoices(saved);
+        const QString prefix = temporary.path() + "/prefix", fake = QString(TEST_SOURCE_DIR) + "/tests/fake-darling";
+        QVERIFY(QDir().mkpath(prefix));
+        QString error; QVERIFY(LauncherCore::saveCatalog(prefix, QJsonObject{{"apps", QJsonArray{QJsonObject{{"name", "Fixture"}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}}}}}, &error));
+        settings.setValue("prefix", prefix); settings.setValue("darling", fake);
+        Window window({}, false, [] { return QList<SourceMount>{}; }); window.show(); window.findChild<QLineEdit *>("runtimeRootField")->clear();
+        auto *apps = window.findChild<ImportedBrowser *>("importedApps"); apps->setCurrentRow(0);
+        auto modeSeen = [&] { QFile f(prefix + "/fake-mode.txt"); return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString(); };
+        launchSelected(window); QTRY_COMPARE_WITH_TIMEOUT(modeSeen(), QString("unset"), 5000); QTRY_VERIFY_WITH_TIMEOUT(apps->status("Applications/Fixture.app").contains("Exited"), 5000);
+        QVERIFY(!QFileInfo::exists(prefix + "/.darling-launcher/trace"));
+        saved.trace = true; LauncherTroubleshooting::saveRecoveryChoices(saved);
+        QFile::remove(prefix + "/fake-mode.txt"); launchSelected(window); QTRY_COMPARE_WITH_TIMEOUT(modeSeen(), QString("trap"), 5000);
+        const auto logs = QDir(prefix + "/.darling-launcher/trace").entryList({"Fixture-*.jsonl"}); QCOMPARE(logs.size(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo(prefix + "/.darling-launcher/trace/" + logs.first()).size() > 0, 5000);
+        QVERIFY(!qEnvironmentVariableIsSet("DARLING_MISSING_SYMBOLS"));
+    }
     void rememberedImportRetriesAndMountLossHidesAction() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
         QSettings("cristim", "darling-launcher").clear();

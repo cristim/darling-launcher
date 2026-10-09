@@ -7,6 +7,8 @@
 #include "prefixdialog.h"
 #include "discovery.h"
 #include "troubleshooting.h"
+#include "trace.h"
+#include "tracedialog.h"
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDir>
@@ -150,7 +152,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
             connect(button, &QPushButton::clicked, this, callback);
             return button;
         }
-        bool setting = title == "Create prefix" || title == "Initialize selected prefix" || title == "Detect mounted macOS volumes" || title == "Mount macOS source…" || title == "Stop background agents" || title == "Launch recovery preferences…";
+        bool setting = title == "Create prefix" || title == "Initialize selected prefix" || title == "Detect mounted macOS volumes" || title == "Mount macOS source…" || title == "Stop background agents" || title == "Launch recovery preferences…" || title == "Missing-symbol trace log…";
         int &count = setting ? settingsActionCount : actionCount;
         (setting ? settingsToolbar : toolbar)->addWidget(button, count / 3, count % 3); ++count;
         connect(button, &QPushButton::clicked, this, callback);
@@ -163,6 +165,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         connect(volume, &QLineEdit::textChanged, &choices, [this, &choices] { choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource()); });
         if (choices.exec() == QDialog::Accepted) LauncherTroubleshooting::saveRecoveryChoices(choices.choices());
     });
+    add("Missing-symbol trace log…", [this] { showTraceLog(this, prefix->text()); });
     connect(volume, &QLineEdit::textChanged, this, [this] { for (const auto &key : recoveryDialogs.keys()) updateRecovery(key); });
     add("Stop background agents", [this] { for (auto *job : findChildren<BackgroundFix *>()) if (job->isRunning()) job->stop(); });
     add("Create prefix", [this] { openRuntimeBuilder(); });
@@ -660,6 +663,10 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     env.remove("DARLING_INSTALL_PREFIX");
     if (!runtimeRoot->text().isEmpty()) env.insert("DARLING_INSTALL_PREFIX", runtimeRoot->text());
     env.insert("DPREFIX", p);
+    if (!key.isEmpty() && args.value(0) == "exec") {
+        const auto chosen = launchChoices.value(key); QString traceError;
+        if (!LauncherTrace::applyTrace(env, p, label, chosen.trace, chosen.traceMode, nullptr, &traceError)) { delete process; invalid(traceError); return; }
+    }
     process->setProcessEnvironment(env); process->setProcessChannelMode(QProcess::MergedChannels);
     ++activeProcesses;
     if (!key.isEmpty()) runningApps.insert(key);
