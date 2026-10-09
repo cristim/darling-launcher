@@ -52,6 +52,10 @@ private slots:
         QVERIFY(QFile::link("/etc", root + "/evil/dir")); { QFile f(root + "/evil/payload"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
         run({"tar", "--zstd", "-cf", "through.tar.zst", "-C", "evil", "dir", "--transform", "s,^payload,dir/payload,", "payload"});
         run({"tar", "--zstd", "-cf", "escape.tar.zst", "-C", "evil", "--transform", "s,^payload,../payload,", "payload"});
+        const QString link = "lrwxrwxrwx u/g 0 2026-10-09 14:32 dir -> /etc", file = "-rw-r--r-- u/g 1 2026-10-09 14:32 ";
+        for (const char *path : {"dir/payload", "./dir/./payload", "dir//payload", "dir/sub/../payload"}) QVERIFY2(!vetMembers({link, file + path}).isEmpty(), path);
+        QVERIFY(!vetMembers({link, file + "other/payload"}).isEmpty() == false);
+        QVERIFY(!vetMembers({file + "a\\nb"}).isEmpty());
         const QString tag = "2026-10-09-14-32-3721b65", good = root + "/good.tar.zst", runtimes = root + "/runtimes";
         QVERIFY(installArchive(good, digest(good), runtimes, "latest").contains("not a release tag"));
         QVERIFY2(installArchive(good, QString(64, '0'), runtimes, tag).contains("SHA-256 mismatch"), "digest");
