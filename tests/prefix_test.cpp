@@ -200,6 +200,12 @@ private slots:
             const QString runtime = runtimes + "/v2026.10.09-" + tag + "/usr/local";
             QVERIFY2(QFileInfo(runtime + "/bin/darling").isExecutable() && QFileInfo(runtime + "/libexec/darling/private/etc").isDir(), tag);
         }
+        // QA Gate 2 N1: a hard-linked or setuid launcher has an in-tree canonical path but is still refused.
+        const QString linked = runtimes + "/v2026.10.09-000000d/usr/local"; QVERIFY(QDir().mkpath(linked + "/bin")); QVERIFY(QDir().mkpath(linked + "/libexec/darling/private/etc"));
+        QCOMPARE(::link(QFile::encodeName(root + "/hostlocal/bin/darling").constData(), QFile::encodeName(linked + "/bin/darling").constData()), 0);
+        const QString setuid = runtimes + "/v2026.10.09-000000e/usr/local"; QVERIFY(QDir().mkpath(setuid + "/bin")); QVERIFY(QDir().mkpath(setuid + "/libexec/darling/private/etc"));
+        QVERIFY(QFile::copy(root + "/hostlocal/bin/darling", setuid + "/bin/darling")); QCOMPARE(::chmod(QFile::encodeName(setuid + "/bin/darling").constData(), 04700), 0);
+        for (const QString &launcher : {linked + "/bin/darling", setuid + "/bin/darling"}) QVERIFY2(QFileInfo(launcher).isExecutable(), qPrintable(launcher));
         const auto found = LauncherDiscovery::runtimes({}, {});
         QCOMPARE(found.size(), 1); QCOMPARE(found.first().launcher, good + "/bin/darling");
     }

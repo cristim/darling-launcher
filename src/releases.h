@@ -43,8 +43,9 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
 // CI computes unpacked_size as the sum of regular-file sizes, so a correct archive never needs this; it only
 // absorbs rounding in a future packer.
 constexpr qint64 extractionSlack = 1 << 20;
-// Why <dir> is not a self-contained runtime, or "": usr/local, the launcher (a regular file) and the
-// private/etc marker must resolve to themselves inside <dir>, so no symlinked component can point elsewhere.
+// Why <dir> is not a self-contained runtime, or "": usr/local, the launcher and the private/etc marker must
+// resolve to themselves inside <dir>, so no symlinked component can point elsewhere, and the launcher must be a
+// regular file with one link and no setuid/setgid bit.
 QString runtimeLayoutError(const QString &dir);
 // Re-checks what tar actually wrote, independent of the listing: only usr/local/**, only regular files with
 // one link and no setuid/setgid bit, folders with u+rwx, and symlinks passing symlinkTargetError, then

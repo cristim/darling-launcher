@@ -193,7 +193,11 @@ QString runtimeLayoutError(const QString &dir) {
     if (root.isEmpty()) return dir + " does not exist";
     for (const char *relative : {installRoot, runtimeMarker, launcherPath})
         if (QFileInfo(dir + "/" + relative).canonicalFilePath() != root + "/" + relative) return QString(relative) + " is missing or leaves the runtime folder through a symlink";
-    if (!QFileInfo(dir + "/" + launcherPath).isFile()) return QString(launcherPath) + " is not a regular file";
+    struct stat launcher;
+    if (lstat(QFile::encodeName(dir + "/" + launcherPath).constData(), &launcher) != 0 || !S_ISREG(launcher.st_mode)) return QString(launcherPath) + " is not a regular file";
+    // A hard link could be to the host's setuid darling; installArchive never produces either.
+    if (launcher.st_nlink != 1) return QString(launcherPath) + " has another hard link";
+    if (launcher.st_mode & (S_ISUID | S_ISGID)) return QString(launcherPath) + " is setuid or setgid";
     return {};
 }
 QString extractedTreeError(const QString &dir) {
