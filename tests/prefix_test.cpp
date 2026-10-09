@@ -451,6 +451,18 @@ private slots:
         const QString error = installArchive(archive, sha256File(archive), runtimes, "v2026.10.09-00000c1", gh, "VibeDarling/darling", roomyUnpackedSize);
         QVERIFY2(error.contains("needs escaping"), qPrintable(error));
     }
+    // QA Gate 2 N6: the write-through check compared every member with every earlier symlink (60k members with
+    // 10k links took 47 s). It is now linear.
+    void vettingLargeListingsIsFast() {
+        using namespace LauncherReleases;
+        QStringList listing;
+        for (int i = 0; i < 10000; ++i) listing << "lrwxrwxrwx 0/0 0 2026-10-09 14:32 usr/local/l" + QString::number(i) + " -> bin";
+        for (int i = 0; i < 50000; ++i) listing << "-rw-r--r-- 0/0 1 2026-10-09 14:32 usr/local/d" + QString::number(i % 100) + "/f" + QString::number(i);
+        listing << "-rw-r--r-- 0/0 1 2026-10-09 14:32 usr/local/l9999/through";
+        QElapsedTimer clock; clock.start();
+        QVERIFY(vetMembers(listing).contains("writes through the symlink usr/local/l9999: usr/local/l9999/through"));
+        QVERIFY2(clock.elapsed() < 5000, qPrintable(QString::number(clock.elapsed()) + " ms"));
+    }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
         for (const char *good : {"v2026.10.09-3721b65", "v2026.10.09-3721b65-r2"}) QVERIFY2(validTag(good), good);

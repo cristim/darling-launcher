@@ -148,7 +148,7 @@ QString symlinkTargetError(const QString &link, const QString &target) {
 QString vetMembers(const QStringList &listing, qint64 *regularBytes) {
     // Owners must be numeric: tar prints uname/gname unescaped, so a name with spaces could shift the path column.
     static const QRegularExpression row(R"(^(\S)\S{9}\s+\d+/\d+\s+(\d+)\s+\d{4}-\d\d-\d\d\s\d\d:\d\d\s(.+)$)");
-    QStringList symlinks;
+    QSet<QString> symlinks;
     QString error;
     qint64 total = 0;
     for (const QString &line : listing) {
@@ -175,14 +175,17 @@ QString vetMembers(const QStringList &listing, qint64 *regularBytes) {
         if (path.startsWith('/') || path.split('/').contains("..")) return "archive member escapes the runtime folder: " + path;
         path = QDir::cleanPath(path);
         if (!insideInstallRoot(path)) return "archive member is outside usr/local: " + path;
-        for (const QString &link : symlinks)
-            if (path == link || path.startsWith(link + '/')) return "archive writes through the symlink " + link + ": " + path;
+        // The path itself and each of its ancestors, so the check stays linear in the number of members.
+        for (qsizetype end = path.size(); end > 0; end = path.lastIndexOf('/', end - 1)) {
+            const QString prefix = path.left(end);
+            if (symlinks.contains(prefix)) return "archive writes through the symlink " + prefix + ": " + path;
+        }
         if (type == QLatin1Char('l')) {
             for (const QString protectedPath : {QString(launcherPath), QString(runtimeMarker)})
                 if (protectedPath == path || protectedPath.startsWith(path + '/')) return "archive symlink replaces part of the runtime layout: " + path;
             error = symlinkTargetError(path, target);
             if (!error.isEmpty()) return "archive " + error;
-            symlinks << path;
+            symlinks.insert(path);
         }
     }
     if (regularBytes) *regularBytes = total;
