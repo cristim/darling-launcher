@@ -117,6 +117,7 @@ private slots:
         run({"tar", "--zstd", "-cf", "linked.tar.zst", "-C", "linked", "usr"});
         const QString linked = root + "/linked.tar.zst";
         QVERIFY(installArchive(linked, digest(linked), runtimes, "v2026.10.09-aaaaaaa", ghOk, repo, roomyUnpackedSize).contains("runtime layout"));
+        QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-aaaaaaa")); QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-aaaaaaa.partial"));
         QVERIFY(installArchive(good, digest(good), runtimes, "latest", ghOk, repo, roomyUnpackedSize).contains("not a release tag"));
         QVERIFY2(installArchive(good, QString(64, '0'), runtimes, tag, ghOk, repo, roomyUnpackedSize).contains("SHA-256 mismatch"), "digest");
         QVERIFY(installArchive(good, digest(good), runtimes, tag, ghBad, repo, roomyUnpackedSize).contains("attestation verification failed"));
@@ -364,6 +365,41 @@ private slots:
         const QString overrun = installArchive(good, sha256File(good), runtimes, "v2026.10.09-0000013", gh, "VibeDarling/darling", 1);
         QVERIFY2(overrun.contains("extraction wrote more than"), qPrintable(overrun)); QVERIFY2(clock.elapsed() < 8000, qPrintable(QString::number(clock.elapsed())));
         QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-0000013")); QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-0000013.partial"));
+    }
+    // Security P2 harness cases unamespace and abslink_write, plus the review's gnameabs and an absolute relchain:
+    // every one is refused and nothing appears anywhere outside the runtimes folder.
+    void hostileArchivesWriteNothingOutside() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes", canary = root + "/canary";
+        QVERIFY(QDir().mkpath(canary));
+        const QString gh = writeScript(root + "/gh", "exit 0"); QVERIFY(!gh.isEmpty());
+        QJsonObject unamespace = fileMember("../../../" + canary.mid(1) + "/unamespace"); unamespace.insert("uname", "u 0/0 0 2026-01-01 00:00 usr/local/ok");
+        QJsonObject gnameabs = fileMember(canary + "/gnameabs"); gnameabs.insert("gname", "x 0 2026-01-01 00:00 usr/local/fake"); gnameabs.insert("uname", "a b");
+        // Python's tarfile keeps the first 32 bytes of uname/gname, which still holds the spoof shape.
+        const struct { const char *name; QJsonArray extra; const char *reason; } cases[] = {
+            {"unamespace", {unamespace}, "escapes the runtime folder"},
+            {"abslink_write", {linkMember("usr/local/lnk", canary), fileMember("usr/local/lnk/abslink_write")}, "not on the allow-list"},
+            {"gnameabs", {gnameabs}, "escapes the runtime folder"},
+            {"relchain", {linkMember("usr/local/y", "../../../../../../../../../" + canary.mid(1)), linkMember("usr/local/x", "y"), fileMember("usr/local/x/relchain")}, "points outside usr/local"},
+        };
+        auto outside = [&] {
+            QStringList paths;
+            QDirIterator entries(root, QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+            while (entries.hasNext()) { const QString path = entries.next(); if (path != runtimes && !path.startsWith(runtimes + "/")) paths << path; }
+            paths.sort(); return paths;
+        };
+        int index = 0;
+        for (const auto &shape : cases) {
+            QJsonArray members = runtimeMembers(); for (const auto &member : shape.extra) members.append(member);
+            const QString archive = makeArchive(root, shape.name, members); QVERIFY(!archive.isEmpty());
+            const QStringList before = outside();
+            const QString tag = "v2026.10.09-00000a" + QString::number(index++);
+            const QString error = installArchive(archive, sha256File(archive), runtimes, tag, gh, "VibeDarling/darling", roomyUnpackedSize);
+            QVERIFY2(error.contains(shape.reason), qPrintable(QString(shape.name) + ": " + error));
+            QCOMPARE(outside(), before);
+            QVERIFY2(!QFileInfo::exists(runtimes + "/" + tag) && !QFileInfo::exists(runtimes + "/" + tag + ".partial"), shape.name);
+        }
+        QVERIFY(QDir(canary).isEmpty());
     }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
