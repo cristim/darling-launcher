@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "prefixbuilder.h"
 #include "discovery.h"
+#include "releases.h"
 #include "log.h"
 #include <QDir>
 #include <QFile>
@@ -37,6 +38,29 @@ private slots:
         clone.start(git, LauncherDiscovery::cloneArguments(original, destination));
         QVERIFY(clone.waitForFinished()); QVERIFY(clone.exitCode() != 0);
         QVERIFY(QFileInfo::exists(original + "/.git"));
+    }
+    void releaseTagsAndSelection() {
+        using namespace LauncherReleases;
+        QVERIFY(parseTag("2026-10-09-14-32-3721b65")); QCOMPARE(parseTag("2026-10-09-14-32-3721b65")->time, QDateTime(QDate(2026, 10, 9), QTime(14, 32), Qt::UTC));
+        for (const char *bad : {"v2026.10.09-3721b65", "2026-10-09-14-32", "2026-13-09-14-32-3721b65", "2026-10-09-25-32-3721b65", "2026-10-09-14-32-XYZ", "2026-10-09T14:32-3721b65"}) QVERIFY2(!parseTag(bad), bad);
+        auto release = [](const QString &tag, const QString &published, bool draft, const QStringList &assets) {
+            QJsonArray list; for (const auto &name : assets) list.append(QJsonObject{{"name", name}, {"browser_download_url", "https://example.invalid/" + tag + "/" + name}, {"digest", "sha256:" + QString(64, 'a')}});
+            return QJsonObject{{"tag_name", tag}, {"published_at", published}, {"draft", draft}, {"assets", list}};
+        };
+        const QString arm = assetName("runtime", "arm64");
+        QCOMPARE(arm, QString("darling-runtime-arm64.tar.zst"));
+        QJsonArray list{release("2026-10-08-10-00-aaaaaaa", "2026-10-08T10:01:00Z", false, {arm}), release("2026-10-09-14-32-3721b65", "2026-10-09T14:35:00Z", false, {arm, assetName("runtime", "x86_64")}),
+                        release("2026-10-10-09-00-bbbbbbb", "2026-10-10T09:01:00Z", true, {arm}), release("garbage", "2026-10-11T09:01:00Z", false, {arm})};
+        auto chosen = latest(list, "runtime", "arm64"); QVERIFY2(chosen.valid(), qPrintable(chosen.error));
+        QCOMPARE(chosen.release.tag, QString("2026-10-09-14-32-3721b65")); QCOMPARE(chosen.asset.sha256, QString(64, 'a')); QVERIFY(chosen.asset.url.endsWith(arm));
+        QVERIFY(latest(list, "runtime", "x86_64").valid());
+        QVERIFY(latest(list, "runtime", "riscv64").error.contains("has no darling-runtime-riscv64.tar.zst"));
+        QVERIFY(latest(QJsonArray{release("2026-10-09-14-32-3721b65", "2026-10-09T14:35:00Z", false, {})}, "runtime", "arm64").error.contains("has no"));
+        QVERIFY(latest({}, "runtime", "arm64").error.contains("No usable release"));
+        auto noDigest = release("2026-10-09-14-32-3721b65", "2026-10-09T14:35:00Z", false, {arm}); auto assets = noDigest.value("assets").toArray(); auto first = assets.first().toObject(); first.remove("digest"); assets.replace(0, first); noDigest.insert("assets", assets);
+        QVERIFY(latest(QJsonArray{noDigest}, "runtime", "arm64").error.contains("SHA-256"));
+        QVERIFY(latest(QJsonArray{release("2026-10-09-14-32-aaaaaaa", "2026-10-09T14:35:00Z", false, {arm}), release("2026-10-09-14-32-bbbbbbb", "2026-10-09T14:35:00Z", false, {arm})}, "runtime", "arm64").error.contains("cannot be ordered"));
+        QCOMPARE(latest(QJsonArray{release("2026-10-09-14-32-aaaaaaa", "2026-10-09T14:35:00Z", false, {arm}), release("2026-10-09-14-32-bbbbbbb", "2026-10-09T14:40:00Z", false, {arm})}, "runtime", "arm64").release.sha, QString("bbbbbbb"));
     }
     void prebuiltRuntimesAreDiscoveredByTag() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("HOME", temporary.path().toUtf8());
