@@ -73,6 +73,8 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 #include <QSet>
 #include <QDirIterator>
 #include <sys/stat.h>
+#include <climits>
+#include <unistd.h>
 namespace LauncherReleases {
 static QString sha256Of(const QString &path, QString *error) {
     QFile file(path);
@@ -82,17 +84,59 @@ static QString sha256Of(const QString &path, QString *error) {
     return hash.result().toHex();
 }
 static bool insideInstallRoot(const QString &path) { return path == "usr" || path == installRoot || path.startsWith(QString(installRoot) + '/'); }
+// The only absolute symlinks a runtime may contain: exactly the 15 in the R1 pilot image
+// (ci-binaries/local-pkg/darling-runtime-v0.test-linux-aarch64.tar.zst, `tar --zstd -tvf`). They resolve inside
+// the guest root at run time. A new one in a future image must be reviewed and added here.
+static const struct { const char *link, *target; } absoluteSymlinks[] = {
+    {"usr/local/libexec/darling/usr/bin/erb", "/System/Library/Frameworks/Ruby.framework/Versions/2.6/usr/bin/erb"},
+    {"usr/local/libexec/darling/usr/bin/gem", "/System/Library/Frameworks/Ruby.framework/Versions/2.6/usr/bin/gem"},
+    {"usr/local/libexec/darling/usr/bin/irb", "/System/Library/Frameworks/Ruby.framework/Versions/2.6/usr/bin/irb"},
+    {"usr/local/libexec/darling/usr/bin/rake", "/System/Library/Frameworks/Ruby.framework/Versions/2.6/usr/bin/rake"},
+    {"usr/local/libexec/darling/usr/bin/rdoc", "/System/Library/Frameworks/Ruby.framework/Versions/2.6/usr/bin/rdoc"},
+    {"usr/local/libexec/darling/usr/bin/ri", "/System/Library/Frameworks/Ruby.framework/Versions/2.6/usr/bin/ri"},
+    {"usr/local/libexec/darling/usr/bin/ruby", "/System/Library/Frameworks/Ruby.framework/Versions/2.6/usr/bin/ruby"},
+    {"usr/local/libexec/darling/usr/lib/libcom_err.dylib", "/System/Library/Frameworks/Kerberos.framework/Kerberos"},
+    {"usr/local/libexec/darling/usr/lib/libdes425.dylib", "/System/Library/Frameworks/Kerberos.framework/Kerberos"},
+    {"usr/local/libexec/darling/usr/lib/libgssapi_krb5.dylib", "/System/Library/Frameworks/Kerberos.framework/Kerberos"},
+    {"usr/local/libexec/darling/usr/lib/libk5crypto.dylib", "/System/Library/Frameworks/Kerberos.framework/Kerberos"},
+    {"usr/local/libexec/darling/usr/lib/libkrb4.dylib", "/System/Library/Frameworks/Kerberos.framework/Kerberos"},
+    {"usr/local/libexec/darling/usr/lib/libkrb5.dylib", "/System/Library/Frameworks/Kerberos.framework/Kerberos"},
+    {"usr/local/libexec/darling/usr/lib/libkrb524.dylib", "/System/Library/Frameworks/Kerberos.framework/Kerberos"},
+    {"usr/local/libexec/darling/usr/lib/libkrb5support.dylib", "/System/Library/Frameworks/Kerberos.framework/Kerberos"},
+};
+QString symlinkTargetError(const QString &link, const QString &target) {
+    if (target.startsWith('/')) {
+        for (const auto &allowed : absoluteSymlinks)
+            if (link == allowed.link && target == allowed.target) return {};
+        return "symlink " + link + " has an absolute target that is not on the allow-list: " + target;
+    }
+    // Only leading ".." may climb, and only from the link's own folder, whose parents are real folders because
+    // nothing is extracted below a symlink. A ".." after a name could climb out of a symlinked folder instead.
+    const QStringList parts = target.split('/');
+    qsizetype climb = 0;
+    while (climb < parts.size() && parts[climb] == "..") ++climb;
+    for (qsizetype i = climb; i < parts.size(); ++i)
+        if (parts[i].isEmpty() || parts[i] == "." || parts[i] == ".." || parts[i].contains('\\')) return "symlink " + link + " has an unsupported target: " + target;
+    const QString resolved = QDir::cleanPath(link.section('/', 0, -2) + '/' + target);
+    if (resolved != installRoot && !resolved.startsWith(QString(installRoot) + '/')) return "symlink " + link + " points outside usr/local: " + target;
+    return {};
+}
 QString vetMembers(const QStringList &listing) {
     // Owners must be numeric: tar prints uname/gname unescaped, so a name with spaces could shift the path column.
     static const QRegularExpression row(R"(^(\S)\S{9}\s+\d+/\d+\s+\d+\s+\d{4}-\d\d-\d\d\s\d\d:\d\d\s(.+)$)");
     QStringList symlinks;
+    QString error;
     for (const QString &line : listing) {
         if (line.isEmpty()) continue;
         const auto match = row.match(line);
         if (!match.hasMatch()) return "unparsable archive member: " + line;
         const QChar type = match.captured(1).at(0);
         QString path = match.captured(2);
-        if (type == QLatin1Char('l')) { if (path.count(" -> ") != 1) return "archive symlink name or target contains ' -> ': " + path; path = path.section(" -> ", 0, 0); }
+        QString target;
+        if (type == QLatin1Char('l')) {
+            if (path.count(" -> ") != 1) return "archive symlink name or target contains ' -> ': " + path;
+            target = path.section(" -> ", 1); path = path.section(" -> ", 0, 0);
+        }
         else if (path.contains(" -> ")) return "archive member name contains ' -> ': " + path;
         if (path.contains('\\')) return "archive member name needs escaping: " + path;
         if (type == QLatin1Char('h') || type == QLatin1Char('c') || type == QLatin1Char('b') || type == QLatin1Char('p'))
@@ -106,6 +150,8 @@ QString vetMembers(const QStringList &listing) {
         if (type == QLatin1Char('l')) {
             for (const QString protectedPath : {QString(launcherPath), QString(runtimeMarker)})
                 if (protectedPath == path || protectedPath.startsWith(path + '/')) return "archive symlink replaces part of the runtime layout: " + path;
+            error = symlinkTargetError(path, target);
+            if (!error.isEmpty()) return "archive " + error;
             symlinks << path;
         }
     }
@@ -129,7 +175,16 @@ QString extractedTreeError(const QString &dir) {
         if (lstat(QFile::encodeName(path).constData(), &info) != 0) return "cannot inspect extracted entry " + relative;
         // QDirIterator silently skips a folder it cannot open, so such a folder would hide its contents from this walk.
         if (S_ISDIR(info.st_mode) && (info.st_mode & S_IRWXU) != S_IRWXU) return "extracted folder is not readable, writable and searchable by its owner: " + relative;
-        if (S_ISLNK(info.st_mode) || S_ISDIR(info.st_mode)) continue;
+        if (S_ISLNK(info.st_mode)) {
+            QByteArray target(PATH_MAX, '\0');
+            const ssize_t length = readlink(QFile::encodeName(path).constData(), target.data(), target.size());
+            if (length < 0 || length >= target.size()) return "cannot read extracted symlink " + relative;
+            target.truncate(length);
+            const QString error = symlinkTargetError(relative, QFile::decodeName(target));
+            if (!error.isEmpty()) return "extracted " + error;
+            continue;
+        }
+        if (S_ISDIR(info.st_mode)) continue;
         if (!S_ISREG(info.st_mode)) return "extracted entry is not a file, folder or symlink: " + relative;
         if (info.st_nlink != 1) return "extracted file has another hard link: " + relative;
         if (info.st_mode & (S_ISUID | S_ISGID)) return "extracted file is setuid or setgid: " + relative;
