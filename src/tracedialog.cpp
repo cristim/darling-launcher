@@ -5,12 +5,10 @@
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
-#include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
-#include <QSaveFile>
 #include <QTableWidget>
 #include <QUrl>
 #include <QHeaderView>
@@ -34,18 +32,17 @@ void showTraceLog(QWidget *parent, const QString &prefix) {
             table->setItem(i, 0, new QTableWidgetItem(row.image)); table->setItem(i, 1, new QTableWidgetItem(row.symbol));
             table->setItem(i, 2, new QTableWidgetItem(QString::number(row.count))); table->setItem(i, 3, new QTableWidgetItem(row.details));
         }
-        QStringList parts; if (files->count() == 0) parts << "No trace logs in " + directory;
+        QStringList parts; if (summary->unreadable) parts << "Cannot read this file"; if (files->count() == 0) parts << "No trace logs in " + directory;
         if (summary->skipped > 0) parts << QString::number(summary->skipped) + " lines skipped";
         if (summary->truncated) parts << "File larger than the read limit; only the beginning is shown";
         note->setText(parts.join(". "));
     };
-    auto *buttons = new QHBoxLayout; auto *open = new QPushButton("Open trace log folder"); open->setObjectName("openTraceLog"); auto *save = new QPushButton("Export summary…"); save->setObjectName("exportTraceSummary");
+    auto *buttons = new QHBoxLayout; auto *open = new QPushButton("Open trace log folder"); open->setObjectName("openTraceLog"); auto *save = new QPushButton("Export summary"); save->setObjectName("exportTraceSummary");
     buttons->addWidget(open); buttons->addWidget(save); buttons->addStretch();
     QObject::connect(open, &QPushButton::clicked, dialog, [directory] { QDesktopServices::openUrl(QUrl::fromLocalFile(directory)); });
     QObject::connect(save, &QPushButton::clicked, dialog, [=] {
-        const QString target = QFileDialog::getSaveFileName(dialog, "Export summary (names and counts only)", QDir::homePath() + "/missing-symbols.tsv");
-        if (target.isEmpty()) return;
-        QSaveFile out(target); if (out.open(QIODevice::WriteOnly)) { out.write(LauncherTrace::exportSummary(*summary).toUtf8()); out.commit(); }
+        QString path, error;
+        note->setText(LauncherTrace::writeSummary(prefix, *summary, &path, &error) ? "Summary (names and counts only) saved to " + path : error);
     });
     QObject::connect(files, &QComboBox::currentIndexChanged, dialog, load);
     layout->addWidget(files); layout->addWidget(note); layout->addWidget(table); layout->addLayout(buttons);

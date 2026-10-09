@@ -7,7 +7,9 @@
 
 namespace LauncherTrace {
 struct Row { QString image, symbol, details; qint64 count = 0; };
-struct Summary { QList<Row> rows; int skipped = 0; bool truncated = false; };
+inline constexpr int MaxText = 256, MaxLine = 64 * 1024, MaxRows = 10000;
+inline constexpr qint64 MaxLineCount = 1000000000, MaxCount = 1000000000000;
+struct Summary { QList<Row> rows; int skipped = 0; bool truncated = false, unreadable = false; };
 
 QStringList modes();
 bool validMode(const QString &mode);
@@ -20,4 +22,6 @@ bool prepareLog(const QString &prefix, const QString &app, QString *logPath, QSt
 bool applyTrace(QProcessEnvironment &env, const QString &prefix, const QString &app, bool enabled, const QString &mode, QString *logPath, QString *error);
 Summary parse(const QString &path, qint64 maxBytes = 8 << 20);
 QString exportSummary(const Summary &summary);
+// Writes the names-and-counts summary as a new 0600 file in the private trace directory.
+bool writeSummary(const QString &prefix, const Summary &summary, QString *path, QString *error);
 }

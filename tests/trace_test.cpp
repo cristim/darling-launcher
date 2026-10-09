@@ -52,6 +52,48 @@ private slots:
         QCOMPARE(summary.rows[1].count, 1);
         QVERIFY(!LauncherTrace::exportSummary(summary).contains("0x10"));
     }
+    void offStripsInheritedVariables() {
+        QTemporaryDir prefix; QVERIFY(prefix.isValid());
+        QProcessEnvironment env; env.insert("KEEP", "1"); env.insert(TraceVars::Mode, "trap"); env.insert(TraceVars::Log, "/x"); env.insert(QString(TraceVars::Mode) + "_FUTURE", "1");
+        QString error; QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", false, "log", nullptr, &error));
+        QCOMPARE(env.keys(), QStringList{"KEEP"});
+        env.insert(TraceVars::Log, "/elsewhere"); QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", true, "log", nullptr, &error));
+        QVERIFY(env.value(TraceVars::Log).startsWith(LauncherTrace::traceDirectory(prefix.path())));
+    }
+    void countersSaturateAndLongLinesAreSkipped() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QByteArray data;
+        for (int i = 0; i < 2000; ++i) data += "{\"image\":\"/F\",\"symbol\":\"_a\",\"count\":900000000}\n";
+        data += "{\"image\":\"/F\",\"symbol\":\"_b\",\"count\":1e300}\n{\"symbol\":\"" + QByteArray(100000, 'x') + "\"}\n";
+        const auto summary = LauncherTrace::parse(write(dir.path() + "/c.jsonl", data));
+        QCOMPARE(summary.skipped, 1); QCOMPARE(summary.rows.size(), 2);
+        QCOMPARE(summary.rows[0].count, LauncherTrace::MaxCount);
+        QCOMPARE(summary.rows[1].count, 1);
+    }
+    void rowCountIsCapped() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QByteArray data; for (int i = 0; i < LauncherTrace::MaxRows + 50; ++i) data += "{\"symbol\":\"s" + QByteArray::number(i) + "\"}\n";
+        const auto summary = LauncherTrace::parse(write(dir.path() + "/r.jsonl", data));
+        QCOMPARE(summary.rows.size(), LauncherTrace::MaxRows); QVERIFY(summary.truncated); QCOMPARE(summary.skipped, 50);
+    }
+    void hostileTextCannotForgeOutput() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const auto summary = LauncherTrace::parse(write(dir.path() + "/h.jsonl", "{\"image\":\"/F\\t9\\n/Forged\",\"symbol\":\"_a\\u001b[31m\\nforged\\t1\\r\\u202e\",\"count\":1}\n{\"symbol\":\"" + QByteArray(5000, 'y') + "\"}\n"));
+        QCOMPARE(summary.rows.size(), 2);
+        for (const auto &row : summary.rows) for (const QString &text : {row.image, row.symbol}) { QVERIFY(text.size() <= LauncherTrace::MaxText); for (QChar c : text) QVERIFY(c.isPrint() && c != '\t' && c != '\n' && c != QChar(0x202e)); }
+        const QString exported = LauncherTrace::exportSummary(summary);
+        QCOMPARE(exported.count('\n'), 3); for (const QString &line : exported.split('\n', Qt::SkipEmptyParts)) QCOMPARE(line.count('\t'), 2);
+    }
+    void symlinkedLogIsNotFollowedAndSummaryIsPrivate() {
+        QTemporaryDir prefix, other; QVERIFY(prefix.isValid() && other.isValid());
+        const QString target = write(other.path() + "/real.jsonl", "{\"symbol\":\"_a\"}\n");
+        QVERIFY(QFile::link(target, other.path() + "/link.jsonl"));
+        QVERIFY(LauncherTrace::parse(other.path() + "/link.jsonl").unreadable);
+        QString path, error; LauncherTrace::Summary summary; summary.rows.append({"/F", "_a", {}, 1});
+        QVERIFY2(LauncherTrace::writeSummary(prefix.path(), summary, &path, &error), qPrintable(error));
+        QCOMPARE(QFileInfo(path).permissions() & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther), QFileDevice::Permissions());
+        QVERIFY(!LauncherTrace::writeSummary(prefix.path(), summary, &path, &error) || QFileInfo(path).size() > 0);
+        QTemporaryDir swapped; QVERIFY(QDir().mkpath(swapped.path() + "/.darling-launcher")); QVERIFY(QFile::link(other.path(), LauncherTrace::traceDirectory(swapped.path())));
+        QVERIFY(!LauncherTrace::writeSummary(swapped.path(), summary, &path, &error)); QVERIFY(!QFileInfo::exists(other.path() + "/" + QFileInfo(path).fileName()));
+    }
     void parserCapsBytesRead() {
         QTemporaryDir dir; QVERIFY(dir.isValid()); QByteArray data; for (int i = 0; i < 1000; ++i) data += "{\"image\":\"/F\",\"symbol\":\"_s" + QByteArray::number(i) + "\"}\n";
         const auto summary = LauncherTrace::parse(write(dir.path() + "/big.jsonl", data), 4096);
