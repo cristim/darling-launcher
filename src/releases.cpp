@@ -257,7 +257,11 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     if (!error.isEmpty()) return error;
     const QString target = runtimesRoot + "/" + tag;
     if (QFileInfo::exists(target)) return target + " already exists";
+    // A fixed locale, so whether a non-ASCII name is escaped (and refused) does not depend on the user's LANG.
+    QProcessEnvironment tarEnvironment = QProcessEnvironment::systemEnvironment();
+    tarEnvironment.insert("LC_ALL", "C");
     QProcess list;
+    list.setProcessEnvironment(tarEnvironment);
     list.start("tar", {"--zstd", "--quoting-style=escape", "--numeric-owner", "-tvf", copy});
     if (!list.waitForFinished(600000) || list.exitStatus() != QProcess::NormalExit || list.exitCode() != 0)
         return "cannot list " + archive + ": " + QString::fromUtf8(list.readAllStandardError());
@@ -273,6 +277,7 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     auto abandon = [&](const QString &reason) { openFolders(staging); return QDir(staging).removeRecursively() ? reason : reason + "; cannot remove " + staging + ", remove it by hand"; };
     if (QFileInfo::exists(target)) return abandon(target + " already exists");
     QProcess extract;
+    extract.setProcessEnvironment(tarEnvironment);
     extract.start("tar", {"--zstd", "-xf", copy, "-C", staging, "--no-same-owner", "--no-same-permissions", "--no-overwrite-dir"});
     // Defence in depth against a tar or zstd bug: the listing check above already bounds what GNU tar writes.
     // Each scan stats the whole tree (tens of ms for the full image), hence the 2 s interval.
