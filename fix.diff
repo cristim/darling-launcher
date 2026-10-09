@@ -1,0 +1,662 @@
+diff --git c/CMakeLists.txt w/CMakeLists.txt
+index 68c79d7..72966ed 100644
+--- c/CMakeLists.txt
++++ w/CMakeLists.txt
+@@ -7,16 +7,19 @@ set(CMAKE_AUTOMOC ON)
+ find_package(Qt6 REQUIRED COMPONENTS Core Widgets Test Concurrent)
+ find_package(PkgConfig REQUIRED)
+ pkg_check_modules(PLIST REQUIRED IMPORTED_TARGET libplist-2.0)
+-add_library(launcher_core src/log.cpp src/core.cpp src/mount.cpp src/prefixbuilder.cpp src/discovery.cpp src/sources.cpp)
++add_library(launcher_core src/log.cpp src/core.cpp src/mount.cpp src/prefixbuilder.cpp src/discovery.cpp src/sources.cpp src/trace.cpp)
+ target_include_directories(launcher_core PUBLIC src)
+ target_link_libraries(launcher_core PUBLIC Qt6::Core PkgConfig::PLIST)
+-add_executable(darling-launcher src/main.cpp src/window.cpp src/mountdialog.cpp src/appbrowser.cpp src/prefixdialog.cpp src/troubleshooting.cpp)
++add_executable(darling-launcher src/main.cpp src/window.cpp src/mountdialog.cpp src/appbrowser.cpp src/prefixdialog.cpp src/troubleshooting.cpp src/tracedialog.cpp)
+ target_link_libraries(darling-launcher PRIVATE launcher_core Qt6::Widgets Qt6::Concurrent)
+ target_compile_definitions(darling-launcher PRIVATE LAUNCHER_MOUNT_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/tools/mount-macos.py")
+ enable_testing()
+ add_executable(launcher-tests tests/core_test.cpp)
+ target_link_libraries(launcher-tests PRIVATE launcher_core Qt6::Test)
+ add_test(NAME launcher-tests COMMAND launcher-tests -nocrashhandler)
++add_executable(launcher-trace-tests tests/trace_test.cpp)
++target_link_libraries(launcher-trace-tests PRIVATE launcher_core Qt6::Test)
++add_test(NAME launcher-trace-tests COMMAND launcher-trace-tests -nocrashhandler)
+ add_executable(launcher-mount-tests tests/mount_test.cpp)
+ target_link_libraries(launcher-mount-tests PRIVATE launcher_core Qt6::Test)
+ add_test(NAME launcher-mount-tests COMMAND launcher-mount-tests -nocrashhandler)
+@@ -24,7 +27,7 @@ add_executable(launcher-prefix-tests tests/prefix_test.cpp)
+ target_link_libraries(launcher-prefix-tests PRIVATE launcher_core Qt6::Test)
+ target_compile_definitions(launcher-prefix-tests PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+ add_test(NAME launcher-prefix-tests COMMAND launcher-prefix-tests -nocrashhandler)
+-add_executable(launcher-gui-tests tests/gui_test.cpp src/window.cpp src/mountdialog.cpp src/appbrowser.cpp src/prefixdialog.cpp src/troubleshooting.cpp)
++add_executable(launcher-gui-tests tests/gui_test.cpp src/window.cpp src/mountdialog.cpp src/appbrowser.cpp src/prefixdialog.cpp src/troubleshooting.cpp src/tracedialog.cpp)
+ target_link_libraries(launcher-gui-tests PRIVATE launcher_core Qt6::Widgets Qt6::Concurrent Qt6::Test)
+ target_compile_definitions(launcher-gui-tests PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" LAUNCHER_MOUNT_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/tools/mount-macos.py")
+ add_test(NAME launcher-gui-tests COMMAND launcher-gui-tests -nocrashhandler)
+diff --git c/RESULT.md w/RESULT.md
+new file mode 100644
+index 0000000..4061137
+--- /dev/null
++++ w/RESULT.md
+@@ -0,0 +1,53 @@
++# Launcher missing-symbol trace option (local branch only, not pushed)
++
++Branch feat/missing-symbol-trace-option from origin/main; 3 commits (git log). Patch: fix.diff (git diff origin/main). Names provisional in src/tracevars.h. C++/Qt only, no helpers.
++
++## Behaviour (v1, names-only log mode)
++- Checkbox "Trace missing symbols" in the launch recovery dialog, remembered (recovery/trace). No mode combo, no raw words anywhere.
++- Env (DARLING_MISSING_SYMBOLS=log, DARLING_MISSING_SYMBOLS_LOG=<path>) set only on the launched app's QProcess, only when checked. Off: any inherited DARLING_MISSING_SYMBOLS* is stripped.
++- Elevated darling (setuid/setgid binary, unstatable binary, or euid 0): checkbox disabled with notice, variables never set.
++- Log: <prefix>/.darling-launcher/trace/<app>-<UTC>.jsonl, dir 0700 user-owned, file 0600 created O_EXCL|O_NOFOLLOW via openat on the verified dir fd.
++- Viewer ("Missing-symbol trace log..."): image, symbol, count, first-call order; "N lines skipped", read-cap notice; Open trace log folder (QDesktopServices); Export summary writes a new 0600 TSV (image, symbol, count) in the trace dir.
++- Security fixes: saturating counters and caps (line 64 KiB, 10000 rows, 256 chars/text), control/format chars replaced in table and export, parse() opens O_NOFOLLOW + fstat regular file.
++
++## Verified (heavy lock, flock -o, -j1, offscreen)
++- launcher-trace-tests 14/14: off identical env, inherited vars stripped, on sets both vars under private dir, symlinked/exposed/foreign-owned dir refused, setuid/setgid fake binaries and euid 0 get no vars, garbage tolerated, counter saturation, row cap, hostile text cannot forge export lines, symlinked log not followed, summary 0600.
++- GUI test (checkbox persistence, fake-darling launch off/on, elevated checkbox disabled) passes.
++
++## NOT verified
++- New regression tests were not run against the pre-fix code to see them fail (they were written with the fixes).
++- Full launcher-gui-tests suite previously hit its 240 s ctest timeout on the loaded machine; not rerun in full after these changes.
++- No real runtime consumer; JSONL schema (image, symbol, count) is a guess. Pre-commit Opus review passes not done.
++
++## Open questions
++- Platform: final env names/schema; does a setuid mldr ignore the vars (launcher currently refuses to set them when elevated).
++- Compliance: checkbox label text is a placeholder.
++- Security: parent .darling-launcher only checked for symlink/owner, not mode; stat failure of the darling path counts as elevated (fail closed).
++
++## Gate evidence (added)
++### Regression tests fail on pre-fix equivalents
++Scratch copy of the tip with the fixes mutated out (no text cap/sanitizing, no saturation, no O_NOFOLLOW in parse, no env stripping, elevated ignored, greying removed). Output:
++```
++FAIL!  : TraceTest::elevatedDarlingNeverGetsVariables() 'env.isEmpty()' returned FALSE. ()
++   Loc: [scratch/tests/trace_test.cpp(63)]
++FAIL!  : TraceTest::offStripsInheritedVariables() Compared lists have different sizes.
++   Actual   (env.keys()) size: 4
++   Expected (QStringList{"KEEP"}) size: 1
++   Loc: [scratch/tests/trace_test.cpp(73)]
++FAIL!  : TraceTest::countersSaturateAndLongLinesAreSkipped() Compared values are not the same
++   Actual   (summary.skipped): 0
++   Expected (1)              : 1
++   Loc: [scratch/tests/trace_test.cpp(82)]
++FAIL!  : TraceTest::hostileTextCannotForgeOutput() 'c.isPrint() && c != '\t' && c != '\n' && c != QChar(0x202e)' returned FALSE. ()
++   Loc: [scratch/tests/trace_test.cpp(95)]
++FAIL!  : TraceTest::symlinkedLogIsNotFollowedAndSummaryIsPrivate() 'LauncherTrace::parse(other.path() + "/link.jsonl").unreadable' returned FALSE. ()
++   Loc: [scratch/tests/trace_test.cpp(103)]
++Totals: 9 passed, 5 failed, 0 skipped, 0 blacklisted, 90ms
++FAIL!  : GuiTest::traceOptionPersistsAndOnlyTracedLaunchGetsVariables() '!box->isEnabled()' returned FALSE. ()
++   Loc: [scratch/tests/gui_test.cpp(102)]
++Totals: 2 passed, 1 failed, 0 skipped, 0 blacklisted, 110ms
++```
++Note: countersSaturate fails first on the long-line skip, which masks the saturation assert; rowCountIsCapped and parserCapsBytesRead pass on the mutation (row cap was not mutated).
++### Full launcher-gui-tests (900 s cap via timeout, offscreen, flock -o)
++- Base (origin/main): 39 passed, 1 failed (closeDuringLaunch: fatal error).
++- Tip: 40 passed, 1 failed (same closeDuringLaunch). The extra pass is the new trace test; no other differences.
+diff --git c/src/trace.cpp w/src/trace.cpp
+new file mode 100644
+index 0000000..6fef9a6
+--- /dev/null
++++ w/src/trace.cpp
+@@ -0,0 +1,126 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "trace.h"
++#include "tracevars.h"
++#include <QDateTime>
++#include <QDir>
++#include <QFile>
++#include <QJsonArray>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QMap>
++#include <QRegularExpression>
++#include <algorithm>
++#include <cerrno>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++namespace {
++bool fail(QString *error, const QString &message) { if (error) *error = message; return false; }
++// Opens without following a final symlink and checks the opened descriptor, so later openat() calls cannot be redirected.
++int openDirectory(const QString &path, bool requirePrivate, QString *error) {
++    const QByteArray native = QFile::encodeName(path);
++    if (::mkdir(native.constData(), 0700) != 0 && errno != EEXIST) { fail(error, "Cannot create " + path); return -1; }
++    const int fd = ::open(native.constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++    if (fd < 0) { fail(error, path + " is not a plain directory"); return -1; }
++    struct stat info;
++    if (::fstat(fd, &info) != 0 || info.st_uid != ::geteuid()) { ::close(fd); fail(error, path + " is not owned by you"); return -1; }
++    if (requirePrivate && (info.st_mode & 077)) { ::close(fd); fail(error, path + " is accessible to other users"); return -1; }
++    return fd;
++}
++// Creates a new 0600 file inside the verified directory; fails if the name exists, even as a symlink.
++bool createPrivateFile(const QString &prefix, const QString &name, QString *path, int *fdOut, QString *error) {
++    int parent = openDirectory(prefix + "/.darling-launcher", false, error);
++    if (parent < 0) return false;
++    ::close(parent);
++    const int dir = openDirectory(LauncherTrace::traceDirectory(prefix), true, error);
++    if (dir < 0) return false;
++    const int fd = ::openat(dir, QFile::encodeName(name).constData(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
++    ::close(dir);
++    if (fd < 0) return fail(error, "Cannot create " + name);
++    *path = LauncherTrace::traceDirectory(prefix) + '/' + name; *fdOut = fd;
++    return true;
++}
++QString utcName(const QString &stem, const char *extension) { return stem + '-' + QDateTime::currentDateTimeUtc().toString("yyyyMMdd'T'HHmmss'Z'") + extension; }
++// Log content is untrusted: control and format characters are replaced so it cannot forge lines or terminal escapes.
++QString clean(const QString &text) {
++    QString out = text.left(LauncherTrace::MaxText);
++    for (QChar &c : out) if (!c.isPrint() || c.category() == QChar::Other_Format || c.category() == QChar::Separator_Line || c.category() == QChar::Separator_Paragraph) c = '?';
++    return out;
++}
++}
++
++bool LauncherTrace::elevated(const QString &darling, uid_t euid) {
++    struct stat info;
++    return euid == 0 || ::stat(QFile::encodeName(darling).constData(), &info) != 0 || (info.st_mode & (S_ISUID | S_ISGID));
++}
++QString LauncherTrace::traceDirectory(const QString &prefix) { return prefix + "/.darling-launcher/" + TraceVars::TraceDirName; }
++
++bool LauncherTrace::ensurePrivateDirectory(const QString &path, QString *error, bool requirePrivate) {
++    const int fd = openDirectory(path, requirePrivate, error);
++    if (fd >= 0) ::close(fd);
++    return fd >= 0;
++}
++
++bool LauncherTrace::prepareLog(const QString &prefix, const QString &app, QString *logPath, QString *error) {
++    QString safe = app; safe.replace(QRegularExpression("[^A-Za-z0-9._-]"), "_"); if (safe.isEmpty() || safe.startsWith('.')) safe.prepend('_');
++    int fd = -1;
++    if (!createPrivateFile(prefix, utcName(safe.left(64), ".jsonl"), logPath, &fd, error)) return false;
++    ::close(fd);
++    return true;
++}
++
++bool LauncherTrace::applyTrace(QProcessEnvironment &env, const QString &prefix, const QString &app, bool enabled, const QString &darling, QString *logPath, QString *error) {
++    for (const auto &name : env.keys()) if (name.startsWith(TraceVars::Mode)) env.remove(name);
++    if (!enabled || elevated(darling)) return true;
++    QString path;
++    if (!prepareLog(prefix, app, &path, error)) return false;
++    env.insert(TraceVars::Mode, TraceVars::ModeLog); env.insert(TraceVars::Log, path);
++    if (logPath) *logPath = path;
++    return true;
++}
++
++LauncherTrace::Summary LauncherTrace::parse(const QString &path, qint64 maxBytes) {
++    Summary summary;
++    const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
++    struct stat info;
++    QFile file;
++    if (fd < 0 || ::fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) || !file.open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) { if (fd >= 0 && !file.isOpen()) ::close(fd); summary.unreadable = true; return summary; }
++    QByteArray data = file.read(maxBytes);
++    summary.truncated = !file.atEnd();
++    if (summary.truncated) { const int cut = data.lastIndexOf('\n'); data.truncate(cut < 0 ? 0 : cut); }
++    QMap<QPair<QString, QString>, Row> rows;
++    for (const QByteArray &line : data.split('\n')) {
++        if (line.trimmed().isEmpty()) continue;
++        if (line.size() > MaxLine) { ++summary.skipped; continue; }
++        QJsonParseError parseError; const auto object = QJsonDocument::fromJson(line, &parseError).object();
++        const QString symbol = clean(object.value("symbol").toString()), image = clean(object.value("image").toString());
++        if (parseError.error != QJsonParseError::NoError || symbol.isEmpty()) { ++summary.skipped; continue; }
++        const QPair<QString, QString> key{image, symbol};
++        if (!rows.contains(key) && rows.size() >= MaxRows) { ++summary.skipped; summary.truncated = true; continue; }
++        auto &row = rows[key];
++        if (row.symbol.isEmpty()) { row.image = image; row.symbol = symbol; row.order = rows.size() - 1; }
++        const double count = object.value("count").toDouble(1);
++        const qint64 add = count >= 1 && count <= MaxLineCount ? static_cast<qint64>(count) : 1;
++        row.count = qMin<qint64>(MaxCount, row.count + add);
++    }
++    summary.rows = rows.values();
++    std::sort(summary.rows.begin(), summary.rows.end(), [](const Row &x, const Row &y) { return x.order < y.order; });
++    return summary;
++}
++
++QString LauncherTrace::exportSummary(const Summary &summary) {
++    QString text = "image\tsymbol\tcount\n";
++    for (const auto &row : summary.rows) text += clean(row.image) + '\t' + clean(row.symbol) + '\t' + QString::number(row.count) + '\n';
++    return text;
++}
++
++bool LauncherTrace::writeSummary(const QString &prefix, const Summary &summary, QString *path, QString *error) {
++    int fd = -1;
++    if (!createPrivateFile(prefix, utcName("summary", ".tsv"), path, &fd, error)) return false;
++    QFile out;
++    if (!out.open(fd, QIODevice::WriteOnly, QFileDevice::AutoCloseHandle)) { ::close(fd); return fail(error, "Cannot write " + *path); }
++    const QByteArray bytes = exportSummary(summary).toUtf8();
++    if (out.write(bytes) != bytes.size()) return fail(error, "Cannot write " + *path);
++    return true;
++}
+diff --git c/src/trace.h w/src/trace.h
+new file mode 100644
+index 0000000..b20dc60
+--- /dev/null
++++ w/src/trace.h
+@@ -0,0 +1,28 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++#include <QList>
++#include <QProcessEnvironment>
++#include <QString>
++#include <QStringList>
++#include <unistd.h>
++
++namespace LauncherTrace {
++struct Row { QString image, symbol; qint64 count = 0; int order = 0; };
++inline constexpr int MaxText = 256, MaxLine = 64 * 1024, MaxRows = 10000;
++inline constexpr qint64 MaxLineCount = 1000000000, MaxCount = 1000000000000;
++struct Summary { QList<Row> rows; int skipped = 0; bool truncated = false, unreadable = false; };
++
++// True when darling would run with extra privileges (setuid/setgid binary or an elevated launcher); tracing is refused then.
++bool elevated(const QString &darling, uid_t euid = ::geteuid());
++QString traceDirectory(const QString &prefix);
++// Creates the directory if absent; refuses a symlink, a foreign owner and (when requirePrivate) group/other access.
++bool ensurePrivateDirectory(const QString &path, QString *error, bool requirePrivate = true);
++// Creates the per-prefix directory (0700, user-owned, never a symlink) and an empty 0600 log for this launch.
++bool prepareLog(const QString &prefix, const QString &app, QString *logPath, QString *error);
++// Adds the trace variables to a launched app's environment only; with trace off the environment is untouched.
++bool applyTrace(QProcessEnvironment &env, const QString &prefix, const QString &app, bool enabled, const QString &darling, QString *logPath, QString *error);
++Summary parse(const QString &path, qint64 maxBytes = 8 << 20);
++QString exportSummary(const Summary &summary);
++// Writes the names-and-counts summary as a new 0600 file in the private trace directory.
++bool writeSummary(const QString &prefix, const Summary &summary, QString *path, QString *error);
++}
+diff --git c/src/tracedialog.cpp w/src/tracedialog.cpp
+new file mode 100644
+index 0000000..3d8a812
+--- /dev/null
++++ w/src/tracedialog.cpp
+@@ -0,0 +1,50 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "tracedialog.h"
++#include "trace.h"
++#include <QComboBox>
++#include <QDesktopServices>
++#include <QDialog>
++#include <QDir>
++#include <QFileInfo>
++#include <QHBoxLayout>
++#include <QLabel>
++#include <QPushButton>
++#include <QTableWidget>
++#include <QUrl>
++#include <QHeaderView>
++#include <QVBoxLayout>
++#include <memory>
++
++void showTraceLog(QWidget *parent, const QString &prefix) {
++    auto *dialog = new QDialog(parent); dialog->setObjectName("traceLogDialog"); dialog->setWindowTitle("Missing-symbol trace log"); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->resize(720, 420);
++    auto *layout = new QVBoxLayout(dialog);
++    const QString directory = LauncherTrace::traceDirectory(prefix);
++    auto *files = new QComboBox; files->setObjectName("traceFiles");
++    for (const auto &info : QDir(directory).entryInfoList({"*.jsonl"}, QDir::Files | QDir::NoSymLinks, QDir::Time)) files->addItem(info.fileName(), info.absoluteFilePath());
++    auto *note = new QLabel; note->setObjectName("traceNote"); note->setWordWrap(true);
++    auto *table = new QTableWidget(0, 4); table->setObjectName("traceTable"); table->setHorizontalHeaderLabels({"Framework / image", "Symbol", "Count", "First call #"}); table->setEditTriggers(QAbstractItemView::NoEditTriggers); table->horizontalHeader()->setStretchLastSection(true);
++    auto summary = std::make_shared<LauncherTrace::Summary>();
++    auto load = [=] {
++        *summary = LauncherTrace::parse(files->currentData().toString());
++        table->setRowCount(summary->rows.size());
++        for (int i = 0; i < summary->rows.size(); ++i) {
++            const auto &row = summary->rows.at(i);
++            table->setItem(i, 0, new QTableWidgetItem(row.image)); table->setItem(i, 1, new QTableWidgetItem(row.symbol));
++            table->setItem(i, 2, new QTableWidgetItem(QString::number(row.count))); table->setItem(i, 3, new QTableWidgetItem(QString::number(row.order + 1)));
++        }
++        QStringList parts; if (summary->unreadable) parts << "Cannot read this file"; if (files->count() == 0) parts << "No trace logs in " + directory;
++        if (summary->skipped > 0) parts << QString::number(summary->skipped) + " lines skipped";
++        if (summary->truncated) parts << "File larger than the read limit; only the beginning is shown";
++        note->setText(parts.join(". "));
++    };
++    auto *buttons = new QHBoxLayout; auto *open = new QPushButton("Open trace log folder"); open->setObjectName("openTraceLog"); auto *save = new QPushButton("Export summary"); save->setObjectName("exportTraceSummary");
++    buttons->addWidget(open); buttons->addWidget(save); buttons->addStretch();
++    QObject::connect(open, &QPushButton::clicked, dialog, [directory] { QDesktopServices::openUrl(QUrl::fromLocalFile(directory)); });
++    QObject::connect(save, &QPushButton::clicked, dialog, [=] {
++        QString path, error;
++        note->setText(LauncherTrace::writeSummary(prefix, *summary, &path, &error) ? "Summary (names and counts only) saved to " + path : error);
++    });
++    QObject::connect(files, &QComboBox::currentIndexChanged, dialog, load);
++    layout->addWidget(files); layout->addWidget(note); layout->addWidget(table); layout->addLayout(buttons);
++    load(); dialog->show();
++}
+diff --git c/src/tracedialog.h w/src/tracedialog.h
+new file mode 100644
+index 0000000..08bcfe0
+--- /dev/null
++++ w/src/tracedialog.h
+@@ -0,0 +1,5 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++#include <QString>
++class QWidget;
++void showTraceLog(QWidget *parent, const QString &prefix);
+diff --git c/src/tracevars.h w/src/tracevars.h
+new file mode 100644
+index 0000000..97d4736
+--- /dev/null
++++ w/src/tracevars.h
+@@ -0,0 +1,9 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++
++namespace TraceVars {
++inline constexpr char Mode[] = "DARLING_MISSING_SYMBOLS";
++inline constexpr char Log[] = "DARLING_MISSING_SYMBOLS_LOG";
++inline constexpr char ModeLog[] = "log";
++inline constexpr char TraceDirName[] = "trace";
++}
+diff --git c/src/troubleshooting.cpp w/src/troubleshooting.cpp
+index f241e27..0781575 100644
+--- c/src/troubleshooting.cpp
++++ w/src/troubleshooting.cpp
+@@ -1,5 +1,7 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ #include "troubleshooting.h"
++#include "trace.h"
++#include "tracevars.h"
+ #include "log.h"
+ #include <QRandomGenerator>
+ #include <QMessageAuthenticationCode>
+@@ -271,12 +273,13 @@ PrProposal LauncherTroubleshooting::reviewProposal(const QString &file) {
+ }
+ RecoveryChoices LauncherTroubleshooting::recoveryChoices() {
+     QSettings settings("cristim", "darling-launcher");
+-    return {settings.value("recovery/import", false).toBool(), settings.value("recovery/report", false).toBool(), settings.value("recovery/ai", false).toBool(), settings.value("recovery/remember", false).toBool(), settings.value("recovery/agent").toString()};
++    return {settings.value("recovery/import", false).toBool(), settings.value("recovery/report", false).toBool(), settings.value("recovery/ai", false).toBool(), settings.value("recovery/remember", false).toBool(), settings.value("recovery/agent").toString(), settings.value("recovery/trace", false).toBool()};
+ }
+ void LauncherTroubleshooting::saveRecoveryChoices(const RecoveryChoices &choices) {
+     QSettings settings("cristim", "darling-launcher");
+     settings.setValue("recovery/import", choices.importLibrary); settings.setValue("recovery/report", choices.report);
+     settings.setValue("recovery/ai", choices.ai); settings.setValue("recovery/remember", choices.remember); settings.setValue("recovery/agent", choices.agent);
++    settings.setValue("recovery/trace", choices.trace);
+ }
+ LaunchChoicesDialog::LaunchChoicesDialog(const QString &app, bool mounted, QWidget *parent, bool failed) : QDialog(parent) {
+     setObjectName("launchChoicesDialog"); setWindowTitle("Launch recovery choices");
+@@ -289,13 +292,20 @@ LaunchChoicesDialog::LaunchChoicesDialog(const QString &app, bool mounted, QWidg
+     ai = new QCheckBox("Use AI in the background to implement missing functionality"); ai->setObjectName("launchAiOption"); layout->addWidget(ai);
+     agent = new QComboBox; agent->setObjectName("launchAgent"); agent->addItems(LauncherTroubleshooting::agents()); layout->addWidget(agent); ai->setEnabled(agent->count() > 0);
+     auto *sharing = new QLabel("Choosing AI authorizes sharing subsequent loader output and local app/source/prefix paths with the selected agent’s configured service. No Apple payloads are shared. Work uses an independent workspace; completed issues and PRs still require separate explicit approval. The same actions cover the dependency chain, with a separate AI session for each missing library. Library import waits if the prefix must be stopped first."); sharing->setWordWrap(true); layout->addWidget(sharing);
++    trace = new QCheckBox("Trace missing symbols (record the names of unresolved functions this app imports, in a private log)"); trace->setObjectName("launchTraceOption"); layout->addWidget(trace);
++    traceNotice = new QLabel("Tracing is not available when darling runs with elevated privileges."); traceNotice->setObjectName("launchTraceNotice"); traceNotice->setWordWrap(true); traceNotice->hide(); layout->addWidget(traceNotice);
+     remember = new QCheckBox("Remember these choices for subsequent launches"); remember->setObjectName("rememberLaunchChoices"); layout->addWidget(remember);
+     const auto saved = LauncherTroubleshooting::recoveryChoices(); copy->setChecked(saved.importLibrary); report->setChecked(saved.report); ai->setChecked(saved.ai && ai->isEnabled()); remember->setChecked(saved.remember);
+     if (agent->findText(saved.agent) >= 0) agent->setCurrentText(saved.agent);
++    trace->setChecked(saved.trace);
+     setMounted(mounted);
+     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); layout->addWidget(buttons); connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+ }
+-RecoveryChoices LaunchChoicesDialog::choices() const { return {copy->isChecked(), report->isChecked(), ai->isChecked(), remember->isChecked(), agent->currentText()}; }
++void LaunchChoicesDialog::setDarling(const QString &darling) {
++    const bool blocked = LauncherTrace::elevated(darling);
++    trace->setEnabled(!blocked); traceNotice->setVisible(blocked);
++}
++RecoveryChoices LaunchChoicesDialog::choices() const { return {copy->isChecked(), report->isChecked(), ai->isChecked(), remember->isChecked(), agent->currentText(), trace->isChecked() && trace->isEnabled()}; }
+ void LaunchChoicesDialog::setMounted(bool mounted) { setSourceAvailability(mounted, macOSPossible); }
+ void LaunchChoicesDialog::setSourceAvailability(bool mounted, bool possible) {
+     macOSPossible = possible; copy->setVisible(mounted || !possible); copy->setEnabled(mounted);
+diff --git c/src/troubleshooting.h w/src/troubleshooting.h
+index 73ce480..49bb648 100644
+--- c/src/troubleshooting.h
++++ w/src/troubleshooting.h
+@@ -72,6 +72,7 @@ PrProposal reviewProposal(const QString &file);
+ struct RecoveryChoices {
+     bool importLibrary = false, report = false, ai = false, remember = false;
+     QString agent;
++    bool trace = false;
+ };
+ class LaunchChoicesDialog : public QDialog {
+     Q_OBJECT
+@@ -79,12 +80,14 @@ public:
+     LaunchChoicesDialog(const QString &app, bool mounted, QWidget *parent = nullptr, bool failed = false);
+     RecoveryChoices choices() const;
+     void setMounted(bool mounted);
++    void setDarling(const QString &darling);
+     void setSourceAvailability(bool mounted, bool possible);
+ signals:
+     void mountRequested();
+ private:
+-    QCheckBox *copy, *report, *ai, *remember;
++    QCheckBox *copy, *report, *ai, *remember, *trace;
+     QComboBox *agent;
++    QLabel *traceNotice;
+     QPushButton *mount;
+     bool macOSPossible = true;
+ };
+diff --git c/src/window.cpp w/src/window.cpp
+index 8b738cb..30e9cd7 100644
+--- c/src/window.cpp
++++ w/src/window.cpp
+@@ -7,6 +7,8 @@
+ #include "prefixdialog.h"
+ #include "discovery.h"
+ #include "troubleshooting.h"
++#include "trace.h"
++#include "tracedialog.h"
+ #include <QApplication>
+ #include <QCloseEvent>
+ #include <QDir>
+@@ -150,19 +152,20 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
+             connect(button, &QPushButton::clicked, this, callback);
+             return button;
+         }
+-        bool setting = title == "Create prefix" || title == "Initialize selected prefix" || title == "Detect mounted macOS volumes" || title == "Mount macOS source…" || title == "Stop background agents" || title == "Launch recovery preferences…";
++        bool setting = title == "Create prefix" || title == "Initialize selected prefix" || title == "Detect mounted macOS volumes" || title == "Mount macOS source…" || title == "Stop background agents" || title == "Launch recovery preferences…" || title == "Missing-symbol trace log…";
+         int &count = setting ? settingsActionCount : actionCount;
+         (setting ? settingsToolbar : toolbar)->addWidget(button, count / 3, count % 3); ++count;
+         connect(button, &QPushButton::clicked, this, callback);
+         return button;
+     };
+     add("Launch recovery preferences…", [this] {
+-        LaunchChoicesDialog choices("future apps", hasMountedSource(), settingsDialog);
++        LaunchChoicesDialog choices("future apps", hasMountedSource(), settingsDialog); choices.setDarling(darling->text());
+         choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource());
+         connect(&choices, &LaunchChoicesDialog::mountRequested, this, [this] { findChild<QPushButton *>("Mount macOS source…")->click(); });
+         connect(volume, &QLineEdit::textChanged, &choices, [this, &choices] { choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource()); });
+         if (choices.exec() == QDialog::Accepted) LauncherTroubleshooting::saveRecoveryChoices(choices.choices());
+     });
++    add("Missing-symbol trace log…", [this] { showTraceLog(this, prefix->text()); });
+     connect(volume, &QLineEdit::textChanged, this, [this] { for (const auto &key : recoveryDialogs.keys()) updateRecovery(key); });
+     add("Stop background agents", [this] { for (auto *job : findChildren<BackgroundFix *>()) if (job->isRunning()) job->stop(); });
+     add("Create prefix", [this] { openRuntimeBuilder(); });
+@@ -616,7 +619,7 @@ QString Window::selectedKey() const { return apps->currentItem() ? apps->current
+ bool Window::confirmLaunch(const QString &key, bool failed) {
+     auto saved = LauncherTroubleshooting::recoveryChoices();
+     if (!saved.remember) {
+-        LaunchChoicesDialog choices(entries.value(key).name, hasMountedSource(), this, failed);
++        LaunchChoicesDialog choices(entries.value(key).name, hasMountedSource(), this, failed); choices.setDarling(darling->text());
+         choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource());
+         connect(&choices, &LaunchChoicesDialog::mountRequested, this, [this] { findChild<QPushButton *>("Mount macOS source…")->click(); });
+         connect(volume, &QLineEdit::textChanged, &choices, [this, &choices] { choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource()); });
+@@ -660,6 +663,10 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
+     env.remove("DARLING_INSTALL_PREFIX");
+     if (!runtimeRoot->text().isEmpty()) env.insert("DARLING_INSTALL_PREFIX", runtimeRoot->text());
+     env.insert("DPREFIX", p);
++    if (!key.isEmpty() && args.value(0) == "exec") {
++        const auto chosen = launchChoices.value(key); QString traceError;
++        if (!LauncherTrace::applyTrace(env, p, label, chosen.trace, darling->text(), nullptr, &traceError)) { delete process; invalid(traceError); return; }
++    }
+     process->setProcessEnvironment(env); process->setProcessChannelMode(QProcess::MergedChannels);
+     ++activeProcesses;
+     if (!key.isEmpty()) runningApps.insert(key);
+diff --git c/tests/fake-darling w/tests/fake-darling
+new file mode 100755
+index 0000000..c47f426
+--- /dev/null
++++ w/tests/fake-darling
+@@ -0,0 +1,7 @@
++#!/bin/sh
++# Fake Darling host launcher for tests: no runtime support exists yet, so this stands in for the consumer of the trace variables.
++printf '%s' "${DARLING_MISSING_SYMBOLS-unset}" > "$DPREFIX/fake-mode.txt"
++if [ -n "${DARLING_MISSING_SYMBOLS-}" ]; then
++  printf '%s\n' '{"image":"/System/Library/Frameworks/Fixture.framework/Fixture","symbol":"_FixtureMissing","count":2,"regs":["0x1","ff"],"future":{"x":1}}' >> "$DARLING_MISSING_SYMBOLS_LOG"
++fi
++exit 0
+diff --git c/tests/gui_test.cpp w/tests/gui_test.cpp
+index c4fba1f..101e164 100644
+--- c/tests/gui_test.cpp
++++ w/tests/gui_test.cpp
+@@ -35,6 +35,7 @@
+ #include <QtConcurrent>
+ #include <QtTest>
+ #include <QtEndian>
++#include <sys/stat.h>
+ 
+ struct RecordingBrowser : AppBrowser { bool dragged = false; int selectedAtDrag = 0; void startDrag(Qt::DropActions) override { dragged = true; selectedAtDrag = selectedItems().size(); } };
+ class GuiTest : public QObject {
+@@ -69,6 +70,37 @@ private slots:
+         QCOMPARE(settings.value("splitterState").toByteArray(), splitter); QVERIFY(restored.findChild<QSplitter *>("browserSplitter")->restoreState(splitter));
+         QVERIFY(!restored.findChild<QDialog *>("settingsDialog")->isVisible());
+     }
++    void traceOptionPersistsAndOnlyTracedLaunchGetsVariables() {
++        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
++        QSettings settings("cristim", "darling-launcher"); settings.clear();
++        {
++            LaunchChoicesDialog dialog("Fixture", false); auto *box = dialog.findChild<QCheckBox *>("launchTraceOption"), *remember = dialog.findChild<QCheckBox *>("rememberLaunchChoices"); auto *mode = dialog.findChild<QComboBox *>("launchTraceMode");
++            QVERIFY(!box->isChecked());  
++            box->setChecked(true); remember->setChecked(true);
++            LauncherTroubleshooting::saveRecoveryChoices(dialog.choices());
++        }
++        LaunchChoicesDialog reopened("Fixture", false);
++        QVERIFY(reopened.findChild<QCheckBox *>("launchTraceOption")->isChecked());
++        auto saved = LauncherTroubleshooting::recoveryChoices(); saved.trace = false; LauncherTroubleshooting::saveRecoveryChoices(saved);
++        const QString prefix = temporary.path() + "/prefix", fake = QString(TEST_SOURCE_DIR) + "/tests/fake-darling";
++        QVERIFY(QDir().mkpath(prefix));
++        QString error; QVERIFY(LauncherCore::saveCatalog(prefix, QJsonObject{{"apps", QJsonArray{QJsonObject{{"name", "Fixture"}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}}}}}, &error));
++        settings.setValue("prefix", prefix); settings.setValue("darling", fake);
++        Window window({}, false, [] { return QList<SourceMount>{}; }); window.show(); window.findChild<QLineEdit *>("runtimeRootField")->clear();
++        auto *apps = window.findChild<ImportedBrowser *>("importedApps"); apps->setCurrentRow(0);
++        auto modeSeen = [&] { QFile f(prefix + "/fake-mode.txt"); return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString(); };
++        launchSelected(window); QTRY_COMPARE_WITH_TIMEOUT(modeSeen(), QString("unset"), 5000); QTRY_VERIFY_WITH_TIMEOUT(apps->status("Applications/Fixture.app").contains("Exited"), 5000);
++        QVERIFY(!QFileInfo::exists(prefix + "/.darling-launcher/trace"));
++        saved.trace = true; LauncherTroubleshooting::saveRecoveryChoices(saved);
++        QFile::remove(prefix + "/fake-mode.txt"); launchSelected(window); QTRY_COMPARE_WITH_TIMEOUT(modeSeen(), QString("log"), 5000);
++        const auto logs = QDir(prefix + "/.darling-launcher/trace").entryList({"Fixture-*.jsonl"}); QCOMPARE(logs.size(), 1);
++        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo(prefix + "/.darling-launcher/trace/" + logs.first()).size() > 0, 5000);
++        QVERIFY(!qEnvironmentVariableIsSet("DARLING_MISSING_SYMBOLS"));
++        const QString suid = temporary.path() + "/suid-darling"; QVERIFY(QFile::copy(fake, suid)); QVERIFY(::chmod(QFile::encodeName(suid).constData(), 04755) == 0);
++        LaunchChoicesDialog plain("Fixture", false); plain.setDarling(fake); QVERIFY(plain.findChild<QCheckBox *>("launchTraceOption")->isEnabled()); QVERIFY(!plain.findChild<QLabel *>("launchTraceNotice")->isVisibleTo(&plain));
++        LaunchChoicesDialog elevated("Fixture", false); elevated.setDarling(suid); auto *box = elevated.findChild<QCheckBox *>("launchTraceOption");
++        QVERIFY(!box->isEnabled()); QVERIFY(elevated.findChild<QLabel *>("launchTraceNotice")->isVisibleTo(&elevated)); box->setChecked(true); QVERIFY(!elevated.choices().trace);
++    }
+     void rememberedImportRetriesAndMountLossHidesAction() {
+         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+         QSettings("cristim", "darling-launcher").clear();
+diff --git c/tests/trace_test.cpp w/tests/trace_test.cpp
+new file mode 100644
+index 0000000..50725d7
+--- /dev/null
++++ w/tests/trace_test.cpp
+@@ -0,0 +1,118 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "trace.h"
++#include "tracevars.h"
++#include <QDir>
++#include <QFile>
++#include <QTemporaryDir>
++#include <QtTest>
++#include <sys/stat.h>
++#include <unistd.h>
++
++class TraceTest : public QObject {
++    Q_OBJECT
++    QTemporaryDir tools;
++    QString plain() { return fake(0755); }
++    QString fake(int mode, const QString &name = "darling") { const QString path = tools.path() + "/" + name + QString::number(mode, 8); if (!QFileInfo::exists(path)) { write(path, "#!/bin/sh\n"); QFile::setPermissions(path, QFileDevice::Permissions::fromInt(mode & 0777)); chmod(QFile::encodeName(path).constData(), mode); } return path; }
++    static QString write(const QString &path, const QByteArray &data) { QFile f(path); if (f.open(QIODevice::WriteOnly)) f.write(data); return path; }
++private slots:
++    void offLeavesEnvironmentIdentical() {
++        QTemporaryDir prefix; QVERIFY(prefix.isValid());
++        QProcessEnvironment env = QProcessEnvironment::systemEnvironment(); env.insert("DPREFIX", prefix.path()); const auto before = env.toStringList();
++        QString error; QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", false, plain(), nullptr, &error));
++        QCOMPARE(env.toStringList(), before); QVERIFY(!QFileInfo::exists(prefix.path() + "/.darling-launcher"));
++    }
++    void onSetsBothVariablesUnderPrivateDirectory() {
++        QTemporaryDir prefix; QVERIFY(prefix.isValid());
++        QProcessEnvironment env; QString path, error;
++        QVERIFY2(LauncherTrace::applyTrace(env, prefix.path(), "My App/../x", true, plain(), &path, &error), qPrintable(error));
++        QCOMPARE(env.value(TraceVars::Mode), QString("log")); QCOMPARE(env.value(TraceVars::Log), path);
++        QVERIFY(path.startsWith(LauncherTrace::traceDirectory(prefix.path()) + "/My_App_.._x-")); QVERIFY(path.endsWith("Z.jsonl"));
++        QCOMPARE(QFileInfo(LauncherTrace::traceDirectory(prefix.path())).permissions() & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther), QFileDevice::Permissions());
++        QCOMPARE(QFileInfo(path).permissions() & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther | QFile::ExeOwner), QFileDevice::Permissions()); QVERIFY(QFileInfo(path).permissions() & QFile::WriteOwner);
++    }
++    void refusesSymlinkedOrExposedDirectory() {
++        QTemporaryDir prefix, other; QVERIFY(prefix.isValid() && other.isValid());
++        QVERIFY(QDir().mkpath(prefix.path() + "/.darling-launcher"));
++        QVERIFY(QFile::link(other.path(), LauncherTrace::traceDirectory(prefix.path())));
++        QProcessEnvironment env; QString error;
++        QVERIFY(!LauncherTrace::applyTrace(env, prefix.path(), "App", true, plain(), nullptr, &error)); QVERIFY(env.isEmpty()); QVERIFY(QDir(other.path()).isEmpty());
++        QTemporaryDir open; QVERIFY(QDir().mkpath(open.path() + "/.darling-launcher/trace"));
++        QVERIFY(QFile::setPermissions(open.path() + "/.darling-launcher/trace", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::ReadOther | QFile::ExeOther));
++        QVERIFY(!LauncherTrace::applyTrace(env, open.path(), "App", true, plain(), nullptr, &error)); QVERIFY(error.contains("other users"));
++    }
++    void refusesForeignOwnedDirectory() {
++        if (::geteuid() == 0) QSKIP("root owns everything it can create");
++        QString error; QVERIFY(!LauncherTrace::ensurePrivateDirectory("/usr", &error)); QVERIFY2(error.contains("not owned"), qPrintable(error));
++    }
++    void parserToleratesGarbageAndAggregates() {
++        QTemporaryDir dir; QVERIFY(dir.isValid());
++        const QString path = write(dir.path() + "/t.jsonl",
++            "{\"image\":\"/F\",\"symbol\":\"_a\",\"count\":2,\"regs\":[\"0x10\"],\"unknown\":[1]}\n"
++            "not json\n{\"image\":\"/F\"}\n\n[1,2]\n{\"image\":\"/F\",\"symbol\":\"_a\"}\n{\"image\":\"/G\",\"symbol\":\"_b\",\"count\":-5}\n\xff\xfe\n");
++        const auto summary = LauncherTrace::parse(path);
++        QCOMPARE(summary.skipped, 4); QVERIFY(!summary.truncated); QCOMPARE(summary.rows.size(), 2);
++        QCOMPARE(summary.rows[0].symbol, QString("_a")); QCOMPARE(summary.rows[0].count, 3); QCOMPARE(summary.rows[0].order, 0); QCOMPARE(summary.rows[1].order, 1);
++        QCOMPARE(summary.rows[1].count, 1);
++        QVERIFY(!LauncherTrace::exportSummary(summary).contains("0x10"));
++        QVERIFY(LauncherTrace::exportSummary(summary).startsWith("image\tsymbol\tcount\n/F\t_a\t3\n"));
++    }
++    void elevatedDarlingNeverGetsVariables() {
++        QTemporaryDir prefix; QVERIFY(prefix.isValid()); QString error;
++        for (const QString &darling : {fake(04755), fake(02755)}) {
++            QProcessEnvironment env; env.insert(TraceVars::Log, "/x");
++            QVERIFY(LauncherTrace::elevated(darling)); QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", true, darling, nullptr, &error)); QVERIFY(env.isEmpty());
++        }
++        QVERIFY(!LauncherTrace::elevated(plain())); QVERIFY(LauncherTrace::elevated(plain(), 0)); QVERIFY(LauncherTrace::elevated(tools.path() + "/missing"));
++        QProcessEnvironment env; QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", true, plain(), nullptr, &error)); QVERIFY(env.contains(TraceVars::Log));
++        QVERIFY(!QFileInfo::exists(LauncherTrace::traceDirectory(prefix.path())) || QDir(LauncherTrace::traceDirectory(prefix.path())).entryList(QDir::Files).size() == 1);
++    }
++    void offStripsInheritedVariables() {
++        QTemporaryDir prefix; QVERIFY(prefix.isValid());
++        QProcessEnvironment env; env.insert("KEEP", "1"); env.insert(TraceVars::Mode, "trap"); env.insert(TraceVars::Log, "/x"); env.insert(QString(TraceVars::Mode) + "_FUTURE", "1");
++        QString error; QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", false, plain(), nullptr, &error));
++        QCOMPARE(env.keys(), QStringList{"KEEP"});
++        env.insert(TraceVars::Log, "/elsewhere"); QVERIFY(LauncherTrace::applyTrace(env, prefix.path(), "App", true, plain(), nullptr, &error));
++        QVERIFY(env.value(TraceVars::Log).startsWith(LauncherTrace::traceDirectory(prefix.path())));
++    }
++    void countersSaturateAndLongLinesAreSkipped() {
++        QTemporaryDir dir; QVERIFY(dir.isValid()); QByteArray data;
++        for (int i = 0; i < 2000; ++i) data += "{\"image\":\"/F\",\"symbol\":\"_a\",\"count\":900000000}\n";
++        data += "{\"image\":\"/F\",\"symbol\":\"_b\",\"count\":1e300}\n{\"symbol\":\"" + QByteArray(100000, 'x') + "\"}\n";
++        const auto summary = LauncherTrace::parse(write(dir.path() + "/c.jsonl", data));
++        QCOMPARE(summary.skipped, 1); QCOMPARE(summary.rows.size(), 2);
++        QCOMPARE(summary.rows[0].count, LauncherTrace::MaxCount);
++        QCOMPARE(summary.rows[1].count, 1);
++    }
++    void rowCountIsCapped() {
++        QTemporaryDir dir; QVERIFY(dir.isValid()); QByteArray data; for (int i = 0; i < LauncherTrace::MaxRows + 50; ++i) data += "{\"symbol\":\"s" + QByteArray::number(i) + "\"}\n";
++        const auto summary = LauncherTrace::parse(write(dir.path() + "/r.jsonl", data));
++        QCOMPARE(summary.rows.size(), LauncherTrace::MaxRows); QVERIFY(summary.truncated); QCOMPARE(summary.skipped, 50);
++    }
++    void hostileTextCannotForgeOutput() {
++        QTemporaryDir dir; QVERIFY(dir.isValid());
++        const auto summary = LauncherTrace::parse(write(dir.path() + "/h.jsonl", "{\"image\":\"/F\\t9\\n/Forged\",\"symbol\":\"_a\\u001b[31m\\nforged\\t1\\r\\u202e\",\"count\":1}\n{\"symbol\":\"" + QByteArray(5000, 'y') + "\"}\n"));
++        QCOMPARE(summary.rows.size(), 2);
++        for (const auto &row : summary.rows) for (const QString &text : {row.image, row.symbol}) { QVERIFY(text.size() <= LauncherTrace::MaxText); for (QChar c : text) QVERIFY(c.isPrint() && c != '\t' && c != '\n' && c != QChar(0x202e)); }
++        const QString exported = LauncherTrace::exportSummary(summary);
++        QCOMPARE(exported.count('\n'), 3); for (const QString &line : exported.split('\n', Qt::SkipEmptyParts)) QCOMPARE(line.count('\t'), 2);
++    }
++    void symlinkedLogIsNotFollowedAndSummaryIsPrivate() {
++        QTemporaryDir prefix, other; QVERIFY(prefix.isValid() && other.isValid());
++        const QString target = write(other.path() + "/real.jsonl", "{\"symbol\":\"_a\"}\n");
++        QVERIFY(QFile::link(target, other.path() + "/link.jsonl"));
++        QVERIFY(LauncherTrace::parse(other.path() + "/link.jsonl").unreadable);
++        QString path, error; LauncherTrace::Summary summary; summary.rows.append({"/F", "_a", {}, 1});
++        QVERIFY2(LauncherTrace::writeSummary(prefix.path(), summary, &path, &error), qPrintable(error));
++        QCOMPARE(QFileInfo(path).permissions() & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther), QFileDevice::Permissions());
++        QVERIFY(!LauncherTrace::writeSummary(prefix.path(), summary, &path, &error) || QFileInfo(path).size() > 0);
++        QTemporaryDir swapped; QVERIFY(QDir().mkpath(swapped.path() + "/.darling-launcher")); QVERIFY(QFile::link(other.path(), LauncherTrace::traceDirectory(swapped.path())));
++        QVERIFY(!LauncherTrace::writeSummary(swapped.path(), summary, &path, &error)); QVERIFY(!QFileInfo::exists(other.path() + "/" + QFileInfo(path).fileName()));
++    }
++    void parserCapsBytesRead() {
++        QTemporaryDir dir; QVERIFY(dir.isValid()); QByteArray data; for (int i = 0; i < 1000; ++i) data += "{\"image\":\"/F\",\"symbol\":\"_s" + QByteArray::number(i) + "\"}\n";
++        const auto summary = LauncherTrace::parse(write(dir.path() + "/big.jsonl", data), 4096);
++        QVERIFY(summary.truncated); QVERIFY(summary.rows.size() > 10 && summary.rows.size() < 1000); QCOMPARE(summary.skipped, 0);
++    }
++};
++QTEST_GUILESS_MAIN(TraceTest)
++#include "trace_test.moc"
