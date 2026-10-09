@@ -407,6 +407,36 @@ private slots:
         }
         QVERIFY(QDir(canary).isEmpty());
     }
+    // QA Gate 2 N2: deletion probes showed no test depended on these installArchive checks.
+    void installArchiveRunsEveryPostExtractionCheck() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString gh = writeScript(root + "/gh", "exit 0"); QVERIFY(!gh.isEmpty());
+        auto install = [&](const QString &archive, const QString &tag) { return installArchive(archive, sha256File(archive), runtimes, tag, gh, "VibeDarling/darling", roomyUnpackedSize); };
+        // Caught only by extractedTreeError, so it fails if installArchive stops calling it.
+        QJsonArray hidden = runtimeMembers(); QJsonObject locked = dirMember("usr/local/locked"); locked.insert("mode", "0");
+        hidden.append(locked); hidden.append(fileMember("usr/local/locked/x"));
+        const QString hiddenArchive = makeArchive(root, "hidden", hidden); QVERIFY(!hiddenArchive.isEmpty());
+        const QString hiddenError = install(hiddenArchive, "v2026.10.09-00000b1");
+        QVERIFY2(hiddenError.contains("not readable, writable and searchable"), qPrintable(hiddenError));
+        // A folder at the launcher path passes every canonical-path check and is caught only by the regular-file check.
+        QJsonArray folder = runtimeMembers(); folder.removeLast(); folder.append(dirMember("usr/local/bin/darling"));
+        const QString folderArchive = makeArchive(root, "folder", folder); QVERIFY(!folderArchive.isEmpty());
+        const QString folderError = install(folderArchive, "v2026.10.09-00000b2");
+        QVERIFY2(folderError.contains("is not a regular file"), qPrintable(folderError));
+        // The target appears after the early check but before the claim (a tar wrapper makes it during the listing).
+        const QString realTar = QStandardPaths::findExecutable("tar"); QVERIFY(!realTar.isEmpty()); QVERIFY(QDir().mkpath(root + "/bin"));
+        QVERIFY(!writeScript(root + "/bin/tar", "case \"$*\" in\n*-tvf*) mkdir -p '" + runtimes + "/v2026.10.09-00000b3';;\nesac\nexec \"" + realTar + "\" \"$@\"").isEmpty());
+        const QByteArray path = qgetenv("PATH");
+        struct Restore { QByteArray path; ~Restore() { qputenv("PATH", path); } } restore{path};
+        qputenv("PATH", (root + "/bin:").toUtf8() + path);
+        const QString good = makeArchive(root, "good", runtimeMembers()); QVERIFY(!good.isEmpty());
+        const QString raceError = install(good, "v2026.10.09-00000b3");
+        QVERIFY2(raceError.contains("already exists"), qPrintable(raceError));
+        QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-00000b3.partial")); QVERIFY(QDir(runtimes + "/v2026.10.09-00000b3").isEmpty());
+        for (const char *tag : {"v2026.10.09-00000b1", "v2026.10.09-00000b2"})
+            QVERIFY2(!QFileInfo::exists(runtimes + "/" + tag) && !QFileInfo::exists(runtimes + "/" + tag + ".partial"), tag);
+    }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
         for (const char *good : {"v2026.10.09-3721b65", "v2026.10.09-3721b65-r2"}) QVERIFY2(validTag(good), good);
