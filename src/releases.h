@@ -19,7 +19,7 @@ QString hostArchitecture();
 Selection select(const QJsonObject &release, const QJsonObject &manifest, const QString &arch, bool allowPrerelease);
 // Runs `gh attestation verify`, pinned to repo's release-binaries.yml workflow. Empty string = verified.
 QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo);
-// Verifies the digest and attestation, vets the member list (relative paths only, no device or
+// Verifies the digest and attestation, vets the member list (relative paths under usr/local only, no device or
 // hard-link members, nothing written through a symlink, a regular usr/local/bin/darling), then extracts
 // into <runtimesRoot>/<tag>. Absolute symlink targets are allowed because the runtime image uses them.
 // Returns an empty string on success, otherwise the reason.
