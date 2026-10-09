@@ -92,6 +92,18 @@ namespace LauncherTroubleshooting {
 RecoveryChoices recoveryChoices();
 void saveRecoveryChoices(const RecoveryChoices &choices);
 }
+#include "pipeline.h"
+// Consent for the missing-symbol clean-room pipeline, stating plainly how far the stages are isolated.
+class PipelineConsentDialog : public QDialog {
+    Q_OBJECT
+public:
+    PipelineConsentDialog(const QString &trace, const QString &symbol, const QString &library, QWidget *parent = nullptr);
+    static QString isolationStatement(const QString &trace);
+    MissingSymbolPipeline::Options options() const;
+private:
+    QList<QComboBox *> stageAgents;
+    QString trace, symbol, library;
+};
 class TroubleshootingDialog : public QDialog {
     Q_OBJECT
 public:
