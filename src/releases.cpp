@@ -91,6 +91,7 @@ QString vetMembers(const QStringList &listing) {
         if (type != QLatin1Char('-') && type != QLatin1Char('d') && type != QLatin1Char('l')) return "unsupported archive member type: " + line;
         if (path.startsWith('/') || path.split('/').contains("..")) return "archive member escapes the runtime folder: " + path;
         path = QDir::cleanPath(path);
+        if (path != "usr" && path != installRoot && !path.startsWith(QString(installRoot) + '/')) return "archive member is outside usr/local: " + path;
         for (const QString &link : symlinks)
             if (path == link || path.startsWith(link + '/')) return "archive writes through the symlink " + link + ": " + path;
         if (type == QLatin1Char('l')) symlinks << path;

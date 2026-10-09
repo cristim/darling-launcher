@@ -81,13 +81,14 @@ private slots:
         QVERIFY(QFile::link("/usr/lib/libz.so", root + "/good/usr/local/libz"));
         run({"tar", "--zstd", "-cf", "good.tar.zst", "-C", "good", "usr"});
         QVERIFY(QFile::link("/etc", root + "/evil/dir")); { QFile f(root + "/evil/payload"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
-        run({"tar", "--zstd", "-cf", "through.tar.zst", "-C", "evil", "dir", "--transform", "s,^payload,dir/payload,", "payload"});
+        run({"tar", "--zstd", "-cf", "through.tar.zst", "-C", "evil", "--transform", "s,^dir,usr/local/dir,", "--transform", "s,^payload,usr/local/dir/payload,", "dir", "payload"});
         run({"tar", "--zstd", "-cf", "escape.tar.zst", "-C", "evil", "--transform", "s,^payload,../payload,", "payload"});
-        const QString link = "lrwxrwxrwx 0/0 0 2026-10-09 14:32 dir -> /etc", file = "-rw-r--r-- 0/0 1 2026-10-09 14:32 ";
-        for (const char *path : {"dir/payload", "./dir/./payload", "dir//payload", "dir/sub/../payload"}) QVERIFY2(!vetMembers({link, file + path}).isEmpty(), path);
-        QVERIFY(vetMembers({link, file + "other/payload"}).isEmpty());
-        QVERIFY(!vetMembers({"lrwxrwxrwx 0/0 0 2026-10-09 14:32 a -> b -> /home/u/.ssh", file + "a -> b/authorized_keys"}).isEmpty());
-        QVERIFY(!vetMembers({file + "a -> b"}).isEmpty());
+        const QString link = "lrwxrwxrwx 0/0 0 2026-10-09 14:32 usr/local/dir -> /etc", file = "-rw-r--r-- 0/0 1 2026-10-09 14:32 ";
+        for (const char *path : {"usr/local/dir/payload", "./usr/local/dir/./payload", "usr/local/dir//payload"}) QVERIFY2(vetMembers({link, file + path}).contains("writes through the symlink"), path);
+        QVERIFY(vetMembers({link, file + "usr/local/dir/sub/../payload"}).contains("escapes the runtime folder"));
+        QVERIFY(vetMembers({link, file + "usr/local/other/payload"}).isEmpty());
+        QVERIFY(vetMembers({"lrwxrwxrwx 0/0 0 2026-10-09 14:32 usr/local/a -> b -> /home/u/.ssh", file + "usr/local/a -> b/authorized_keys"}).contains("' -> '"));
+        QVERIFY(vetMembers({file + "usr/local/a -> b"}).contains("' -> '"));
         QVERIFY(!vetMembers({file + "a\\nb"}).isEmpty());
         auto script = [&](const QString &name, const QString &body) { QFile f(root + "/" + name); f.open(QIODevice::WriteOnly); f.write(("#!/bin/sh\n" + body + "\n").toUtf8()); f.close(); f.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner); return f.fileName(); };
         const QString ghOk = script("gh-ok", "echo \"$@\" > '" + root + "/gh-args'"), ghBad = script("gh-bad", "echo untrusted >&2; exit 1"), repo = "VibeDarling/darling";
@@ -129,6 +130,14 @@ private slots:
         QVERIFY2(chainError.contains("writes through the symlink usr/local/a"), qPrintable(chainError));
         QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-0000016")); QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-0000018"));
         QVERIFY(vetMembers({"-rw-r--r-- u/" + spoof + " 1 2025-10-09 10:53 /abs"}).contains("unparsable"));
+    }
+    // Security S5: CI packs only usr/local/**, so anything else in an archive is refused before extraction.
+    void membersOutsideUsrLocalAreRefused() {
+        using namespace LauncherReleases;
+        const QString dir = "drwxr-xr-x 0/0 0 2026-10-09 14:32 ", file = "-rw-r--r-- 0/0 1 2026-10-09 14:32 ";
+        QVERIFY(vetMembers({dir + "usr/", dir + "usr/local/", dir + "usr/local/bin/", file + "usr/local/bin/darling", ""}).isEmpty());
+        for (const char *path : {"etc/passwd", "usr/lib/libz.so", "usr/localx/file", "./opt/x", "usr/local/../lib/x"}) QVERIFY2(!vetMembers({file + path}).isEmpty(), path);
+        for (const char *path : {"etc/passwd", "usr/lib/libz.so", "usr/localx/file", "./opt/x"}) QVERIFY2(vetMembers({file + path}).contains("outside usr/local"), path);
     }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
