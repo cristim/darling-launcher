@@ -2,6 +2,7 @@
 #include "releases.h"
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <QUrl>
 #include <sys/utsname.h>
 #include <QDir>
 #include <QJsonArray>
@@ -37,6 +38,11 @@ Selection select(const QJsonObject &release, const QJsonObject &manifest, const 
     static const QRegularExpression hex("^[0-9a-f]{64}$");
     if (!hex.match(artifact.sha256).hasMatch()) return fail("manifest.json has no valid SHA-256 for " + artifact.file + ".");
     if (artifact.unpackedSize <= 0) return fail("manifest.json has no unpacked_size for " + artifact.file + ".");
+    if (artifact.size <= 0) return fail("manifest.json has no size for " + artifact.file + ".");
+    const QUrl url(artifact.url, QUrl::StrictMode);
+    static const QStringList downloadHosts{"github.com", "objects.githubusercontent.com"};
+    if (!url.isValid() || url.scheme() != "https" || !downloadHosts.contains(url.host()) || url.port() != -1 || !url.userInfo().isEmpty())
+        return fail("manifest.json url for " + artifact.file + " is not an https download from GitHub.");
     bool listed = false;
     for (const auto &value : release.value("assets").toArray()) {
         const auto asset = value.toObject();

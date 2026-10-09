@@ -16,7 +16,8 @@ bool validTag(const QString &tag);
 QString hostArchitecture();
 // Selects this architecture's artifact from a releases/latest document and its manifest.json. Drafts,
 // prereleases (unless allowPrerelease), unknown schemas, a missing architecture, a manifest that
-// disagrees with the release or the API digest, and install_root/launcher other than the fixed values are errors.
+// disagrees with the release or the API digest, install_root/launcher other than the fixed values, a size that
+// is not positive, and a url that is not https on github.com or objects.githubusercontent.com are errors.
 Selection select(const QJsonObject &release, const QJsonObject &manifest, const QString &arch, bool allowPrerelease);
 // Trust root for prebuilt runtimes: only builds attested by this workflow install, whatever repo they are
 // fetched from (DESIGN sec 6). Accepting a fork's own workflow must be an explicit, user-visible exception.

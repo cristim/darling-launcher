@@ -314,9 +314,26 @@ private slots:
         QVERIFY(select(release, entryWith("file", "other.tar.zst"), "aarch64", false).error.contains("file name"));
         QVERIFY(select(release, entryWith("sha256", "bb"), "aarch64", false).error.contains("SHA-256"));
         QVERIFY(select(release, entryWith("sha256", QString(64, 'b')), "aarch64", false).error.contains("differs from the GitHub digest"));
-        QVERIFY(select(release, entryWith("url", "https://evil.invalid/x"), "aarch64", false).error.contains("url differs"));
+        QVERIFY(select(release, entryWith("url", "https://github.com/evil/darling/releases/download/x"), "aarch64", false).error.contains("url differs"));
         QVERIFY(select(with(release, "assets", QJsonArray{}), manifest, "aarch64", false).error.contains("does not list"));
         QVERIFY(select(with(release, "tag_name", "2026-10-09-14-32-3721b65"), manifest, "aarch64", false).error.contains("not vYYYY"));
+    }
+    // Review F7: select() accepted a size of 0 or below and any URL scheme or host, as long as manifest and release agreed.
+    void selectionRequiresSizeAndGitHubHttpsUrl() {
+        using namespace LauncherReleases;
+        const QString tag = "v2026.10.09-3721b65", file = "darling-runtime-" + tag + "-linux-aarch64.tar.zst";
+        auto choose = [&](const QString &url, const QJsonValue &size) {
+            const QJsonObject entry{{"file", file}, {"url", url}, {"sha256", QString(64, 'a')}, {"size", size}, {"unpacked_size", 2}, {"install_root", "usr/local"}, {"launcher", "usr/local/bin/darling"}};
+            const QJsonObject manifest{{"schema", 1}, {"version", tag}, {"artifacts", QJsonObject{{"aarch64", entry}}}};
+            const QJsonObject release{{"tag_name", tag}, {"assets", QJsonArray{QJsonObject{{"name", file}, {"browser_download_url", url}}}}};
+            return select(release, manifest, "aarch64", false);
+        };
+        const QString good = "https://github.com/VibeDarling/darling/releases/download/" + tag + "/" + file;
+        QVERIFY(choose(good, 1).valid()); QVERIFY(choose("https://objects.githubusercontent.com/x/" + file, 1).valid());
+        for (const QJsonValue &size : {QJsonValue(0), QJsonValue(-1), QJsonValue("5"), QJsonValue()}) QVERIFY(choose(good, size).error.contains("no size"));
+        for (const char *url : {"http://github.com/VibeDarling/darling/releases/download/x", "https://evil.invalid/x", "https://github.com.evil.invalid/x",
+                                "https://github.com:8443/x", "https://user@github.com/x", "file:///etc/passwd", "ftp://github.com/x"})
+            QVERIFY2(choose(url, 1).error.contains("not an https download from GitHub"), url);
     }
     void prebuiltRuntimesAreDiscoveredByTag() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("HOME", temporary.path().toUtf8());
