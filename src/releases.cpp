@@ -94,8 +94,20 @@ QString vetMembers(const QStringList &listing) {
         if (path != "usr" && path != installRoot && !path.startsWith(QString(installRoot) + '/')) return "archive member is outside usr/local: " + path;
         for (const QString &link : symlinks)
             if (path == link || path.startsWith(link + '/')) return "archive writes through the symlink " + link + ": " + path;
-        if (type == QLatin1Char('l')) symlinks << path;
+        if (type == QLatin1Char('l')) {
+            for (const QString protectedPath : {QString(launcherPath), QString(runtimeMarker)})
+                if (protectedPath == path || protectedPath.startsWith(path + '/')) return "archive symlink replaces part of the runtime layout: " + path;
+            symlinks << path;
+        }
     }
+    return {};
+}
+QString runtimeLayoutError(const QString &dir) {
+    const QString root = QFileInfo(dir).canonicalFilePath();
+    if (root.isEmpty()) return dir + " does not exist";
+    for (const char *relative : {installRoot, runtimeMarker, launcherPath})
+        if (QFileInfo(dir + "/" + relative).canonicalFilePath() != root + "/" + relative) return QString(relative) + " is missing or leaves the runtime folder through a symlink";
+    if (!QFileInfo(dir + "/" + launcherPath).isFile()) return QString(launcherPath) + " is not a regular file";
     return {};
 }
 QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo) {
@@ -122,9 +134,8 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     extract.start("tar", {"--zstd", "-xf", archive, "-C", staging, "--no-same-owner", "--no-same-permissions", "--no-overwrite-dir"});
     if (!extract.waitForFinished(1800000) || extract.exitStatus() != QProcess::NormalExit || extract.exitCode() != 0)
         return "extraction failed, partial files left in " + staging + ": " + QString::fromUtf8(extract.readAllStandardError());
-    const QFileInfo launcher(staging + "/" + launcherPath);
-    if (launcher.isSymLink() || !launcher.isFile())
-        return "archive has no regular (non-symlink) usr/local/bin/darling, partial files left in " + staging;
+    error = runtimeLayoutError(staging);
+    if (!error.isEmpty()) return error + ", partial files left in " + staging;
     if (!QDir().rename(staging, target)) return "cannot move " + staging + " to " + target;
     return {};
 }

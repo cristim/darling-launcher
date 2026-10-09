@@ -40,7 +40,20 @@ QJsonObject dirMember(const QString &name) { return {{"name", name}, {"type", "d
 QJsonObject fileMember(const QString &name) { return {{"name", name}}; }
 QJsonObject linkMember(const QString &name, const QString &target) { return {{"name", name}, {"type", "link"}, {"target", target}}; }
 // The skeleton every installable fixture needs.
-QJsonArray runtimeMembers() { return {dirMember("usr"), dirMember("usr/local"), dirMember("usr/local/bin"), fileMember("usr/local/bin/darling")}; }
+QJsonArray runtimeMembers() {
+    QJsonArray members;
+    for (const char *dir : {"usr", "usr/local", "usr/local/bin", "usr/local/libexec", "usr/local/libexec/darling", "usr/local/libexec/darling/private", "usr/local/libexec/darling/private/etc"}) members.append(dirMember(dir));
+    members.append(fileMember("usr/local/bin/darling")); return members;
+}
+// Stand-ins for a host /usr/local runtime: <root>/hostlocal and <root>/hostroot/local, each with bin/darling and the marker.
+bool makeHostRuntimes(const QString &root) {
+    for (const QString &host : {root + "/hostroot/local", root + "/hostlocal"}) {
+        if (!QDir().mkpath(host + "/bin") || !QDir().mkpath(host + "/libexec/darling/private/etc")) return false;
+        QFile launcher(host + "/bin/darling"); if (!launcher.open(QIODevice::WriteOnly)) return false; launcher.close();
+        if (!launcher.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner)) return false;
+    }
+    return true;
+}
 QString writeScript(const QString &path, const QString &body) {
     QFile f(path); if (!f.open(QIODevice::WriteOnly)) return {};
     f.write(("#!/bin/sh\n" + body + "\n").toUtf8()); f.close();
@@ -76,7 +89,7 @@ private slots:
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path();
         auto run = [&](const QStringList &args) { QProcess p; p.setWorkingDirectory(root); p.start(args.first(), args.mid(1)); QVERIFY2(p.waitForFinished(30000) && p.exitCode() == 0, qPrintable(p.readAllStandardError())); };
         auto digest = [](const QString &path) { QFile f(path); f.open(QIODevice::ReadOnly); return QString(QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex()); };
-        QVERIFY(QDir().mkpath(root + "/good/usr/local/bin")); QVERIFY(QDir().mkpath(root + "/evil"));
+        QVERIFY(QDir().mkpath(root + "/good/usr/local/bin")); QVERIFY(QDir().mkpath(root + "/good/usr/local/libexec/darling/private/etc")); QVERIFY(QDir().mkpath(root + "/evil"));
         { QFile f(root + "/good/usr/local/bin/darling"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
         QVERIFY(QFile::link("/usr/lib/libz.so", root + "/good/usr/local/libz"));
         run({"tar", "--zstd", "-cf", "good.tar.zst", "-C", "good", "usr"});
@@ -96,7 +109,7 @@ private slots:
         QVERIFY(QDir().mkpath(root + "/linked/usr/local/bin")); QVERIFY(QFile::link("/usr/local/bin/darling", root + "/linked/usr/local/bin/darling"));
         run({"tar", "--zstd", "-cf", "linked.tar.zst", "-C", "linked", "usr"});
         const QString linked = root + "/linked.tar.zst";
-        QVERIFY(installArchive(linked, digest(linked), runtimes, "v2026.10.09-aaaaaaa", ghOk, repo).contains("non-symlink"));
+        QVERIFY(installArchive(linked, digest(linked), runtimes, "v2026.10.09-aaaaaaa", ghOk, repo).contains("runtime layout"));
         QVERIFY(installArchive(good, digest(good), runtimes, "latest", ghOk, repo).contains("not a release tag"));
         QVERIFY2(installArchive(good, QString(64, '0'), runtimes, tag, ghOk, repo).contains("SHA-256 mismatch"), "digest");
         QVERIFY(installArchive(good, digest(good), runtimes, tag, ghBad, repo).contains("attestation verification failed"));
@@ -138,6 +151,45 @@ private slots:
         QVERIFY(vetMembers({dir + "usr/", dir + "usr/local/", dir + "usr/local/bin/", file + "usr/local/bin/darling", ""}).isEmpty());
         for (const char *path : {"etc/passwd", "usr/lib/libz.so", "usr/localx/file", "./opt/x", "usr/local/../lib/x"}) QVERIFY2(!vetMembers({file + path}).isEmpty(), path);
         for (const char *path : {"etc/passwd", "usr/lib/libz.so", "usr/localx/file", "./opt/x"}) QVERIFY2(vetMembers({file + path}).contains("outside usr/local"), path);
+    }
+    // Review F2: a symlinked parent of usr/local/bin/darling passed vetting (no member below the link) and
+    // the launcher then resolved to a host file, e.g. the setuid /usr/local/bin/darling.
+    void symlinkedRuntimeParentsAreRefused() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString gh = writeScript(root + "/gh-ok", "exit 0"); QVERIFY(!gh.isEmpty());
+        QVERIFY(makeHostRuntimes(root));
+        const struct { const char *name, *tag; QJsonArray members; } cases[] = {
+            {"parentlink", "v2026.10.09-0000008", {dirMember("usr"), linkMember("usr/local", root + "/hostlocal")}},
+            {"usrlink", "v2026.10.09-0000009", {linkMember("usr", root + "/hostroot")}},
+            {"binlink", "v2026.10.09-000000a", {dirMember("usr"), dirMember("usr/local"), linkMember("usr/local/bin", "../../../../hostlocal/bin")}},
+            {"etclink", "v2026.10.09-000000b", {dirMember("usr"), dirMember("usr/local"), dirMember("usr/local/bin"), fileMember("usr/local/bin/darling"), dirMember("usr/local/libexec"), linkMember("usr/local/libexec/darling", root + "/hostlocal/libexec/darling")}},
+        };
+        for (const auto &shape : cases) {
+            const QString archive = makeArchive(root, shape.name, shape.members); QVERIFY(!archive.isEmpty());
+            const QString error = installArchive(archive, sha256File(archive), runtimes, shape.tag, gh, "VibeDarling/darling");
+            QVERIFY2(error.contains("runtime layout"), qPrintable(QString(shape.name) + ": " + error));
+            QVERIFY2(!QFileInfo::exists(runtimes + "/" + shape.tag), shape.name);
+        }
+    }
+    void symlinkedRuntimeParentsAreNotDiscovered() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("HOME", temporary.path().toUtf8());
+        const QString root = temporary.path(), runtimes = LauncherDiscovery::dataRoot() + "/runtimes";
+        QVERIFY(makeHostRuntimes(root));
+        QVERIFY(QDir().mkpath(runtimes + "/v2026.10.09-0000008/usr")); QVERIFY(QFile::link(root + "/hostlocal", runtimes + "/v2026.10.09-0000008/usr/local"));
+        QVERIFY(QDir().mkpath(runtimes + "/v2026.10.09-0000009")); QVERIFY(QFile::link(root + "/hostroot", runtimes + "/v2026.10.09-0000009/usr"));
+        const QString bin = runtimes + "/v2026.10.09-000000a/usr/local"; QVERIFY(QDir().mkpath(bin + "/libexec/darling/private/etc")); QVERIFY(QFile::link(root + "/hostlocal/bin", bin + "/bin"));
+        const QString etc = runtimes + "/v2026.10.09-000000b/usr/local"; QVERIFY(QDir().mkpath(etc + "/bin")); QVERIFY(QDir().mkpath(etc + "/libexec"));
+        QVERIFY(QFile::copy(root + "/hostlocal/bin/darling", etc + "/bin/darling")); QVERIFY(QFile::link(root + "/hostlocal/libexec/darling", etc + "/libexec/darling"));
+        const QString good = runtimes + "/v2026.10.09-000000c/usr/local"; QVERIFY(QDir().mkpath(good + "/bin")); QVERIFY(QDir().mkpath(good + "/libexec/darling/private/etc"));
+        QVERIFY(QFile::copy(root + "/hostlocal/bin/darling", good + "/bin/darling"));
+        for (const char *tag : {"0000008", "0000009", "000000a", "000000b"}) {
+            const QString runtime = runtimes + "/v2026.10.09-" + tag + "/usr/local";
+            QVERIFY2(QFileInfo(runtime + "/bin/darling").isExecutable() && QFileInfo(runtime + "/libexec/darling/private/etc").isDir(), tag);
+        }
+        const auto found = LauncherDiscovery::runtimes({}, {});
+        qputenv("HOME", isolatedHome.path().toUtf8());
+        QCOMPARE(found.size(), 1); QCOMPARE(found.first().launcher, good + "/bin/darling");
     }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
