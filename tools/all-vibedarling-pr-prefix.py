@@ -170,7 +170,7 @@ def resolve(args):
     for item in items:
         by_repo.setdefault(item["repo"].lower(), []).append(item)
     excluded = []
-    for pr in open_prs():
+    for pr in ([] if args.no_prs else open_prs()):
         repo = pr["repository_url"].rsplit("/", 1)[-1]
         key = repo.lower()
         record = {"number": pr["number"], "url": pr["html_url"],
@@ -370,7 +370,7 @@ def resolve_nested(args):
             by_repo[key]["occurrences"].append(occurrence)
     top = json.loads((workspace / "refs.lock.json").read_text())
     top_repos = {item["repo"].lower() for item in top["repos"]}
-    prs = open_prs()
+    prs = [] if args.no_prs else open_prs()
     for pr in prs:
         repo = pr["repository_url"].rsplit("/", 1)[-1].lower()
         if repo in by_repo:
@@ -506,6 +506,7 @@ def main():
     discover.add_argument("--output", required=True)
     discover.add_argument("--repo", action="append", help="limited diagnostic resolution only")
     discover.add_argument("--jobs", type=int, default=8)
+    discover.add_argument("--no-prs", action="store_true", help="lock the default branches only and skip open pull requests")
     materialize = commands.add_parser("checkout", help="clone and integrate locked refs")
     materialize.add_argument("--lock", required=True)
     materialize.add_argument("--workspace", required=True)
@@ -516,6 +517,7 @@ def main():
     nested_discover.add_argument("--workspace", required=True)
     nested_discover.add_argument("--output", required=True)
     nested_discover.add_argument("--jobs", type=int, default=8)
+    nested_discover.add_argument("--no-prs", action="store_true", help="lock the default branches only and skip open pull requests")
     nested_materialize = commands.add_parser("checkout-nested", help="integrate locked nested refs")
     nested_materialize.add_argument("--workspace", required=True)
     nested_materialize.add_argument("--lock", required=True)
