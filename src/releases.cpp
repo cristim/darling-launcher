@@ -63,22 +63,24 @@ static QString sha256Of(const QString &path, QString *error) {
     return hash.result().toHex();
 }
 QString vetMembers(const QStringList &listing) {
+    static const QRegularExpression row(R"(^(\S)\S+\s+\S+\s+\d+\s+\d{4}-\d\d-\d\d\s+\d\d:\d\d\s(.+)$)");
     QStringList symlinks;
     for (const QString &line : listing) {
         if (line.isEmpty()) continue;
-        const QChar type = line.at(0);
-        // GNU tar -tv: "<mode> <owner/group> <size> <date> <time> <path>[ -> target]"
-        const QStringList parts = line.split(' ', Qt::SkipEmptyParts);
-        if (parts.size() < 6) return "unparsable archive member: " + line;
-        QString path = line.section(parts.at(4) + ' ', 1).trimmed();
+        const auto match = row.match(line);
+        if (!match.hasMatch()) return "unparsable archive member: " + line;
+        const QChar type = match.captured(1).at(0);
+        QString path = match.captured(2);
         if (type == QLatin1Char('l')) path = path.section(" -> ", 0, 0);
+        if (path.contains('\\')) return "archive member name needs escaping: " + path;
         if (type == QLatin1Char('h') || type == QLatin1Char('c') || type == QLatin1Char('b') || type == QLatin1Char('p'))
             return "archive contains a hard link or device member: " + path;
         if (type != QLatin1Char('-') && type != QLatin1Char('d') && type != QLatin1Char('l')) return "unsupported archive member type: " + line;
         if (path.startsWith('/') || path.split('/').contains("..")) return "archive member escapes the runtime folder: " + path;
+        path = QDir::cleanPath(path);
         for (const QString &link : symlinks)
             if (path == link || path.startsWith(link + '/')) return "archive writes through the symlink " + link + ": " + path;
-        if (type == QLatin1Char('l')) symlinks << (path.endsWith('/') ? path.chopped(1) : path);
+        if (type == QLatin1Char('l')) symlinks << path;
     }
     return {};
 }
@@ -92,7 +94,7 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     const QString target = runtimesRoot + "/" + tag;
     if (QFileInfo::exists(target)) return target + " already exists";
     QProcess list;
-    list.start("tar", {"--zstd", "-tvf", archive});
+    list.start("tar", {"--zstd", "--quoting-style=escape", "-tvf", archive});
     if (!list.waitForFinished(600000) || list.exitStatus() != QProcess::NormalExit || list.exitCode() != 0)
         return "cannot list " + archive + ": " + QString::fromUtf8(list.readAllStandardError());
     error = vetMembers(QString::fromUtf8(list.readAllStandardOutput()).split('\n'));
