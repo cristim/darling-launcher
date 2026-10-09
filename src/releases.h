@@ -32,7 +32,8 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 // hard-link members, nothing written through a symlink, no symlink at usr/local/bin/darling, the private/etc
 // marker or any of their parents), then extracts and checks extractedTreeError before moving it
 // into <runtimesRoot>/<tag>. Absolute and ".." symlink targets are allowed because the runtime image uses them.
-// Extraction goes to <tag>.partial, created with an exclusive mkdir, so one install of a tag runs at a time.
+// Extraction goes to <tag>.partial, created with an exclusive mkdir, so one install of a tag runs at a time;
+// a failed install removes the .partial it created and never one that already existed.
 // Returns an empty string on success, otherwise the reason.
 QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo);
 // Why <dir> is not a self-contained runtime, or "": usr/local, the launcher (a regular file) and the

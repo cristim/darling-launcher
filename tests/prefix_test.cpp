@@ -26,8 +26,8 @@ out, spec = sys.argv[1], json.loads(sys.argv[2])
 with tarfile.open(out, "w", format=tarfile.GNU_FORMAT) as archive:
     for member in spec:
         info = tarfile.TarInfo(member["name"]); info.mtime = 1760000000; info.uname = member.get("uname", "u"); info.gname = member.get("gname", "g")
-        info.mode = int(member.get("mode", "644"), 8); data = b""
-        if member.get("type") == "dir": info.type = tarfile.DIRTYPE; info.mode = 0o755
+        info.mode = int(member.get("mode", "755" if member.get("type") == "dir" else "644"), 8); data = b""
+        if member.get("type") == "dir": info.type = tarfile.DIRTYPE
         elif member.get("type") == "link": info.type = tarfile.SYMTYPE; info.linkname = member["target"]
         else: data = member.get("data", "x").encode(); info.size = len(data)
         archive.addfile(info, io.BytesIO(data))
@@ -263,6 +263,32 @@ private slots:
         }
         qInfo() << "rounds with two extractions:" << doubleExtractions << "without exactly one winner:" << wrongWinners << "loser not told about the other install:" << unclearLosers;
         QCOMPARE(doubleExtractions, 0); QCOMPARE(wrongWinners, 0); QCOMPARE(unclearLosers, 0);
+    }
+    // Review F6: every failure after staging was created left <tag>.partial behind and blocked all retries.
+    void failedInstallCleansUpOnlyItsOwnStaging() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString gh = writeScript(root + "/gh", "exit 0"); QVERIFY(!gh.isEmpty());
+        QVERIFY(QDir().mkpath(root + "/outside")); { QFile sentinel(root + "/outside/keep"); QVERIFY(sentinel.open(QIODevice::WriteOnly)); }
+        QJsonArray brokenMembers = runtimeMembers(); brokenMembers.removeLast(); brokenMembers.append(linkMember("usr/local/outside", root + "/outside"));
+        const QString broken = makeArchive(root, "nolauncher", brokenMembers), good = makeArchive(root, "good", runtimeMembers());
+        QVERIFY(!broken.isEmpty()); QVERIFY(!good.isEmpty());
+        const QString tag = "v2026.10.09-0000006";
+        const QString error = installArchive(broken, sha256File(broken), runtimes, tag, gh, "VibeDarling/darling");
+        QVERIFY2(error.contains("bin/darling"), qPrintable(error));
+        QVERIFY(!QFileInfo::exists(runtimes + "/" + tag + ".partial")); QVERIFY(QFileInfo::exists(root + "/outside/keep"));
+        QCOMPARE(installArchive(good, sha256File(good), runtimes, tag, gh, "VibeDarling/darling"), QString());
+        const QString foreign = runtimes + "/v2026.10.09-0000007.partial"; QVERIFY(QDir().mkpath(foreign));
+        { QFile mine(foreign + "/someone-elses"); QVERIFY(mine.open(QIODevice::WriteOnly)); }
+        QVERIFY(installArchive(good, sha256File(good), runtimes, "v2026.10.09-0000007", gh, "VibeDarling/darling").contains("another install"));
+        QVERIFY(QFileInfo::exists(foreign + "/someone-elses"));
+        // No launcher, so the install fails after tar has applied the read-only folder mode.
+        QJsonArray lockedMembers = runtimeMembers(); lockedMembers.removeLast(); QJsonObject locked = dirMember("usr/local/locked"); locked.insert("mode", "555");
+        lockedMembers.append(locked); lockedMembers.append(fileMember("usr/local/locked/file"));
+        const QString readOnly = makeArchive(root, "readonly", lockedMembers); QVERIFY(!readOnly.isEmpty());
+        const QString lockedError = installArchive(readOnly, sha256File(readOnly), runtimes, "v2026.10.09-000000d", gh, "VibeDarling/darling");
+        QVERIFY2(!lockedError.isEmpty() && !lockedError.contains("remove it by hand"), qPrintable(lockedError));
+        QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-000000d.partial"));
     }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
