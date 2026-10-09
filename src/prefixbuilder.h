@@ -10,13 +10,12 @@ struct PrefixBuildRequest {
     QString script;
     QString source;
     QString workspace;
-    bool includePrs = false;
     int jobs = 1;
     QStringList cmakeArguments;
 };
 namespace LauncherPrefix {
-bool selectInputs(const QJsonObject &discovery, bool includePrs, QJsonObject *selected, QString *error);
-bool selectNestedInputs(const QJsonObject &discovery, bool includePrs, QJsonObject *selected, QString *error);
+bool selectInputs(const QJsonObject &discovery, QJsonObject *selected, QString *error);
+bool selectNestedInputs(const QJsonObject &discovery, QJsonObject *selected, QString *error);
 bool validateRequest(const PrefixBuildRequest &request, QString *error);
 }
 class PrefixBuilder : public QObject {
