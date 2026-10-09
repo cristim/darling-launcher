@@ -38,6 +38,15 @@ private slots:
         QVERIFY(clone.waitForFinished()); QVERIFY(clone.exitCode() != 0);
         QVERIFY(QFileInfo::exists(original + "/.git"));
     }
+    void prebuiltRuntimesAreDiscoveredByTag() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("HOME", temporary.path().toUtf8());
+        const QString tag = LauncherDiscovery::dataRoot() + "/runtimes/2026-10-09-14-32-3721b65";
+        QVERIFY(QDir().mkpath(tag + "/usr/local/bin")); QVERIFY(QDir().mkpath(tag + "/usr/local/libexec/darling/private/etc"));
+        QFile launcher(tag + "/usr/local/bin/darling"); QVERIFY(launcher.open(QIODevice::WriteOnly)); launcher.close(); QVERIFY(launcher.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        const auto found = LauncherDiscovery::runtimes({}, {}); QCOMPARE(found.size(), 1);
+        QCOMPARE(found.first().launcher, launcher.fileName()); QCOMPARE(found.first().installRoot, tag + "/usr/local");
+        QVERIFY(QFile::remove(launcher.fileName())); QVERIFY(LauncherDiscovery::runtimes({}, {}).isEmpty());
+    }
     void runtimeDefaults() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString root = temporary.path(), install = root + "/installed";
