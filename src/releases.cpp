@@ -73,14 +73,36 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 #include <QSet>
 #include <QDirIterator>
 #include <sys/stat.h>
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <QTemporaryDir>
 #include <climits>
 #include <unistd.h>
 namespace LauncherReleases {
-static QString sha256Of(const QString &path, QString *error) {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) { *error = "cannot read " + path + ": " + file.errorString(); return {}; }
+// Copies archive to copy (created exclusively) and returns the SHA-256 of the bytes copied, so every later step
+// reads exactly the bytes that were hashed. The final component of archive must not be a symlink.
+static QString copyAndHash(const QString &archive, const QString &copy, QString *error) {
+    const int fd = ::open(QFile::encodeName(archive).constData(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);  // O_NONBLOCK: opening a FIFO must not wait for a writer
+    if (fd < 0) { *error = "cannot open " + archive + (errno == ELOOP ? QString(": it is a symlink") : ": " + QString::fromLocal8Bit(strerror(errno))); return {}; }
+    struct stat info;
+    if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) { ::close(fd); *error = archive + " is not a regular file"; return {}; }
+    QFile source;
+    if (!source.open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) { ::close(fd); *error = "cannot read " + archive; return {}; }
+    // Copy only the length it had when opened, so a file that keeps growing cannot fill the disk.
+    qint64 remaining = info.st_size;
+    QFile out(copy);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::NewOnly)) { *error = "cannot create " + copy + ": " + out.errorString(); return {}; }
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    if (!hash.addData(&file)) { *error = "cannot hash " + path; return {}; }
+    QByteArray buffer(1 << 20, Qt::Uninitialized);
+    qint64 read = 0;
+    while (remaining > 0 && (read = source.read(buffer.data(), qMin<qint64>(buffer.size(), remaining))) > 0) {
+        remaining -= read;
+        hash.addData(QByteArrayView(buffer.constData(), read));
+        if (out.write(buffer.constData(), read) != read) { *error = "cannot write " + copy + ": " + out.errorString(); return {}; }
+    }
+    if (read < 0 || remaining > 0) { *error = "cannot read " + archive + ": " + source.errorString(); return {}; }
+    if (!out.flush()) { *error = "cannot write " + copy + ": " + out.errorString(); return {}; }
     return hash.result().toHex();
 }
 static bool insideInstallRoot(const QString &path) { return path == "usr" || path == installRoot || path.startsWith(QString(installRoot) + '/'); }
@@ -201,29 +223,33 @@ static void openFolders(const QString &dir) {
 QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo) {
     if (!validTag(tag)) return "not a release tag: " + tag;
     if (sha256.isEmpty()) return "release asset has no SHA-256 digest";
+    if (!QDir().mkpath(runtimesRoot)) return "cannot create " + runtimesRoot;
+    // A 0700 folder only this user can write: the copy in it cannot be swapped between hashing and extraction.
+    const QTemporaryDir privateDir(runtimesRoot + "/.archive-XXXXXX");
+    if (!privateDir.isValid()) return "cannot create a private folder in " + runtimesRoot + ": " + privateDir.errorString();
+    const QString copy = privateDir.filePath("runtime.tar.zst");
     QString error;
-    const QString actual = sha256Of(archive, &error);
+    const QString actual = copyAndHash(archive, copy, &error);
     if (!error.isEmpty()) return error;
     if (actual.compare(sha256, Qt::CaseInsensitive) != 0) return "SHA-256 mismatch for " + archive + ": expected " + sha256 + ", got " + actual;
-    error = verifyAttestation(gh, archive, repo);
+    error = verifyAttestation(gh, copy, repo);
     if (!error.isEmpty()) return error;
     const QString target = runtimesRoot + "/" + tag;
     if (QFileInfo::exists(target)) return target + " already exists";
     QProcess list;
-    list.start("tar", {"--zstd", "--quoting-style=escape", "--numeric-owner", "-tvf", archive});
+    list.start("tar", {"--zstd", "--quoting-style=escape", "--numeric-owner", "-tvf", copy});
     if (!list.waitForFinished(600000) || list.exitStatus() != QProcess::NormalExit || list.exitCode() != 0)
         return "cannot list " + archive + ": " + QString::fromUtf8(list.readAllStandardError());
     error = vetMembers(QString::fromUtf8(list.readAllStandardOutput()).split('\n'));
     if (!error.isEmpty()) return error;
     const QString staging = target + ".partial";
-    if (!QDir().mkpath(runtimesRoot)) return "cannot create " + runtimesRoot;
     // mkdir fails when the folder exists, so creating staging is the exclusive claim on this tag.
     if (!QDir().mkdir(staging)) return "cannot create " + staging + ": another install of " + tag + " is running, or an earlier one left it behind";
     // Staging is ours from here on; removing it on failure lets a retry claim it again. Symlinks are removed, not followed.
     auto abandon = [&](const QString &reason) { openFolders(staging); return QDir(staging).removeRecursively() ? reason : reason + "; cannot remove " + staging + ", remove it by hand"; };
     if (QFileInfo::exists(target)) return abandon(target + " already exists");
     QProcess extract;
-    extract.start("tar", {"--zstd", "-xf", archive, "-C", staging, "--no-same-owner", "--no-same-permissions", "--no-overwrite-dir"});
+    extract.start("tar", {"--zstd", "-xf", copy, "-C", staging, "--no-same-owner", "--no-same-permissions", "--no-overwrite-dir"});
     if (!extract.waitForFinished(1800000)) { extract.kill(); extract.waitForFinished(); return abandon("extraction timed out"); }
     if (extract.exitStatus() != QProcess::NormalExit || extract.exitCode() != 0)
         return abandon("extraction failed: " + QString::fromUtf8(extract.readAllStandardError()));
