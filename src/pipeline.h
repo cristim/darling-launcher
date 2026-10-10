@@ -3,10 +3,19 @@
 #include "pipelineworkspace.h"
 #include <QFutureWatcher>
 #include <QObject>
+#include <QSet>
 #include <QProcess>
 #include <QTimer>
 // Missing-symbol clean-room pipeline: research -> spec -> impl -> validate, one fresh headless agent
 // per stage, launcher-copied handoffs that pass HandoffStore, every step in the audit chain.
+// Recon runs once per spec release that carries a `Reconcile:` line (compliance ruling): a revised
+// spec with its own line gets a new reconciler, the same release never a second one.
+class ReconcileTracker {
+public:
+    bool shouldReconcile(const HandoffStore::Release &release, const QString &text);
+private:
+    QSet<QString> reconciled; // sha256 of spec->impl releases already reconciled
+};
 class MissingSymbolPipeline : public QObject {
     Q_OBJECT
 public:
@@ -41,6 +50,7 @@ private:
     void handOff(const HandoffStore::Release &release);
     void revise(const QStringList &reasons);
     void taint(const QString &reason, const QStringList &complianceRules = {});
+    QString reportCompliance(const QStringList &rules); // log line, status, signal; returns the log text
     QString releasedText(const HandoffStore::Release &release) const;
     void finish(State state, const QString &message);
     bool record(const QString &verdict, QJsonObject fields);
@@ -54,7 +64,8 @@ private:
     QHash<QString, int> launches, revisions, replacements;
     QHash<QString, QList<HandoffStore::Release>> delivered, inputs; // per stage: all deliveries / those named in Inputs
     int validationRounds = 0, logFd = -1, runLock = -1;
-    bool cancelling = false, timedOut = false, reconciled = false;
+    bool cancelling = false, timedOut = false;
+    ReconcileTracker reconciler;
     QProcess *process = nullptr;
     QTimer timeout;
     QFutureWatcher<HandoffStore::Result> watcher;

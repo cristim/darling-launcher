@@ -26,7 +26,7 @@ QStringList names(const QList<HandoffStore::Release> &releases) { QStringList ou
 // "records=N last_hash=H": what an outside edit of AUDIT.jsonl would change.
 QString chainHead(const QString &root) { return HandoffStore::verifyChain(root, false).summary.section(' ', 0, 1); }
 QString describe(const HandoffCheck::Hit &h) { return QString("line %1: [%2] %3").arg(h.line).arg(h.rule, h.description); }
-constexpr qint64 ScanChunk = 4 * 1024 * 1024;
+constexpr qint64 ScanChunk = 4 * 1024 * 1024, ScanOverlap = 4096;
 const char *Marker = "DARLING_PIPELINE_AGENT";
 bool hasMarker(qint64 pid, const QString &agentId) {
     QFile env(QString("/proc/%1/environ").arg(pid));
@@ -61,12 +61,20 @@ QString scanFile(const QString &path) {
         buffer += f.read(ScanChunk);
         qsizetype cut = f.atEnd() ? buffer.size() : buffer.lastIndexOf('\n') + 1;
         if (cut == 0 && buffer.size() < 2 * ScanChunk) continue; // keep reading a long line
-        if (cut == 0) cut = buffer.size();                        // a line over 8 MB is scanned in pieces
+        const bool longLine = cut == 0;                           // a line over 8 MB is scanned in pieces
+        if (longLine) cut = buffer.size();
         if (exposed(buffer.left(cut))) return " contains disassembly or decompiler markers";
-        buffer.remove(0, cut);
+        buffer.remove(0, longLine ? cut - ScanOverlap : cut);  // keep an overlap so no marker is split
     }
     return !buffer.isEmpty() && exposed(buffer) ? " contains disassembly or decompiler markers" : QString();
 }
+}
+bool ReconcileTracker::shouldReconcile(const HandoffStore::Release &release, const QString &text) {
+    // `Reconcile: <names>` (SKILL.md), names in the same grammar as the reconciler's `Absent:` line.
+    static const QRegularExpression line("(?m)^Reconcile:\\s*[A-Za-z_$][\\w$.@]*(?:\\s*,\\s*[A-Za-z_$][\\w$.@]*)*\\s*$");
+    if (release.from != "spec" || release.to != "impl" || !line.match(text).hasMatch() || reconciled.contains(release.sha256)) return false;
+    reconciled.insert(release.sha256);
+    return true;
 }
 QStringList MissingSymbolPipeline::defaultAgents(const QStringList &installed) {
     QStringList out;
@@ -203,7 +211,8 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
     if (QFileInfo::exists(dir + "/TAINTED.md")) reasons << "the agent reported exposure in TAINTED.md";
     for (QDirIterator it(dir, QDir::Files | QDir::Hidden | QDir::NoSymLinks, QDirIterator::Subdirectories); it.hasNext();) {
         const QString path = it.next(), rel = path.mid(dir.size() + 1);
-        if (rel.startsWith("inputs/") || rel.startsWith("trace/") || rel.startsWith(".tmp/")) continue;
+        // OUTPUT.md gets the full check with rule-level compliance reporting below.
+        if (rel.startsWith("inputs/") || rel.startsWith("trace/") || rel.startsWith(".tmp/") || rel == "OUTPUT.md") continue;
         if (const QString problem = scanFile(path); !problem.isEmpty()) reasons << rel + problem;
     }
     if (needsFirewall(activeStage)) reasons += ws.firewall(activeStage, names(delivered.value(activeStage)));
@@ -224,9 +233,10 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
         QFile f(output); f.open(QIODevice::ReadOnly);
         const QString body = QString::fromUtf8(f.read(HandoffStore::MaxInput)), verdict = body.section('\n', 0, 0).trimmed();
         if (verdict == "VERDICT: PASS") {
-            QStringList problems; bool exposure = false;
-            for (const auto &h : HandoffCheck::checkTextStrict(body)) { problems << describe(h); exposure = exposure || HandoffCheck::isComplianceRule(h); }
-            if (exposure) { taint("the validation report matched compliance rules"); return; }
+            QStringList problems, rules;
+            for (const auto &h : HandoffCheck::checkTextStrict(body)) { problems << describe(h); if (HandoffCheck::isComplianceRule(h)) rules << (h.inner.isEmpty() ? h.rule : h.inner); }
+            rules.removeDuplicates(); rules.sort();
+            if (!rules.isEmpty()) { taint(reportCompliance(rules) + " (" + problems.join("; ") + ")", rules); return; }
             if (!problems.isEmpty()) { revise(problems); return; }
             const auto chain = HandoffStore::verifyChain(ws.root);
             if (chain.exitCode != 0) { finish(State::Failed, "The audit chain does not verify: " + chain.problems.join("; ")); return; }
@@ -239,21 +249,30 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
         to = "impl";
     }
     if (!anchor.isEmpty() && chainHead(ws.root) != anchor) { finish(State::Failed, "The audit log changed outside the launcher; the run is stopped."); return; }
+    emit statusChanged("Checking the " + activeStage + " output before it is handed on…");
     watcher.setFuture(QtConcurrent::run(HandoffStore::submit, ws.root, activeStage, to, output, agentId, names(inputs.value(activeStage))));
+}
+QString MissingSymbolPipeline::reportCompliance(const QStringList &rules) {
+    const QString report = "REPORT-TO-COMPLIANCE: rule " + rules.join(", rule ");
+    LauncherLog::write("pipeline", ws.runId + " " + activeStage + ": " + report);
+    emit statusChanged(report + " (" + activeStage + " stage)");
+    emit complianceReport(activeStage, rules);
+    return report;
 }
 void MissingSymbolPipeline::submitted(const HandoffStore::Result &result) {
     anchor = chainHead(ws.root);
     if (current != State::Running) return;
-    if (cancelling) { if (record("CANCEL", {{"stage", activeStage}})) finish(State::Cancelled, "Cancelled."); return; }
+    QStringList reasons; for (const auto &h : result.reasons) reasons << describe(h);
+    // A compliance hit is reported before anything else can end the run: cancel, store failure, taint limit.
+    const QString report = result.reportToCompliance ? reportCompliance(result.complianceRules) : QString();
     if (result.status == HandoffStore::Status::Unsafe) { finish(State::Failed, "Cannot check the " + activeStage + " output: " + result.error); return; }
+    if (!report.isEmpty() && cancelling) {
+        if (!record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", report}, {"moved_to", activeStage + ".tainted/" + agentId}, {"report_to_compliance", true}, {"compliance_rules", QJsonArray::fromStringList(result.complianceRules)}})) return;
+        if (const QString error = ws.taint(activeStage, agentId); !error.isEmpty()) { finish(State::Failed, error); return; }
+    }
+    if (cancelling) { if (record("CANCEL", {{"stage", activeStage}})) finish(State::Cancelled, "Cancelled."); return; }
     if (result.status == HandoffStore::Status::Rejected) {
-        QStringList reasons; for (const auto &h : result.reasons) reasons << describe(h);
-        if (result.reportToCompliance) {
-            const QString report = "REPORT-TO-COMPLIANCE: rule " + result.complianceRules.join(", rule ");
-            LauncherLog::write("pipeline", ws.runId + " " + activeStage + ": " + report);
-            emit complianceReport(activeStage, result.complianceRules);
-            taint(report + " (" + reasons.join("; ") + ")", result.complianceRules);
-        }
+        if (!report.isEmpty()) taint(report + " (" + reasons.join("; ") + ")", result.complianceRules);
         else revise(reasons);
         return;
     }
@@ -277,8 +296,8 @@ void MissingSymbolPipeline::handOff(const HandoffStore::Release &release) {
     // A specification may ask the reconciler whether names are already absent from Darling's tree; recon sees
     // only that release and the working tree, and its answer goes to impl only.
     QString stage = next;
-    if (error.isEmpty() && release.from == "spec" && release.to == "impl" && !reconciled && HandoffCheck::parseHeader(releasedText(release), "Reconcile")) {
-        reconciled = true; stage = "recon";
+    if (error.isEmpty() && reconciler.shouldReconcile(release, releasedText(release))) {
+        stage = "recon";
         error = deliver(release, "recon", true);
         if (error.isEmpty()) { delivered["recon"] << release; inputs["recon"] << release; }
     }
