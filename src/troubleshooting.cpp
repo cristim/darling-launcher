@@ -308,12 +308,15 @@ void LaunchChoicesDialog::setSourceAvailability(bool mounted, bool possible) {
 QString PipelineConsentDialog::isolationStatement(const QString &trace) {
     return "How the stages are separated: research, specification, implementation and validation each get their own folder (mode 700) under " + PipelineWorkspace::defaultBase() + ". "
         "While one stage's agent runs, the other folders are locked (mode 000) and the run folder cannot be listed. A fresh agent process starts for every stage. "
-        "Only files the launcher copied after its text check cross between stages: implementation receives the specification only, never the trace or the research facts. "
+        "Only files the launcher copied after its text check cross between stages: implementation receives the specification (and validation mismatch reports) only, never the trace or the research facts. "
         "Every step is recorded in a hash-chained audit log.\n\n"
-        "This is not a sandbox. Every stage runs as your user account, so an agent that ignores its instructions can unlock folders (the launcher detects that and discards the stage) "
-        "or read any other file your account can read. Claude is limited to the stage folder by --add-dir and keeps no session history (--no-session-persistence); "
+        "This is not a sandbox. Every stage runs as your user account, so an agent that ignores its instructions can read any other file your account can read. "
+        "If it unlocks another stage's folder, the launcher normally notices and discards that stage's work, but this is detection, not prevention. "
+        "Between stages, while the launcher checks and copies files, the folders are not locked. "
+        "Claude is pointed at the stage folder (--add-dir) and keeps no session history (--no-session-persistence), but its file tools are not confined by the operating system; "
         "Codex and OpenCode can read outside the folder and keep their own session history in your home folder, outside the launcher's control. "
-        "Processes an agent leaves running are stopped when its stage ends. The trace itself stays where the tracer wrote it: " + trace + "\n\n"
+        "The launcher stops the processes an agent leaves behind that it can find; an agent can still start processes it cannot see, for example through systemd or a terminal multiplexer. "
+        "The trace itself stays where the tracer wrote it: " + trace + "\n\n"
         "Starting sends each stage's inputs to the agent service chosen for that stage.";
 }
 PipelineConsentDialog::PipelineConsentDialog(const QString &tracePath, const QString &symbolName, const QString &libraryName, QWidget *parent) : QDialog(parent), trace(tracePath), symbol(symbolName), library(libraryName) {
