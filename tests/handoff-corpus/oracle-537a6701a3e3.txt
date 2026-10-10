@@ -1,3 +1,0 @@
-{"symbol": "_f", "regs": []}
-
-note 59

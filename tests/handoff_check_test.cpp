@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "handoffcheck.h"
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -63,6 +64,20 @@ private slots:
         QVERIFY(!HandoffCheck::isComplianceRule({1, "E3", "x", "R6"}));
         const auto hits = HandoffCheck::checkTextStrict(readUtf8(corpusDir + "/adv-base64-asm.txt"));
         QVERIFY(std::any_of(hits.begin(), hits.end(), HandoffCheck::isComplianceRule));
+    }
+    // Compliance-confirmed oracle version: drift of the vendored copy must fail loudly.
+    void vendoredOracleIsTheConfirmedVersion() {
+        const QHash<QString, QString> pinned{{"check_handoff.py", "4aafb1cdb9ee7563dcbf4c05169107bbfcf58c5ff41659dd6be71a7b6d6bf7c8"},
+                                             {"test_check_handoff.py", "992f6c8b9851aaeda52ac898ae4ca150514fade815c56d81c320d0f20d7bdd46"}};
+        for (auto it = pinned.begin(); it != pinned.end(); ++it) {
+            QFile f(TEST_SOURCE_DIR "/tests/handoff-oracle/" + it.key()); QVERIFY(f.open(QIODevice::ReadOnly));
+            QCOMPARE(QString::fromLatin1(QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex()), it.value());
+        }
+    }
+    void longLineComplianceHitsSurviveTheWindowing() {
+        const auto hits = HandoffCheck::checkTextStrict(QString("a ").repeated(100000) + "calls sub_1A2B\n");
+        QVERIFY(std::any_of(hits.begin(), hits.end(), [](const auto &h) { return h.rule == "E4" && h.inner == "R5" && HandoffCheck::isComplianceRule(h); }));
+        QVERIFY(!HandoffCheck::exposureMarkers(QString("x").repeated(20000) + " sub_1A2B\n").isEmpty()); // log scan past 4096 chars
     }
     void headers() {
         const QString t = "Agent: res-1\nInputs: 01-a.md; 02-b.md\n";

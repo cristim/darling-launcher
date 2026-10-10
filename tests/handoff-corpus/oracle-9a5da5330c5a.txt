@@ -1,4 +1,0 @@
-Behaviour spec.
-Sources: public docs; Libc
-
-note 43

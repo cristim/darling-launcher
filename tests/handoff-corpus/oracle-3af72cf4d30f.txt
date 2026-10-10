@@ -1,0 +1,1 @@
+mov x0, x1 ldr x2, [sp, #8] bl _foo

@@ -1,0 +1,4 @@
+Agent: a
+Inputs: 01-research-to-spec.md b522f02a3c6b4872b2734e86e8ee4113503efe19ace112961e55830f33ea5d2c
+
+note 77

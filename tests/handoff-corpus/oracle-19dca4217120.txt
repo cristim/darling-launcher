@@ -1,0 +1,3 @@
+m​ov x0, x1
+l⁠dr x2, [sp, #8]
+bl­ _foo

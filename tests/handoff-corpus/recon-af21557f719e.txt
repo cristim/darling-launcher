@@ -1,0 +1,4 @@
+Inputs: 02-spec-to-impl.md ca005702d8095d593407179d5142bcb2d2b632873cd894a4cfeb42dc16344a4d
+Absent: _FooBar, _BazQux
+Branch: feature/x  Commit: 3ddf2a330123456789abcdef0123456789abcdef
+Callers exist: yes; files: src/a.c, include/b.h

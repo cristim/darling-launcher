@@ -1,4 +1,0 @@
-Agent: a
-Inputs: 01-research-to-spec.md a05381f40834d2536368e7a99e48728ea6c79a6f736f3465f5c8937c8371e6d7
-
-note 69

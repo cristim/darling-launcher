@@ -50,6 +50,20 @@ class RuleTests(unittest.TestCase):
                   "AppKit flag 0x10 is documented\n", "frame 0x7ff800003000 in our harness\n"):
             self.assertNotIn("R10", rules(x), x)
 
+    def test_zero_width_chars_do_not_split_tokens(self):
+        self.assertIn("R5", rules("see su\u200db_1A2B here"))  # ZWJ inside sub_
+        self.assertIn("R5", rules("see sub\u200b_1A2B here"))  # ZWSP
+        t = "m\u200bov x0, x1\nl\u2060dr x2, [sp, #8]\nbl\u00ad _foo\n"  # ZWSP, word joiner, soft hyphen
+        self.assertIn("R1", rules(t))
+
+    def test_lone_cr_nel_ls_ps_are_line_breaks(self):
+        asm = ["mov x0, x1", "ldr x2, [sp, #8]", "bl _foo"]
+        for br in ("\r", "\x85", "\u2028", "\u2029", "\r\n"):
+            self.assertIn("R1", rules(br.join(asm)), repr(br))
+            self.assertIn("R5", rules("prose" + br + "sub_1A2B"), repr(br))
+        hits = ch.check_text("a\rb\rsub_1A2B", "spec", "impl")
+        self.assertEqual(3, hits[0][0])
+
     def test_r1_near_miss_prose_and_short_runs(self):
         self.assertEqual(set(), rules("We mov the file, then call the function and push the button.\n"))
         self.assertEqual(set(), rules("mov x0, x1\nldr x2, [sp, #8]\n"))  # only 2 lines
@@ -409,6 +423,18 @@ class CliTests(CliBase):
         self.assertIn("corrupt", err)
         self.assertEqual(1, self.verify()[0])
 
+    def test_non_ascii_digit_file_name_is_a_stray_file(self):
+        self.assertEqual(0, self.run_cli("research", "spec", self.CLEAN)[0])
+        stray = os.path.join(self.hand, "\u0660\u0662-spec-to-impl.md")  # Arabic-Indic digits
+        put(stray, "x")
+        rc, err = self.verify()
+        self.assertEqual((1, True), (rc, "stray file" in err))
+        rc, err = self.run_cli("spec", "impl", self.CLEAN)
+        self.assertEqual((2, True), (rc, "stray file" in err))
+        os.remove(stray)
+        put(os.path.join(self.hand, "notes.txt"), "x")  # any unrecognised name is stray
+        self.assertEqual(1, self.verify()[0])
+
     def test_failed_release_leaves_no_nn_file(self):
         self.assertEqual(0, self.run_cli("research", "spec", self.CLEAN)[0])
         mf = os.path.join(self.hand, "MANIFEST.txt")
@@ -519,6 +545,47 @@ class ComplianceTests(CliBase):
         self.assertIn("REPORT-TO-COMPLIANCE: rule R10", err)
         self.assertTrue(self.audit()[-1]["report_to_compliance"])
 
+    def test_compliance_report_printed_even_when_store_fails(self):
+        self.assertEqual(0, self.run_cli("research", "spec", "ok\n")[0])
+        audit = os.path.join(self.hand, "AUDIT.jsonl")
+        with open(audit, "a") as f:
+            f.write("garbage\n")  # corrupt audit: the REJECT cannot be recorded
+        rc, err = self.run_cli("spec", "impl", "see sub_1A2B and libobjc.A.dylib+0x1c\n")
+        self.assertEqual(2, rc)
+        self.assertIn("error:", err)
+        self.assertIn("REPORT-TO-COMPLIANCE: rule R5", err)
+        self.assertIn("REPORT-TO-COMPLIANCE: rule R10", err)
+        # crashed-release leftover: refuse_broken aborts before any record
+        with open(audit) as f:
+            keep = f.readlines()[:-1]
+        with open(audit, "w") as f:
+            f.writelines(keep)
+        put(os.path.join(self.hand, ".tmp-02-spec-to-impl.md"), "x")
+        rc, err = self.run_cli("spec", "impl", "see sub_1A2B\n")
+        self.assertEqual(2, rc)
+        self.assertIn("REPORT-TO-COMPLIANCE: rule R5", err)
+        # a clean file that aborts prints no report
+        rc, err = self.run_cli("spec", "impl", "clean\n")
+        self.assertEqual((2, False), (rc, "REPORT-TO-COMPLIANCE" in err))
+
+    def test_report_to_compliance_must_be_json_boolean(self):
+        self.run_cli("spec", "impl", "see sub_1A2B\n")  # flagged true
+        self.assertEqual(0, self.run_cli("research", "spec", "ok\n")[0])
+        audit = os.path.join(self.hand, "AUDIT.jsonl")
+        for bad in ('1', '"yes"', '"true"'):
+            with open(audit) as f:
+                lines = f.readlines()
+            rec = json.loads(lines[-1])
+            rec["report_to_compliance"] = json.loads(bad)
+            with open(audit, "w") as f:
+                f.writelines(lines[:-1] + [json.dumps(rec, sort_keys=True) + "\n"])
+            rc, err = self.verify()
+            self.assertEqual(1, rc, bad)
+            self.assertIn("not a JSON boolean", err)
+            rc, _, out = self.call(["--summary", "--run-root", self.root])
+            self.assertEqual(0, rc)
+            self.assertIn("compliance_reports=1 ", out)  # only the literal true on line 1 counts
+
     def test_other_hits_not_flagged(self):
         for text in ("/System/Library/Foo\n", "\n".join(f"0x1000000{i}" for i in range(5)),
                      '{"symbol": "_f", "regs": []}\n'):
@@ -545,6 +612,24 @@ class ComplianceTests(CliBase):
         self.assertTrue(m, self.last_out)
         rc, _, out = self.call(["--summary", "--run-root", self.root])
         self.assertEqual((0, self.last_out), (rc, out))
+
+
+class TaintedReconTests(CliBase):
+    def test_recon_tainted_agent_dir_is_counted(self):
+        self.assertEqual(0, self.run_cli("research", "spec", "ok\n")[0])
+        os.makedirs(os.path.join(self.root, "recon.tainted", "reconciler-1"))
+        rc, err = self.verify()
+        self.assertEqual(0, rc)
+        self.assertIn("tainted_stages=1 ", self.last_out)
+        self.assertNotIn("warning", err)
+
+    def test_bare_recon_tainted_warns_and_counts_zero(self):
+        self.assertEqual(0, self.run_cli("research", "spec", "ok\n")[0])
+        os.mkdir(os.path.join(self.root, "recon.tainted"))
+        rc, err = self.verify()
+        self.assertEqual(0, rc)
+        self.assertIn("tainted_stages=0 ", self.last_out)
+        self.assertIn("recon.tainted has no <agent-id> subdirectory", err)
 
 
 class ProvenanceTests(CliBase):
