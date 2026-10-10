@@ -308,7 +308,7 @@ QString PipelineConsentDialog::isolationStatement(const QString &trace) {
         "Only files the launcher copied after its text check cross between stages: implementation receives the specification (and validation mismatch reports) only, never the trace or the research facts. "
         "If the specification asks for it, an optional reconciler reads Darling's source and sends implementation a fixed three-line answer. "
         "Every step is recorded in a hash-chained audit log.\n\n"
-        "This is not a sandbox. Every stage runs as your user account, so an agent that ignores its instructions can read any other file your account can read. "
+        "This is not a sandbox. Not approved for Apple stock apps until a per-stage sandbox exists. Every stage runs as your user account, so an agent that ignores its instructions can read any other file your account can read. "
         "If it unlocks another stage's folder, the launcher normally notices and discards that stage's work, but this is detection, not prevention. "
         "Between stages, while the launcher checks and copies files, the folders are not locked. "
         "Claude is pointed at the stage folder (--add-dir) and keeps no session history (--no-session-persistence), but its file tools are not confined by the operating system; "
