@@ -15,6 +15,8 @@
 #include <QtTest>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/file.h>
 
 namespace {
 QJsonObject readJson(const QString &path) { QFile file(path); if (!file.open(QIODevice::ReadOnly)) return {}; return QJsonDocument::fromJson(file.readAll()).object(); }
@@ -490,6 +492,26 @@ private slots:
         QCOMPARE(vetMembers(listing), QString());
         listing << "-rw-r--r-- 0/0 0 2026-10-09 14:32 usr/local/d/one-more";
         QVERIFY(vetMembers(listing).contains("more than 200000 members"));
+    }
+    // QA delta D1: a killed install left its .archive-XXXXXX copy (about the archive's size) behind for good.
+    void staleArchiveCopiesAreRemovedOnlyWhenNoInstallRuns() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString gh = writeScript(root + "/gh", "exit 0"), good = makeArchive(root, "good", runtimeMembers()); QVERIFY(!gh.isEmpty()); QVERIFY(!good.isEmpty());
+        QVERIFY(QDir().mkpath(runtimes + "/.archive-Ab12Cd")); { QFile copy(runtimes + "/.archive-Ab12Cd/runtime.tar.zst"); QVERIFY(copy.open(QIODevice::WriteOnly)); }
+        QVERIFY(QDir().mkpath(root + "/outside")); { QFile keep(root + "/outside/keep"); QVERIFY(keep.open(QIODevice::WriteOnly)); }
+        QVERIFY(QFile::link(root + "/outside", runtimes + "/.archive-Zz99Zz"));
+        QVERIFY(QDir().mkpath(runtimes + "/.archive-other")); // does not match the six-character pattern
+        // Another install holds the lock shared: nothing may be removed.
+        const int other = ::open(QFile::encodeName(runtimes + "/.archive.lock").constData(), O_RDWR | O_CREAT, 0600); QVERIFY(other >= 0);
+        QCOMPARE(flock(other, LOCK_SH), 0);
+        QCOMPARE(installArchive(good, sha256File(good), runtimes, "v2026.10.09-00000e1", gh, "VibeDarling/darling", roomyUnpackedSize), QString());
+        QVERIFY(QFileInfo::exists(runtimes + "/.archive-Ab12Cd/runtime.tar.zst"));
+        ::close(other);
+        QCOMPARE(installArchive(good, sha256File(good), runtimes, "v2026.10.09-00000e2", gh, "VibeDarling/darling", roomyUnpackedSize), QString());
+        QVERIFY(!QFileInfo::exists(runtimes + "/.archive-Ab12Cd"));
+        QVERIFY(QFileInfo(runtimes + "/.archive-Zz99Zz").isSymLink()); QVERIFY(QFileInfo::exists(root + "/outside/keep"));
+        QVERIFY(QFileInfo::exists(runtimes + "/.archive-other"));
     }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;

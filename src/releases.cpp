@@ -76,6 +76,7 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <QTemporaryDir>
 #include <QElapsedTimer>
 #include <limits>
@@ -245,11 +246,28 @@ static void openFolders(const QString &dir) {
     chmod(QFile::encodeName(dir).constData(), (info.st_mode & 07777) | S_IRWXU);
     for (const QString &name : QDir(dir).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)) openFolders(dir + "/" + name);
 }
+// Removes .archive-XXXXXX folders this user owns (not symlinks); the caller must hold .archive.lock exclusively.
+static void removeStaleArchiveCopies(const QString &runtimesRoot) {
+    static const QRegularExpression name(R"(^\.archive-[A-Za-z0-9]{6}$)");
+    for (const QString &entry : QDir(runtimesRoot).entryList(QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot | QDir::NoSymLinks)) {
+        struct stat info;
+        const QString path = runtimesRoot + "/" + entry;
+        if (!name.match(entry).hasMatch() || lstat(QFile::encodeName(path).constData(), &info) != 0 || !S_ISDIR(info.st_mode) || info.st_uid != getuid()) continue;
+        QDir(path).removeRecursively();
+    }
+}
 QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize) {
     if (!validTag(tag)) return "not a release tag: " + tag;
     if (unpackedSize <= 0) return "release has no unpacked size";
     if (sha256.isEmpty()) return "release asset has no SHA-256 digest";
     if (!QDir().mkpath(runtimesRoot)) return "cannot create " + runtimesRoot;
+    // Every install holds .archive.lock shared; whoever gets it exclusively knows no other install is running, so
+    // any .archive-* left is from a killed install and can go.
+    const int lockFd = ::open(QFile::encodeName(runtimesRoot + "/.archive.lock").constData(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (lockFd < 0) return "cannot open " + runtimesRoot + "/.archive.lock: " + QString::fromLocal8Bit(strerror(errno));
+    const struct LockFd { int fd; ~LockFd() { ::close(fd); } } lock{lockFd};
+    if (flock(lock.fd, LOCK_EX | LOCK_NB) == 0) removeStaleArchiveCopies(runtimesRoot);
+    if (flock(lock.fd, LOCK_SH) != 0) return "cannot lock " + runtimesRoot + "/.archive.lock";
     // A 0700 folder only this user can write: the copy in it cannot be swapped between hashing and extraction.
     const QTemporaryDir privateDir(runtimesRoot + "/.archive-XXXXXX");
     if (!privateDir.isValid()) return "cannot create a private folder in " + runtimesRoot + ": " + privateDir.errorString();
