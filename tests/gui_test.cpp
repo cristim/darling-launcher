@@ -617,7 +617,7 @@ private slots:
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings settings("cristim", "darling-launcher"); settings.clear(); qputenv("HOME", temporary.path().toUtf8());
         PrefixDialog builder({}, {}, nullptr);
         const QString script = QDir(temporary.path() + "/.darling-launcher/tools").entryInfoList({"all-vibedarling-pr-prefix-*.py"}).value(0).absoluteFilePath(); QVERIFY(script.startsWith(temporary.path() + "/.darling-launcher/tools/")); QFile file(script); QVERIFY(file.open(QIODevice::ReadOnly));
-        QCOMPARE(QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex()), QString("be593c04751aa26e3b650d84442b62e2db8eb0b5888f4bc3cd281d4a850ae880"));
+        QCOMPARE(QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex()), QString("6b8f5cff62e23637cbcaaeddbc2eac961d77604da88b35b906ce0a1e90326939"));
         QProcess process; process.start(QStandardPaths::findExecutable("python3"), {script, "--help"}); QVERIFY(process.waitForFinished(3000)); QCOMPARE(process.exitCode(), 0); QVERIFY(process.readAllStandardOutput().contains("resolve-nested"));
         QCOMPARE(builder.findChild<QLabel *>("prefixBuilderSource")->text(), temporary.path() + "/.darling-launcher/sources/vibedarling");
     }
