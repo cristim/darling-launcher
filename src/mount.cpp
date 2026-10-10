@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "mount.h"
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QRegularExpression>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 bool fail(QString *error, const QString &message) { if (error) *error = message; return false; }
@@ -22,9 +24,33 @@ void collect(const QJsonArray &devices, QList<MacPartition> *result) {
         collect(item.value("children").toArray(), result);
     }
 }
+// lstat every component of an already canonical path; returns the first one that is a symlink,
+// not owned by root (or extraOwner when non-zero) or writable by group/others, or empty.
+QString untrustedComponent(const QString &resolved, unsigned extraOwner, struct stat *last) {
+    QStringList components{"/"};
+    for (const QString &part : resolved.split('/', Qt::SkipEmptyParts))
+        components << (components.last() == "/" ? "/" : components.last() + "/") + part;
+    for (const QString &component : components)
+        if (::lstat(QFile::encodeName(component).constData(), last) != 0 || S_ISLNK(last->st_mode)
+            || (last->st_uid != 0 && (extraOwner == 0 || last->st_uid != extraOwner)) || (last->st_mode & (S_IWGRP | S_IWOTH)))
+            return component;
+    return {};
+}
 }
 
 namespace LauncherMount {
+QString trustedExecutable(const QString &path, unsigned extraOwner, QString *error) {
+    const QString resolved = QDir::isAbsolutePath(path) ? QFileInfo(path).canonicalFilePath() : QString();
+    if (resolved.isEmpty()) { fail(error, "Required helper is missing or not an absolute path: " + path); return {}; }
+    struct stat status {};
+    if (const QString bad = untrustedComponent(resolved, extraOwner, &status); !bad.isEmpty()) {
+        fail(error, "Refusing to run " + path + " as root: " + bad + " is not root-owned or is writable by others");
+        return {};
+    }
+    if (!S_ISREG(status.st_mode) || !(status.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) { fail(error, "Not an executable file: " + path); return {}; }
+    return resolved;
+}
+
 QList<MacPartition> parsePartitions(const QByteArray &json, QString *error) {
     QJsonParseError parseError;
     auto document = QJsonDocument::fromJson(json, &parseError);
@@ -36,33 +62,14 @@ QList<MacPartition> parsePartitions(const QByteArray &json, QString *error) {
     return partitions;
 }
 
-bool makeCommand(const MacPartition &partition, const QString &directory, MountBackend backend,
-                 int volumeIndex, unsigned uid, unsigned gid, const QString &pkexec,
-                 const QString &mountTool, MountCommand *command, QString *error) {
-    if (!QRegularExpression(R"(^/dev/[A-Za-z0-9_/-]+$)").match(partition.device).hasMatch() || partition.device.contains(".."))
-        return fail(error, "Choose a detected device path under /dev");
-    if (partition.mounted) return fail(error, "This partition is already mounted; use mounted-volume discovery");
-    if (partition.filesystem != "apfs" && partition.filesystem != "hfs" && partition.filesystem != "hfsplus")
-        return fail(error, "Unsupported filesystem");
-    QFileInfo target(directory);
-    if (!QDir::isAbsolutePath(directory) || target.canonicalFilePath().isEmpty() || target.isSymLink() || !target.isDir() || target.canonicalFilePath() == "/")
-        return fail(error, "Choose an existing mount directory");
-    if (!QDir(directory).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System).isEmpty())
-        return fail(error, "Mount directory must be empty");
-    for (const auto &path : {pkexec, mountTool})
-        if (!QDir::isAbsolutePath(path) || !QFileInfo(path).isExecutable()) return fail(error, "Required mount or pkexec executable is unavailable");
-    if (partition.filesystem == "apfs" && volumeIndex < 0) return fail(error, "Select an APFS container volume index explicitly");
-    if (backend == MountBackend::ApfsFuse && partition.filesystem != "apfs") return fail(error, "APFS FUSE only supports APFS partitions");
-    QString options = "ro,nodev,nosuid,noexec,uid=" + QString::number(uid) + ",gid=" + QString::number(gid);
-    QStringList arguments{mountTool};
-    if (backend == MountBackend::ApfsFuse) {
-        arguments << "-v" << QString::number(volumeIndex) << "-o" << options + ",allow_other" << partition.device << target.canonicalFilePath();
-    } else {
-        if (partition.filesystem == "apfs") options += ",vol=" + QString::number(volumeIndex);
-        arguments << "-i" << "-t" << partition.filesystem << "-o" << options << "--" << partition.device << target.canonicalFilePath();
-    }
-    if (command) *command = {pkexec, arguments};
-    return true;
+QString mountParent() { return "/run/darling-launcher/" + QString::number(::getuid()); }
+
+bool isHelperMount(const QString &path) {
+    const QFileInfo info(path);
+    struct stat status {};
+    // The mounted root reports the caller's uid (uid= option), so only the parent chain is checked.
+    return QDir::isAbsolutePath(path) && info.canonicalFilePath() == path && info.isDir() && info.absolutePath() == mountParent()
+        && untrustedComponent(mountParent(), 0, &status).isEmpty() && S_ISDIR(status.st_mode);
 }
 
 QString exitDescription(int code) {

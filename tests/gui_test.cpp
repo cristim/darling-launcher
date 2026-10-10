@@ -547,9 +547,11 @@ private slots:
         QFile lsblk(temporary.path() + "/lsblk"); QVERIFY(lsblk.open(QIODevice::WriteOnly));
         lsblk.write("#!/bin/sh\nprintf '%s' '{\"blockdevices\":[{\"path\":\"/dev/synthetic\",\"fstype\":\"apfs\",\"mountpoints\":[]}]}'\n"); lsblk.close();
         QVERIFY(lsblk.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
-        QFile pkexec(temporary.path() + "/pkexec"); QVERIFY(pkexec.open(QIODevice::WriteOnly));
-        pkexec.write("#!/bin/sh\nprintf x >> \"$LAUNCHER_TEST_AUTH_COUNTER\"\n/usr/bin/sleep 1\nprintf '%s\\n' '{\"event\":\"progress\",\"message\":\"One batch authorized\"}'\nexit 0\n"); pkexec.close();
-        QVERIFY(pkexec.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        // The launcher runs the fixed LAUNCHER_PYTHON, never a PATH lookup; this test build points it at a fake.
+        QVERIFY(QDir().mkpath(QFileInfo(LAUNCHER_PYTHON).absolutePath()));
+        QFile::remove(LAUNCHER_PYTHON); QFile fakePython(LAUNCHER_PYTHON); QVERIFY(fakePython.open(QIODevice::WriteOnly));
+        fakePython.write("#!/bin/sh\nprintf x >> \"$LAUNCHER_TEST_AUTH_COUNTER\"\n/usr/bin/sleep 1\nprintf '%s\\n' '{\"event\":\"progress\",\"message\":\"One batch authorized\"}'\nexit 0\n"); fakePython.close();
+        QVERIFY(fakePython.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner|QFile::ReadOther|QFile::ExeOther));
         QByteArray originalPath = qgetenv("PATH"), oldCounter = qgetenv("LAUNCHER_TEST_AUTH_COUNTER");
         auto restore = qScopeGuard([=] { qputenv("PATH", originalPath); qputenv("LAUNCHER_TEST_AUTH_COUNTER", oldCounter); });
         qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath); qputenv("LAUNCHER_TEST_AUTH_COUNTER", (temporary.path() + "/count").toUtf8());
