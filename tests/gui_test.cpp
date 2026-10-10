@@ -654,7 +654,6 @@ private slots:
         window.findChild<QPushButton *>("Create prefix")->click();
         auto *dialog = window.findChild<PrefixDialog *>(); QVERIFY(dialog);
         const QString workspace = dialog->findChild<QLabel *>("prefixBuilderWorkspace")->text();
-        dialog->findChild<QComboBox *>("prefixBuilderScope")->setCurrentIndex(1);
         dialog->findChild<QPushButton *>("buildPrefix")->click();
         QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLineEdit *>("prefixField")->text(), workspace + "/prefix", 5000);
         QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), workspace + "/image/usr/local");
