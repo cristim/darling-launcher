@@ -8,8 +8,12 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <cerrno>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 bool error(QString *target, const QString &message) { if (target) *target = message; return false; }
@@ -62,9 +66,24 @@ bool selectNestedInputs(const QJsonObject &discovery, bool includePrs, QJsonObje
     if (selected) *selected = result;
     return true;
 }
+QString heavyBuildLock(QString *message) {
+    const QString override = qEnvironmentVariable("DARLING_LAUNCHER_LOCK_DIR"), runtime = qEnvironmentVariable("XDG_RUNTIME_DIR");
+    if (override.isEmpty() && runtime.isEmpty()) { error(message, "XDG_RUNTIME_DIR is not set; set DARLING_LAUNCHER_LOCK_DIR to a private directory for the heavy-build lock"); return {}; }
+    const QString directory = override.isEmpty() ? runtime + "/darling-launcher" : override;
+    if (!QDir::isAbsolutePath(directory)) { error(message, "The heavy-build lock directory must be an absolute path: " + directory); return {}; }
+    const QByteArray path = QFile::encodeName(directory);
+    struct stat status {};
+    if ((::mkdir(path.constData(), 0700) != 0 && errno != EEXIST) || ::lstat(path.constData(), &status) != 0 || !S_ISDIR(status.st_mode)
+        || status.st_uid != ::getuid() || (status.st_mode & (S_IWGRP | S_IWOTH))) {
+        error(message, "The heavy-build lock directory " + directory + " must be a directory you own that others cannot write");
+        return {};
+    }
+    return directory + "/darling-heavy-build.lock";
+}
 bool validateRequest(const PrefixBuildRequest &request, QString *message) {
     if (!QDir::isAbsolutePath(request.python) || !QFileInfo(request.python).isExecutable()) return error(message, "Python 3 is unavailable");
     if (!QDir::isAbsolutePath(request.script) || !QFileInfo(request.script).isFile()) return error(message, "Select the prefix-builder script");
+    if (!QRegularExpression("^[0-9a-f]{64}$").match(request.scriptSha256).hasMatch()) return error(message, "The prefix-builder script has no pinned SHA-256");
     if (!QDir::isAbsolutePath(request.source) || !QFileInfo(request.source).isDir()) return error(message, "Select a clean VibeDarling source clone");
     if (!QDir::isAbsolutePath(request.workspace) || QFileInfo::exists(request.workspace) || QFileInfo(request.workspace).isSymLink()) return error(message, "Choose a new, nonexistent workspace path");
     QString parent = QFileInfo(request.workspace).absolutePath();
@@ -100,11 +119,14 @@ void PrefixBuilder::start(const PrefixBuildRequest &value) {
     if (!staging.isValid()) { fail("Cannot create lock staging directory"); return; }
     request = value;
     QFile script(request.script); if (!script.open(QIODevice::ReadOnly)) { fail(script.errorString()); return; }
-    QByteArray bytes = script.readAll(); scriptSnapshot = staging.path() + "/builder.py";
+    QByteArray bytes = script.readAll();
+    const QString digest = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+    if (digest != request.scriptSha256) { fail("The prefix-builder script changed after it was selected (expected SHA-256 " + request.scriptSha256 + ", found " + digest + "); nothing was run."); return; }
+    scriptSnapshot = staging.path() + "/builder.py";
     QFile snapshot(scriptSnapshot);
     if (!snapshot.open(QIODevice::WriteOnly) || snapshot.write(bytes) != bytes.size()) { fail("Cannot snapshot the selected builder script"); return; }
     snapshot.close();
-    provenance = {{"script", request.script}, {"script_sha256", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())},
+    provenance = {{"script", request.script}, {"script_sha256", digest},
                   {"source_clone", request.source}, {"workspace", request.workspace}, {"include_open_prs", request.includePrs}, {"jobs", request.jobs}, {"cmake_arguments", QJsonArray::fromStringList(request.cmakeArguments)}};
     run(Phase::Inspect, {"--help"});
 }
@@ -125,9 +147,10 @@ void PrefixBuilder::run(Phase next, const QStringList &arguments) {
     QStringList args{"-u", scriptSnapshot}; args.append(arguments);
     if (next == Phase::Build) {
         const QString flock = QStandardPaths::findExecutable("flock");
-        const QString lockDirectory = qEnvironmentVariable("DARLING_LAUNCHER_LOCK_DIR", "/tmp/agent-locks");
-        if (flock.isEmpty() || !QDir().mkpath(lockDirectory)) { fail("Cannot acquire the shared Darling heavy-build lock; install flock and check the lock directory."); return; }
-        process.start(flock, QStringList{"-w", "1800", lockDirectory + "/darling-heavy-build.lock", request.python} + args);
+        QString message; const QString lock = LauncherPrefix::heavyBuildLock(&message);
+        if (flock.isEmpty()) { fail("Cannot acquire the Darling heavy-build lock; install flock."); return; }
+        if (lock.isEmpty()) { fail(message); return; }
+        process.start(flock, QStringList{"-w", "1800", lock, request.python} + args);
     } else process.start(request.python, args);
 }
 void PrefixBuilder::advance() {
@@ -135,7 +158,9 @@ void PrefixBuilder::advance() {
         if (!phaseOutput.contains("resolve") || !phaseOutput.contains("checkout") || !phaseOutput.contains("build")) { fail("The selected script does not expose the expected builder interface"); return; }
         supportsNested = phaseOutput.contains("resolve-nested") && phaseOutput.contains("checkout-nested");
         provenance.insert("nested_submodule_workflow", supportsNested);
-        run(Phase::Resolve, {"resolve", "--source", request.source, "--output", staging.path() + "/discovery.lock.json", "--jobs", QString::number(request.jobs)});
+        QStringList resolve{"resolve", "--source", request.source, "--output", staging.path() + "/discovery.lock.json", "--jobs", QString::number(request.jobs)};
+        if (request.includePrs) resolve << "--include-prs";
+        run(Phase::Resolve, resolve);
     } else if (phase == Phase::Resolve) {
         QJsonObject discovery, selected; QString message;
         if (!loadJson(staging.path() + "/discovery.lock.json", &discovery)) { fail("Cannot read the discovery lock"); return; }
@@ -145,7 +170,9 @@ void PrefixBuilder::advance() {
     } else if (phase == Phase::Checkout) {
         if (!QFile::copy(staging.path() + "/discovery.lock.json", request.workspace + "/refs.discovery.lock.json") ||
             !saveJson(request.workspace + "/launcher-build-request.json", provenance)) { fail("Cannot retain discovery provenance in the new workspace"); return; }
-        if (supportsNested) run(Phase::ResolveNested, {"resolve-nested", "--workspace", request.workspace, "--output", staging.path() + "/nested.discovery.lock.json", "--jobs", QString::number(request.jobs)});
+        QStringList resolveNested{"resolve-nested", "--workspace", request.workspace, "--output", staging.path() + "/nested.discovery.lock.json", "--jobs", QString::number(request.jobs)};
+        if (request.includePrs) resolveNested << "--include-prs";
+        if (supportsNested) run(Phase::ResolveNested, resolveNested);
         else build();
     } else if (phase == Phase::ResolveNested) {
         QJsonObject discovery, selected; QString message;

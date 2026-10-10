@@ -19,7 +19,7 @@ The core tests use synthetic app bundles, libraries, and Brewfiles. Mount tests 
 
 Choose a mounted macOS volume and a separate prefix. **Detect mounted macOS volumes** lists current mounts with a macOS directory layout. **Create prefix** opens the isolated VibeDarling build workflow described below. **Initialize selected prefix** initializes a directory with the already configured Darling runtime. **Scan volume** automatically lists `.app` bundles in subdirectories of `Applications` and `System/Applications`; select any set to copy into the prefix. Imports reject source escapes, unsafe symlinks, and existing targets. Bundle metadata is read with libplist; executable bytes are copied privately and never inspected.
 
-**Mount macOS source** lists detected APFS/HFS partitions using `lsblk`. Choose a partition, an existing empty directory, a kernel driver or APFS FUSE, and an explicit APFS volume index. It invokes the selected driver through `pkexec` with read-only, nodev, nosuid and noexec options. The kernel path requires an installed filesystem module; APFS FUSE requires `apfs-fuse`. Authorization cancellation and denial stop the action. The source field is updated only after verifying the mount and macOS layout. You can explicitly unmount a source mounted during this launcher session; it is not unmounted on exit. Encrypted APFS unlocking is outside this workflow. Driver option references: [APFS FUSE](https://github.com/sgan81/apfs-fuse) and [Linux APFS](https://github.com/eafer/linux-apfs-rw).
+**Mount macOS source** lists detected APFS/HFS partitions using `lsblk`. Choose a partition, a kernel driver or APFS FUSE, and an APFS volume index (required for the kernel driver). It runs the same root-owned helper as the batch mount (`tools/mount-macos.py --device ... --volume ... [--kernel]`) through `pkexec`, which mounts under `/run/darling-launcher/<uid>/` with read-only, nodev, nosuid and noexec options. The kernel path requires an installed filesystem module; APFS FUSE requires `apfs-fuse`. Authorization cancellation and denial stop the action. The source field is updated only after verifying the mount and macOS layout. You can explicitly unmount a source the helper mounted during this launcher session (only mount points under that root-owned directory are accepted); it is not unmounted on exit. Encrypted APFS unlocking is outside this workflow. Driver option references: [APFS FUSE](https://github.com/sgan81/apfs-fuse) and [Linux APFS](https://github.com/eafer/linux-apfs-rw).
 
 The source browser reads bundle display names, `CFBundleIconFile` resources and total file sizes in the background. List view uses 32-pixel icons and shows sizes in decimal units; grid view uses 64-pixel icons. Ctrl+A, Ctrl-click and Shift-click select sets. Drag a set into the imported-apps area or use **Import selected apps**. Missing or unreadable icon resources use a generic icon; no executable code is read to obtain icons.
 
@@ -36,8 +36,15 @@ Setup clones VibeDarling into `<data>/sources/vibedarling`, builds in a fresh
 `<data>/workspaces/...` and automatically selects the resulting runtime/prefix.
 No macOS volume is required for this build. Git, Python, CMake, Ninja and the
 Darling host build dependencies must be available; errors retain the workspace
-and appear in build progress. Compilation and private installation hold the shared
+and appear in build progress. Compilation and private installation hold the
 heavy-build lock. The launcher cannot close during an active clone/build.
+
+The heavy-build lock is `$XDG_RUNTIME_DIR/darling-launcher/darling-heavy-build.lock`,
+in a directory created 0700. `DARLING_LAUNCHER_LOCK_DIR` replaces that directory for
+both the launcher's own builds and the agent's `build.sh`. Either way the directory
+must be owned by you and not writable by group or others, otherwise the build stops.
+To share the lock with other tools of yours that use `/tmp/agent-locks`, set
+`DARLING_LAUNCHER_LOCK_DIR=/tmp/agent-locks` after making sure that directory is yours.
 
 Choose default branches only or default branches plus all open PRs, a job count and optional CMake settings (one `-DNAME=VALUE` per line). The script resolves main/master where present and records exceptions for repositories with another default branch.
 
@@ -45,7 +52,7 @@ The launcher snapshots the selected script and checks its CLI. It runs `resolve`
 
 The output prefix is `<workspace>/prefix`, the executable is `<workspace>/build/src/startup/darling`, and the install root is `<workspace>/image/usr/local`. The GUI selects these together after successful verification and sets `DARLING_INSTALL_PREFIX` for guest launches. Script, lock and integration-manifest hashes are recorded under the private prefix's `.darling-launcher/build-provenance.json`. No existing source checkout or installed runtime is modified by this integration. Keep the GUI open while imports and builds are active.
 
-The builder requires GitHub network access and a full Darling build environment. It currently resolves the PR inventory for both choices; only the selected lock controls which PRs are integrated.
+The builder requires GitHub network access and a full Darling build environment. Open PRs are queried and locked only when "plus all open PRs" is selected (the builder's `--include-prs`); the default locks default branches only. The builder keeps `GITHUB_TOKEN`/`GH_TOKEN` out of every process it starts.
 
 **Launch selected** uses `DPREFIX=<selected prefix> <selected darling> exec <guest executable>`. Each launch has a separate host `QProcess`, and the progress/output area shows its activity and exit status. If dyld reports `Symbol not found`, `Referenced from`, and `Expected in`, or an absolute `Library not loaded` path with `Reason: image not found`, the GUI offers to copy the named system library or framework from the selected mounted volume and retry. Each accepted import is added to a private chain at `<prefix>/.darling-launcher/catalog.json`. Loader errors are diagnosed as output arrives, even if the host wrapper remains running. **Stop selected prefix processes** explicitly shuts down all apps in that prefix before a retry. Library imports run in the background and record the source path and destination prefix. If the source has framework resources but no standalone library file, import stops with an explanation; extracting libraries from a dyld shared cache is outside this workflow. The proposed issue is saved locally under that directory for review. Nothing is submitted automatically.
 
@@ -143,7 +150,7 @@ saves diagnostic JSON and clean-room instructions, and runs the CLI in the backg
 with a private `AGENT.log`; a terminal option remains available. No Apple payloads are
 attached. Jobs survive popup closure; Settings can stop the owned CLI. Tools retain
 their configured authentication and permission boundaries. Source work uses independent
-clones, private prefixes and the shared heavy-build lock. No push or issue/PR submission
+clones, private prefixes and the heavy-build lock. No push or issue/PR submission
 is authorized by starting an agent.
 
 If `gh auth status --hostname github.com` succeeds, **Review completed PR proposal…**
@@ -182,8 +189,6 @@ APFS/HFS partitions detected by `lsblk`. For APFS it uses `apfsutil` metadata to
 obtain actual volume indices, then mounts each unencrypted volume with APFS FUSE.
 It does not guess indices or unlock FileVault. The complete batch uses one `pkexec` authorization request and
 `ro,nodev,nosuid,noexec`; cancelling or denying authorization stops the batch.
-Mount helpers and the batch mount root are configurable. Installed helpers or
-helpers built in discovered Darling folders are detected automatically.
 
 After mounting, a single macOS applications source is selected automatically;
 multiple matches require a choice. Verified mounts are listed in the dialog's
@@ -202,17 +207,38 @@ association. Ordinary startup never mounts partitions automatically.
 The GUI uses `tools/mount-macos.py`, which requests authorization exactly once,
 then enumerates and mounts every detected unencrypted APFS/HFS volume in that
 privileged helper. Python runs in isolated mode. The helper accepts only detected
-block devices, obtains APFS volume indices from filesystem metadata, requires
-empty directories without symlink ancestors, and verifies read-only mount flags.
+block devices, obtains APFS volume indices from filesystem metadata, mounts under
+`/run/darling-launcher/<uid>/<device>-volume-<n>` (created by root, root-owned, so
+nothing but root can re-point a mount point), and verifies device, target and
+read-only flags afterwards; if that fails, only the helper's own mount point is
+unmounted (lazily when busy). `/run/darling-launcher/<uid>` is root-owned, mode
+0750, with a POSIX ACL that lets only your uid in, so other users cannot reach the
+mounted contents. Where `/run` has no ACL support it falls back to
+`root:<your primary group>` and the helper warns that members of a shared primary
+group can reach the mounts.
+APFS FUSE runs with `default_permissions`, so the kernel enforces the `uid=`/`gid=`
+ownership. Errors name the failing step, not file paths or tool output.
 Progress and discovered application sources are emitted as JSON lines. Individual
 driver failures are reported and the remaining detected volumes are attempted;
 there is no authorization retry or alternate privilege mechanism.
 
-You can run the same script from your desktop terminal:
+Everything that runs as root must be a file only root can change: `pkexec`,
+`mount` and `umount` are fixed under `/usr/bin`, Python is `/usr/bin/python3`,
+`apfs-fuse` and `apfsutil` are taken only from `/usr/bin` or `/usr/local/bin`
+(never from settings or arguments), and they and the script itself must be
+root-owned and not group/other writable along their whole resolved path. A copy in a source or build
+tree is refused, so install the helper where the launcher was configured to find
+it (`LAUNCHER_MOUNT_SCRIPT`, by default `<prefix>/libexec/darling-launcher/mount-macos.py`):
 
 ```sh
-python3 tools/mount-macos.py --mount-root "$XDG_RUNTIME_DIR/darling-launcher/macos" \
-  --apfs-fuse /absolute/path/to/apfs-fuse --apfsutil /absolute/path/to/apfsutil
+sudo cmake --install build   # or:
+sudo install -D -o root -g root -m 0755 tools/mount-macos.py /usr/local/libexec/darling-launcher/mount-macos.py
+```
+
+The installed script can also be run from your desktop terminal:
+
+```sh
+/usr/bin/python3 -I /usr/local/libexec/darling-launcher/mount-macos.py
 ```
 
 The script uses the calling user's identity supplied by `pkexec` for file access

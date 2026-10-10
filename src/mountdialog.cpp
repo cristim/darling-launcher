@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "mountdialog.h"
 #include "core.h"
-#include "discovery.h"
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -11,12 +10,10 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QLineEdit>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QStorageInfo>
-#include <QSettings>
 #include <QSharedPointer>
 #include <QDebug>
 #include <QJsonDocument>
@@ -28,16 +25,29 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifndef LAUNCHER_PYTHON
+#define LAUNCHER_PYTHON "/usr/bin/python3"
+#endif
+
+namespace {
+// Test builds run user-owned fake helpers; production accepts only root-owned ones.
+unsigned helperOwner() {
+#ifdef LAUNCHER_TEST_USER_OWNED_HELPERS
+    return getuid();
+#else
+    return 0;
+#endif
+}
+}
+
 MountDialog::MountDialog(QWidget *parent, std::function<QList<SourceMount>()> provider) : QDialog(parent), mountProvider(std::move(provider)) {
     setWindowTitle("Mount macOS source — read-only"); resize(650, 440);
     auto *layout = new QVBoxLayout(this);
-    layout->addWidget(new QLabel("Select a partition to reuse its existing mounted volumes.\npkexec requests authorization for a read-only mount under your launcher folder."));
+    layout->addWidget(new QLabel("Select a partition to reuse its existing mounted volumes.\npkexec requests authorization for a read-only mount under /run/darling-launcher."));
     auto *form = new QFormLayout;
     partitions = new QComboBox; partitions->setObjectName("mountPartitions"); form->addRow("Partition", partitions);
     backend = new QComboBox; backend->addItems({"Kernel filesystem driver", "APFS FUSE"}); form->addRow("Driver", backend);
-    volumeIndex = new QSpinBox; volumeIndex->setRange(-1, 2147483647); volumeIndex->setValue(-1); volumeIndex->setSpecialValueText("Select a volume index"); form->addRow("APFS volume index", volumeIndex);
-    directory = new QLineEdit; directory->setObjectName("mountDirectory");
-    directory->setParent(this); directory->hide();
+    volumeIndex = new QSpinBox; volumeIndex->setRange(-1, 99); volumeIndex->setValue(-1); volumeIndex->setSpecialValueText("Select a volume index"); form->addRow("APFS volume index", volumeIndex);
     ownedMountChoices = new QComboBox; form->addRow("Session mounts (select to unmount)", ownedMountChoices);
     connect(ownedMountChoices, &QComboBox::activated, this, [this](int index) {
         ownedMount = ownedMountChoices->itemText(index); ownedDevice = ownedMountChoices->itemData(index).toByteArray(); unmountButton->setEnabled(!ownedMount.isEmpty());
@@ -53,13 +63,6 @@ MountDialog::MountDialog(QWidget *parent, std::function<QList<SourceMount>()> pr
         for (const auto &candidate : LauncherSources::candidates(mountProvider(), device)) if (candidate.root == root && candidate.usable()) { emit sourceMounted(root); output->append("Reusing existing mounted source: " + root); return; }
         output->append("The selected source is no longer mounted or suitable."); updateExistingSources();
     });
-    auto *fusePath = new QLineEdit(QSettings("cristim", "darling-launcher").value("apfsFuse", LauncherDiscovery::helperExecutable(LauncherDiscovery::roots(), "apfs-fuse")).toString());
-    auto *utilityPath = new QLineEdit(QSettings("cristim", "darling-launcher").value("apfsUtil", LauncherDiscovery::helperExecutable(LauncherDiscovery::roots(), "apfsutil")).toString());
-    fusePath->setObjectName("apfsFuseField"); utilityPath->setObjectName("apfsUtilField");
-    auto *batchRoot = new QLineEdit(LauncherDiscovery::dataRoot() + "/mounts");
-    for (QLineEdit *internal : {fusePath, utilityPath, batchRoot}) { internal->setParent(this); internal->hide(); }
-    connect(fusePath, &QLineEdit::editingFinished, this, [=] { QSettings("cristim", "darling-launcher").setValue("apfsFuse", fusePath->text()); });
-    connect(utilityPath, &QLineEdit::editingFinished, this, [=] { QSettings("cristim", "darling-launcher").setValue("apfsUtil", utilityPath->text()); });
     layout->addWidget(new QLabel("Kernel APFS requires an installed APFS module; FUSE requires apfs-fuse.\nEncrypted APFS volumes require an external unlock workflow."));
     auto *actions = new QHBoxLayout;
     auto *refresh = new QPushButton("Refresh partitions"); refresh->setObjectName("refreshPartitions"); actions->addWidget(refresh); connect(refresh, &QPushButton::clicked, this, &MountDialog::discover);
@@ -68,58 +71,15 @@ MountDialog::MountDialog(QWidget *parent, std::function<QList<SourceMount>()> pr
     connect(unmountButton, &QPushButton::clicked, this, [this] {
         QStorageInfo storage(ownedMount); storage.refresh();
         if (ownedMount.isEmpty() || storage.rootPath() != ownedMount || storage.device() != ownedDevice) { output->append("The tracked source is no longer mounted at this directory."); return; }
-        QString pkexec = QStandardPaths::findExecutable("pkexec"), umount = QStandardPaths::findExecutable("umount");
-        if (pkexec.isEmpty() || umount.isEmpty()) { output->append("pkexec or umount is unavailable."); return; }
-        execute({pkexec, {umount, "--", ownedMount}}, true);
+        if (!LauncherMount::isHelperMount(ownedMount)) { output->append("Only mounts made by the launcher's mount helper can be unmounted here."); return; }
+        QString error; const QString pkexec = LauncherMount::trustedExecutable(LauncherMount::pkexecPath, 0, &error), umount = LauncherMount::trustedExecutable(LauncherMount::umountPath, 0, &error);
+        if (pkexec.isEmpty() || umount.isEmpty()) { output->append(error); return; }
+        unmount({pkexec, {umount, "--", ownedMount}});
     });
-    auto *all = new QPushButton("Mount all detected volumes read-only"); all->setObjectName("mountAllVolumes"); actions->addWidget(all);
-    connect(all, &QPushButton::clicked, this, [=] {
+    allButton = new QPushButton("Mount all detected volumes read-only"); allButton->setObjectName("mountAllVolumes"); actions->addWidget(allButton);
+    connect(allButton, &QPushButton::clicked, this, [this] {
         if (detected.isEmpty()) { output->append("No macOS partitions detected. Refresh first."); return; }
-        const QString python = QStandardPaths::findExecutable("python3");
-        const QString script = QStringLiteral(LAUNCHER_MOUNT_SCRIPT);
-        if (python.isEmpty() || !QFileInfo(script).isFile()) { output->append("Python or the single-authorization mount script is unavailable."); return; }
-        auto *batch = new QProcess(this); batch->setProcessChannelMode(QProcess::MergedChannels);
-        mountBusy = true; all->setEnabled(false); mountButton->setEnabled(false);
-        output->append("Waiting for one authorization request for the entire read-only batch…");
-        auto buffer = QSharedPointer<QByteArray>::create();
-        auto mounts = QSharedPointer<QStringList>::create();
-        auto consume = [=] {
-            *buffer += batch->readAllStandardOutput();
-            int newline;
-            while ((newline = buffer->indexOf('\n')) >= 0) {
-                QByteArray line = buffer->left(newline); buffer->remove(0, newline + 1);
-                qInfo().noquote() << QString::fromUtf8(line);
-                auto event = QJsonDocument::fromJson(line).object();
-                QString type = event.value("event").toString();
-                if (type == "mounted") {
-                    QString path = event.value("path").toString(); QStorageInfo storage(path); storage.refresh();
-                    if (storage.rootPath() == path && storage.isReadOnly() && storage.device() == event.value("device").toString().toUtf8()) {
-                        *mounts << path;
-                        if (ownedMountChoices->findText(path) < 0) ownedMountChoices->addItem(path, storage.device());
-                    }
-                    output->append("Mounted read-only: " + path);
-                } else if (type == "skip") output->append(event.value("device").toString() + ": " + event.value("reason").toString());
-                else if (!event.value("message").toString().isEmpty()) output->append(event.value("message").toString());
-                else if (event.isEmpty()) output->append(QString::fromUtf8(line));
-            }
-        };
-        connect(batch, &QProcess::readyReadStandardOutput, this, consume);
-        connect(batch, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) {
-            consume(); mountBusy = false;
-            batchMounts += *mounts; all->setEnabled(true); mountButton->setEnabled(true);
-            if (!mounts->isEmpty()) { ownedMount = mounts->first(); ownedDevice = QStorageInfo(ownedMount).device(); ownedMountChoices->setCurrentText(ownedMount); unmountButton->setEnabled(true); }
-            output->append(exit != QProcess::NormalExit ? "Mount helper crashed." : LauncherMount::exitDescription(code));
-            auto sources = LauncherCore::mountedMacVolumes();
-            if (sources.size() == 1) emit sourceMounted(sources.first());
-            else if (sources.size() > 1) for (const auto &source : sources) output->append("macOS applications source (select in Settings): " + source);
-            else output->append("No mounted macOS applications source found.");
-            batch->deleteLater();
-            discover();
-        });
-        connect(batch, &QProcess::errorOccurred, this, [=](QProcess::ProcessError error) {
-            if (error == QProcess::FailedToStart) { mountBusy = false; output->append(batch->errorString()); all->setEnabled(true); mountButton->setEnabled(true); batch->deleteLater(); }
-        });
-        batch->start(python, {"-I", script, "--mount-root", batchRoot->text(), "--apfs-fuse", fusePath->text(), "--apfsutil", utilityPath->text()});
+        runHelper({});
     });
     layout->addLayout(actions);
     output = new QTextEdit; output->setReadOnly(true); output->setObjectName("mountOutput"); layout->addWidget(output);
@@ -181,38 +141,76 @@ void MountDialog::mountSelected() {
         }
     struct stat deviceStatus {};
     if (::stat(QFile::encodeName(partition.device).constData(), &deviceStatus) != 0 || !S_ISBLK(deviceStatus.st_mode)) { output->append("Selected device is not a block device."); return; }
-    directory->setText(LauncherDiscovery::dataRoot() + "/mounts/" + QFileInfo(partition.device).fileName() + "-manual");
-    if (!QDir().mkpath(directory->text())) { output->append("Cannot create " + directory->text()); return; }
-    QStorageInfo storage(directory->text()); storage.refresh();
-    if (storage.rootPath() == QFileInfo(directory->text()).canonicalFilePath()) { output->append("The mount directory is already a mount point."); return; }
-    MountBackend driver = backend->currentIndex() == 1 ? MountBackend::ApfsFuse : MountBackend::Kernel;
-    QString tool = driver == MountBackend::ApfsFuse ? QSettings("cristim", "darling-launcher").value("apfsFuse", LauncherDiscovery::helperExecutable(LauncherDiscovery::roots(), "apfs-fuse")).toString() : QStandardPaths::findExecutable("mount");
-    MountCommand command; QString error;
-    if (!LauncherMount::makeCommand(partition, directory->text(), driver, volumeIndex->value(), getuid(), getgid(),
-                                    QStandardPaths::findExecutable("pkexec"), tool, &command, &error)) { output->append(error); return; }
-    execute(command, false, partition.device);
+    QStringList selection{"--device=" + partition.device};
+    if (volumeIndex->value() >= 0) selection << "--volume=" + QString::number(volumeIndex->value());
+    if (backend->currentIndex() == 0) selection << "--kernel";
+    runHelper(selection);
 }
-void MountDialog::execute(const MountCommand &command, bool unmount, const QString &device) {
+void MountDialog::runHelper(const QStringList &selection) {
+    QString error;
+    const QString python = LauncherMount::trustedExecutable(QStringLiteral(LAUNCHER_PYTHON), helperOwner(), &error);
+    const QString script = python.isEmpty() ? QString() : LauncherMount::trustedExecutable(QStringLiteral(LAUNCHER_MOUNT_SCRIPT), helperOwner(), &error);
+    if (script.isEmpty()) {
+        output->append(error + "\nThe mount helper runs as root, so it must be installed root-owned at " LAUNCHER_MOUNT_SCRIPT " (sudo cmake --install <build directory>).");
+        return;
+    }
+    auto *batch = new QProcess(this); batch->setProcessChannelMode(QProcess::MergedChannels);
+    mountBusy = true; allButton->setEnabled(false); mountButton->setEnabled(false);
+    output->append(selection.isEmpty() ? "Waiting for one authorization request for the entire read-only batch…" : "Waiting for read-only mount authorization…");
+    auto buffer = QSharedPointer<QByteArray>::create();
+    auto mounts = QSharedPointer<QStringList>::create();
+    auto consume = [=] {
+        *buffer += batch->readAllStandardOutput();
+        int newline;
+        while ((newline = buffer->indexOf('\n')) >= 0) {
+            QByteArray line = buffer->left(newline); buffer->remove(0, newline + 1);
+            qInfo().noquote() << QString::fromUtf8(line);
+            auto event = QJsonDocument::fromJson(line).object();
+            QString type = event.value("event").toString();
+            if (type == "mounted") {
+                QString path = event.value("path").toString(); QStorageInfo storage(path); storage.refresh();
+                if (storage.rootPath() == path && storage.isReadOnly() && storage.device() == event.value("device").toString().toUtf8()) {
+                    *mounts << path;
+                    if (ownedMountChoices->findText(path) < 0) ownedMountChoices->addItem(path, storage.device());
+                }
+                output->append("Mounted read-only: " + path);
+            } else if (type == "skip") output->append(event.value("device").toString() + ": " + event.value("reason").toString());
+            else if (!event.value("message").toString().isEmpty()) output->append(event.value("message").toString());
+            else if (event.isEmpty()) output->append(QString::fromUtf8(line));
+        }
+    };
+    connect(batch, &QProcess::readyReadStandardOutput, this, consume);
+    connect(batch, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) {
+        consume(); mountBusy = false;
+        batchMounts += *mounts; allButton->setEnabled(true); mountButton->setEnabled(true);
+        if (!mounts->isEmpty()) { ownedMount = mounts->first(); ownedDevice = QStorageInfo(ownedMount).device(); ownedMountChoices->setCurrentText(ownedMount); unmountButton->setEnabled(true); }
+        output->append(exit != QProcess::NormalExit ? "Mount helper crashed." : LauncherMount::exitDescription(code));
+        auto sources = LauncherCore::mountedMacVolumes();
+        if (sources.size() == 1) emit sourceMounted(sources.first());
+        else if (sources.size() > 1) for (const auto &source : sources) output->append("macOS applications source (select in Settings): " + source);
+        else output->append("No mounted macOS applications source found.");
+        batch->deleteLater();
+        discover();
+    });
+    connect(batch, &QProcess::errorOccurred, this, [=](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) { mountBusy = false; output->append(batch->errorString()); allButton->setEnabled(true); mountButton->setEnabled(true); batch->deleteLater(); }
+    });
+    batch->start(python, QStringList{"-I", script} + selection);
+}
+void MountDialog::unmount(const MountCommand &command) {
     auto *runner = new MountRunner(this);
-    const QString target = unmount ? ownedMount : QFileInfo(directory->text()).canonicalFilePath();
+    const QString target = ownedMount;
     mountButton->setEnabled(false); unmountButton->setEnabled(false);
-    output->append(unmount ? "Waiting for unmount authorization…" : "Waiting for read-only mount authorization…");
+    output->append("Waiting for unmount authorization…");
     connect(runner, &MountRunner::output, output, &QTextEdit::insertPlainText);
-    connect(runner, &MountRunner::completed, this, [this, runner, unmount, target, device](bool success, const QString &message) {
+    connect(runner, &MountRunner::completed, this, [this, runner, target](bool success, const QString &message) {
         output->append(message); mountButton->setEnabled(true);
         if (success) {
             QStorageInfo storage(target); storage.refresh();
-            if (unmount) {
-                if (storage.rootPath() != target) {
-                    ownedMount.clear(); int index = ownedMountChoices->findText(target); if (index >= 0) ownedMountChoices->removeItem(index);
-                    if (ownedMountChoices->count()) { ownedMount = ownedMountChoices->currentText(); ownedDevice = ownedMountChoices->currentData().toByteArray(); }
-                } else output->append("The directory is still mounted.");
-            } else if (storage.rootPath() == target && storage.isReadOnly() && QFileInfo(QString::fromLocal8Bit(storage.device())).canonicalFilePath() == QFileInfo(device).canonicalFilePath()) {
-                ownedMount = target; ownedDevice = storage.device();
-                if (ownedMountChoices->findText(target) < 0) ownedMountChoices->addItem(target, ownedDevice);
-                if (LauncherCore::looksLikeMacVolume(target)) emit sourceMounted(target);
-                else output->append("Mounted, but no macOS applications layout was found. Choose the appropriate APFS volume index.");
-            } else output->append("The selected directory was not verified as a read-only mount.");
+            if (storage.rootPath() != target) {
+                ownedMount.clear(); int index = ownedMountChoices->findText(target); if (index >= 0) ownedMountChoices->removeItem(index);
+                if (ownedMountChoices->count()) { ownedMount = ownedMountChoices->currentText(); ownedDevice = ownedMountChoices->currentData().toByteArray(); }
+            } else output->append("The directory is still mounted.");
         }
         unmountButton->setEnabled(!ownedMount.isEmpty()); runner->deleteLater(); discover();
     });

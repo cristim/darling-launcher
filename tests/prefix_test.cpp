@@ -2,17 +2,23 @@
 #include "prefixbuilder.h"
 #include "discovery.h"
 #include "log.h"
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSignalSpy>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
 
 namespace {
 QJsonObject readJson(const QString &path) { QFile file(path); if (!file.open(QIODevice::ReadOnly)) return {}; return QJsonDocument::fromJson(file.readAll()).object(); }
+}
+static QString sha256(const QString &path) {
+    QFile file(path); if (!file.open(QIODevice::ReadOnly)) return {};
+    return QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex());
 }
 class PrefixTest : public QObject {
     Q_OBJECT
@@ -25,6 +31,25 @@ private slots:
         QVERIFY(text.contains("[test] first line")); QVERIFY(text.contains("[test] second line"));
     }
     void initTestCase() { QVERIFY(isolatedHome.isValid()); qputenv("HOME", isolatedHome.path().toUtf8()); qputenv("DARLING_LAUNCHER_LOCK_DIR", (isolatedHome.path() + "/locks").toUtf8()); }
+    void heavyBuildLockIsPrivatePerUser() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QByteArray previousOverride = qgetenv("DARLING_LAUNCHER_LOCK_DIR"), previousRuntime = qgetenv("XDG_RUNTIME_DIR");
+        auto restore = qScopeGuard([=] { qputenv("DARLING_LAUNCHER_LOCK_DIR", previousOverride); qputenv("XDG_RUNTIME_DIR", previousRuntime); });
+        qunsetenv("DARLING_LAUNCHER_LOCK_DIR"); qputenv("XDG_RUNTIME_DIR", temporary.path().toUtf8());
+        QString error; const QString directory = temporary.path() + "/darling-launcher";
+        QCOMPARE(LauncherPrefix::heavyBuildLock(&error), directory + "/darling-heavy-build.lock");
+        QCOMPARE(QFileInfo(directory).permissions() & (QFile::WriteGroup | QFile::WriteOther | QFile::ReadOther | QFile::ExeOther), QFile::Permissions());
+        // A directory another user could have planted entries in, or a symlink to one, is refused.
+        QVERIFY(QFile::setPermissions(directory, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::WriteOther | QFile::ExeOther | QFile::ReadOther));
+        QVERIFY(LauncherPrefix::heavyBuildLock(&error).isEmpty()); QVERIFY(error.contains(directory));
+        QVERIFY(QDir(directory).removeRecursively()); QVERIFY(QDir().mkpath(temporary.path() + "/elsewhere")); QVERIFY(QFile::link(temporary.path() + "/elsewhere", directory));
+        QVERIFY(LauncherPrefix::heavyBuildLock(&error).isEmpty());
+        // The override is honoured as is, under the same ownership rules.
+        qputenv("DARLING_LAUNCHER_LOCK_DIR", (temporary.path() + "/override").toUtf8());
+        QCOMPARE(LauncherPrefix::heavyBuildLock(&error), temporary.path() + "/override/darling-heavy-build.lock");
+        qputenv("DARLING_LAUNCHER_LOCK_DIR", "relative/locks"); QVERIFY(LauncherPrefix::heavyBuildLock(&error).isEmpty());
+        qunsetenv("DARLING_LAUNCHER_LOCK_DIR"); qunsetenv("XDG_RUNTIME_DIR"); QVERIFY(LauncherPrefix::heavyBuildLock(&error).isEmpty()); QVERIFY(error.contains("XDG_RUNTIME_DIR"));
+    }
     void independentClone() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString git = QStandardPaths::findExecutable("git"); QVERIFY(!git.isEmpty());
@@ -121,13 +146,13 @@ private slots:
             QFile input(script); QVERIFY(input.open(QIODevice::ReadOnly)); auto bytes = input.readAll(); bytes.replace(", \"resolve-nested\", \"checkout-nested\"", "");
             script = temporary.path() + "/legacy.py"; QFile legacy(script); QVERIFY(legacy.open(QIODevice::WriteOnly)); legacy.write(bytes); legacy.close();
         }
-        PrefixBuildRequest request{QStandardPaths::findExecutable("python3"), script, source, workspace, includePrs, 2, {"-DENABLE_TESTS=ON"}};
+        PrefixBuildRequest request{QStandardPaths::findExecutable("python3"), script, source, workspace, includePrs, 2, {"-DENABLE_TESTS=ON"}, sha256(script)};
         PrefixBuilder builder; QSignalSpy completed(&builder, &PrefixBuilder::completed), phases(&builder, &PrefixBuilder::phaseChanged);
         builder.start(request); QTRY_COMPARE_WITH_TIMEOUT(completed.size(), 1, 5000);
         QVERIFY2(completed.first()[0].toBool(), qPrintable(completed.first()[1].toString())); QCOMPARE(phases.size(), nested ? 6 : 4);
         QCOMPARE(completed.first()[2].toString(), workspace + "/prefix");
         auto discovery = readJson(workspace + "/refs.discovery.lock.json"), selected = readJson(workspace + "/refs.lock.json");
-        QCOMPARE(discovery.value("repos").toArray().first().toObject().value("prs").toArray().size(), 1);
+        QCOMPARE(discovery.value("repos").toArray().first().toObject().value("prs").toArray().size(), includePrs ? 1 : 0);
         QCOMPARE(selected.value("repos").toArray().first().toObject().value("prs").toArray().size(), includePrs ? 1 : 0);
         auto provenance = readJson(workspace + "/prefix/.darling-launcher/build-provenance.json");
         QCOMPARE(provenance.value("script_sha256").toString().size(), 64);
@@ -135,24 +160,44 @@ private slots:
         if (nested) {
             auto lock = readJson(workspace + "/nested.refs.lock.json"), original = readJson(workspace + "/nested.discovery.lock.json");
             QCOMPARE(lock.value("vibedarling").toArray().first().toObject().value("prs").toArray().size(), includePrs ? 1 : 0);
-            QCOMPARE(original.value("vibedarling").toArray().first().toObject().value("prs").toArray().size(), 1);
+            QCOMPARE(original.value("vibedarling").toArray().first().toObject().value("prs").toArray().size(), includePrs ? 1 : 0);
         }
         QCOMPARE(readJson(workspace + "/build-call.json").value("cmake_args").toArray(), QJsonArray{"-DENABLE_TESTS=ON"});
         QVERIFY(QDir(source).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty());
+    }
+    void builderRunsOnlyThePinnedScript() {
+        // The script is chosen (and hashed) before the build starts; a change in between must not run.
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        QString source = temporary.path() + "/source"; QVERIFY(QDir().mkpath(source));
+        const QString script = temporary.path() + "/builder.py";
+        QVERIFY(QFile::copy(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py", script));
+        const QString pinned = sha256(script);
+        QFile original(script); QVERIFY(original.open(QIODevice::ReadOnly)); const QByteArray body = original.readAll(); original.close();
+        QFile changed(script); QVERIFY(changed.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        changed.write("import pathlib; pathlib.Path(" + QByteArray("'") + QFile::encodeName(temporary.path() + "/ran") + "').write_text('x')\n" + body); changed.close();
+        PrefixBuilder builder; QSignalSpy completed(&builder, &PrefixBuilder::completed), phases(&builder, &PrefixBuilder::phaseChanged);
+        builder.start({QStandardPaths::findExecutable("python3"), script, source, temporary.path() + "/new", false, 1, {}, pinned});
+        QTRY_COMPARE_WITH_TIMEOUT(completed.size(), 1, 5000); QVERIFY(!completed.first()[0].toBool());
+        QVERIFY2(completed.first()[1].toString().contains("changed after it was selected"), qPrintable(completed.first()[1].toString()));
+        QCOMPARE(phases.size(), 0); QVERIFY(!QFileInfo::exists(temporary.path() + "/ran"));
+        PrefixBuildRequest unpinned{QStandardPaths::findExecutable("python3"), script, source, temporary.path() + "/new", false, 1, {}}; QString error;
+        QVERIFY(!LauncherPrefix::validateRequest(unpinned, &error));
     }
     void stopOnIntegrationFailure() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString source = temporary.path() + "/source"; QVERIFY(QDir().mkpath(source));
         QFile marker(source + "/fail-checkout"); QVERIFY(marker.open(QIODevice::WriteOnly)); marker.close();
         PrefixBuilder builder; QSignalSpy completed(&builder, &PrefixBuilder::completed), phases(&builder, &PrefixBuilder::phaseChanged);
-        builder.start({QStandardPaths::findExecutable("python3"), QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py", source, temporary.path() + "/new", true, 1, {}});
+        const QString fixture = QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py";
+        builder.start({QStandardPaths::findExecutable("python3"), fixture, source, temporary.path() + "/new", true, 1, {}, sha256(fixture)});
         QTRY_COMPARE_WITH_TIMEOUT(completed.size(), 1, 5000); QVERIFY(!completed.first()[0].toBool()); QCOMPARE(phases.size(), 3);
         QVERIFY(!QFileInfo::exists(temporary.path() + "/new/build-call.json"));
     }
     void refuseExistingOrSharedWorkspace() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString source = temporary.path() + "/source"; QVERIFY(QDir().mkpath(source));
-        PrefixBuildRequest request{QStandardPaths::findExecutable("python3"), QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py", source, source, false, 1, {}}; QString error;
+        const QString fixture = QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py";
+        PrefixBuildRequest request{QStandardPaths::findExecutable("python3"), fixture, source, source, false, 1, {}, sha256(fixture)}; QString error;
         QVERIFY(!LauncherPrefix::validateRequest(request, &error));
         request.workspace = source + "/new"; QVERIFY(!LauncherPrefix::validateRequest(request, &error));
         request.workspace = temporary.path() + "/new"; request.cmakeArguments = {"shell-command"}; QVERIFY(!LauncherPrefix::validateRequest(request, &error));

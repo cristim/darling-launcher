@@ -547,9 +547,11 @@ private slots:
         QFile lsblk(temporary.path() + "/lsblk"); QVERIFY(lsblk.open(QIODevice::WriteOnly));
         lsblk.write("#!/bin/sh\nprintf '%s' '{\"blockdevices\":[{\"path\":\"/dev/synthetic\",\"fstype\":\"apfs\",\"mountpoints\":[]}]}'\n"); lsblk.close();
         QVERIFY(lsblk.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
-        QFile pkexec(temporary.path() + "/pkexec"); QVERIFY(pkexec.open(QIODevice::WriteOnly));
-        pkexec.write("#!/bin/sh\nprintf x >> \"$LAUNCHER_TEST_AUTH_COUNTER\"\n/usr/bin/sleep 1\nprintf '%s\\n' '{\"event\":\"progress\",\"message\":\"One batch authorized\"}'\nexit 0\n"); pkexec.close();
-        QVERIFY(pkexec.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        // The launcher runs the fixed LAUNCHER_PYTHON, never a PATH lookup; this test build points it at a fake.
+        QVERIFY(QDir().mkpath(QFileInfo(LAUNCHER_PYTHON).absolutePath()));
+        QFile::remove(LAUNCHER_PYTHON); QFile fakePython(LAUNCHER_PYTHON); QVERIFY(fakePython.open(QIODevice::WriteOnly));
+        fakePython.write("#!/bin/sh\nprintf x >> \"$LAUNCHER_TEST_AUTH_COUNTER\"\n/usr/bin/sleep 1\nprintf '%s\\n' '{\"event\":\"progress\",\"message\":\"One batch authorized\"}'\nexit 0\n"); fakePython.close();
+        QVERIFY(fakePython.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner|QFile::ReadOther|QFile::ExeOther));
         QByteArray originalPath = qgetenv("PATH"), oldCounter = qgetenv("LAUNCHER_TEST_AUTH_COUNTER");
         auto restore = qScopeGuard([=] { qputenv("PATH", originalPath); qputenv("LAUNCHER_TEST_AUTH_COUNTER", oldCounter); });
         qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath); qputenv("LAUNCHER_TEST_AUTH_COUNTER", (temporary.path() + "/count").toUtf8());
@@ -617,7 +619,7 @@ private slots:
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings settings("cristim", "darling-launcher"); settings.clear(); qputenv("HOME", temporary.path().toUtf8());
         PrefixDialog builder({}, {}, nullptr);
         const QString script = QDir(temporary.path() + "/.darling-launcher/tools").entryInfoList({"all-vibedarling-pr-prefix-*.py"}).value(0).absoluteFilePath(); QVERIFY(script.startsWith(temporary.path() + "/.darling-launcher/tools/")); QFile file(script); QVERIFY(file.open(QIODevice::ReadOnly));
-        QCOMPARE(QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex()), QString("be593c04751aa26e3b650d84442b62e2db8eb0b5888f4bc3cd281d4a850ae880"));
+        QCOMPARE(QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex()), QString("6b8f5cff62e23637cbcaaeddbc2eac961d77604da88b35b906ce0a1e90326939"));
         QProcess process; process.start(QStandardPaths::findExecutable("python3"), {script, "--help"}); QVERIFY(process.waitForFinished(3000)); QCOMPARE(process.exitCode(), 0); QVERIFY(process.readAllStandardOutput().contains("resolve-nested"));
         QCOMPARE(builder.findChild<QLabel *>("prefixBuilderSource")->text(), temporary.path() + "/.darling-launcher/sources/vibedarling");
     }
