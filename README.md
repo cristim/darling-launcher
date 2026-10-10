@@ -36,8 +36,15 @@ Setup clones VibeDarling into `<data>/sources/vibedarling`, builds in a fresh
 `<data>/workspaces/...` and automatically selects the resulting runtime/prefix.
 No macOS volume is required for this build. Git, Python, CMake, Ninja and the
 Darling host build dependencies must be available; errors retain the workspace
-and appear in build progress. Compilation and private installation hold the shared
+and appear in build progress. Compilation and private installation hold the
 heavy-build lock. The launcher cannot close during an active clone/build.
+
+The heavy-build lock is `$XDG_RUNTIME_DIR/darling-launcher/darling-heavy-build.lock`,
+in a directory created 0700. `DARLING_LAUNCHER_LOCK_DIR` replaces that directory for
+both the launcher's own builds and the agent's `build.sh`. Either way the directory
+must be owned by you and not writable by group or others, otherwise the build stops.
+To share the lock with other tools of yours that use `/tmp/agent-locks`, set
+`DARLING_LAUNCHER_LOCK_DIR=/tmp/agent-locks` after making sure that directory is yours.
 
 Choose default branches only or default branches plus all open PRs, a job count and optional CMake settings (one `-DNAME=VALUE` per line). The script resolves main/master where present and records exceptions for repositories with another default branch.
 
@@ -143,7 +150,7 @@ saves diagnostic JSON and clean-room instructions, and runs the CLI in the backg
 with a private `AGENT.log`; a terminal option remains available. No Apple payloads are
 attached. Jobs survive popup closure; Settings can stop the owned CLI. Tools retain
 their configured authentication and permission boundaries. Source work uses independent
-clones, private prefixes and the shared heavy-build lock. No push or issue/PR submission
+clones, private prefixes and the heavy-build lock. No push or issue/PR submission
 is authorized by starting an agent.
 
 If `gh auth status --hostname github.com` succeeds, **Review completed PR proposal…**

@@ -18,6 +18,9 @@ namespace LauncherPrefix {
 bool selectInputs(const QJsonObject &discovery, bool includePrs, QJsonObject *selected, QString *error);
 bool selectNestedInputs(const QJsonObject &discovery, bool includePrs, QJsonObject *selected, QString *error);
 bool validateRequest(const PrefixBuildRequest &request, QString *error);
+// Path of the heavy-build lock file in a private per-user directory, or empty with error set.
+// DARLING_LAUNCHER_LOCK_DIR replaces $XDG_RUNTIME_DIR/darling-launcher for every user of the lock.
+QString heavyBuildLock(QString *error);
 }
 class PrefixBuilder : public QObject {
     Q_OBJECT

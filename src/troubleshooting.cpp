@@ -6,6 +6,7 @@
 #include <QCryptographicHash>
 #include "core.h"
 #include "discovery.h"
+#include "prefixbuilder.h"
 #include <QComboBox>
 #include <QCheckBox>
 #include <QDir>
@@ -172,12 +173,14 @@ LauncherTroubleshooting::AgentTools LauncherTroubleshooting::prepareAgentTools(c
     AgentTools tools;
     const QString prefix = diagnostic.value("prefix").toString(), runtime = diagnostic.value("runtime").toString(), launcher = diagnostic.value("launcher").toString(), bundle = diagnostic.value("bundle").toString(), executable = diagnostic.value("executable").toString();
     const QRegularExpression safe("^[A-Za-z0-9_./ +@%:=,-]+$");
-    for (const QString &value : {prefix, runtime, launcher, bundle, executable, workspace, clone})
+    const QString lock = LauncherPrefix::heavyBuildLock(&tools.error);
+    if (lock.isEmpty()) return tools;
+    for (const QString &value : {prefix, runtime, launcher, bundle, executable, workspace, clone, lock})
         if (!value.isEmpty() && (!safe.match(value).hasMatch() || value.contains(".."))) { tools.error = "A path or app name contains characters that cannot be handed safely to an agent."; return tools; }
     tools.directory = LauncherDiscovery::dataRoot() + "/agent-tools/" + QFileInfo(workspace).fileName();
     if (!QDir().mkpath(tools.directory)) { tools.error = "Cannot create the agent tool directory."; return tools; }
     const QString q = "'";
-    const QString lock = "/tmp/agent-locks/darling-heavy-build.lock", backups = prefix + "/.darling-launcher/backups/" + QFileInfo(workspace).fileName();
+    const QString backups = prefix + "/.darling-launcher/backups/" + QFileInfo(workspace).fileName();
     auto write = [&](const QString &name, const QString &body) {
         const QString path = tools.directory + "/" + name; QFile::remove(path); QSaveFile file(path);
         if (!file.open(QIODevice::WriteOnly) || file.write(("#!/bin/sh\nset -eu\n" + body).toUtf8()) < 0 || !file.commit() || !QFile::setPermissions(path, QFile::ReadOwner | QFile::ExeOwner)) { tools.error = "Cannot write " + path; return QString(); }
