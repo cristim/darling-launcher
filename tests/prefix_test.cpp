@@ -513,6 +513,20 @@ private slots:
         QVERIFY(QFileInfo(runtimes + "/.archive-Zz99Zz").isSymLink()); QVERIFY(QFileInfo::exists(root + "/outside/keep"));
         QVERIFY(QFileInfo::exists(runtimes + "/.archive-other"));
     }
+    // QA delta D4: attestation must check the private copy that is listed and extracted, not the original path.
+    void attestationChecksThePrivateCopy() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString good = makeArchive(root, "good", runtimeMembers()); QVERIFY(!good.isEmpty());
+        // The stub records the path it was asked to verify and the hash of that file at that moment.
+        const QString gh = writeScript(root + "/gh", "echo \"$3\" > '" + root + "/gh-path'; sha256sum \"$3\" | cut -d' ' -f1 > '" + root + "/gh-hash'"); QVERIFY(!gh.isEmpty());
+        QCOMPARE(installArchive(good, sha256File(good), runtimes, "v2026.10.09-00000f1", gh, "VibeDarling/darling", roomyUnpackedSize), QString());
+        QFile pathFile(root + "/gh-path"), hashFile(root + "/gh-hash"); QVERIFY(pathFile.open(QIODevice::ReadOnly)); QVERIFY(hashFile.open(QIODevice::ReadOnly));
+        const QString verified = QString::fromUtf8(pathFile.readAll()).trimmed();
+        QVERIFY2(verified.startsWith(runtimes + "/.archive-") && verified.endsWith("/runtime.tar.zst"), qPrintable(verified));
+        QCOMPARE(QString::fromUtf8(hashFile.readAll()).trimmed(), sha256File(good));
+        QVERIFY(!QFileInfo::exists(verified));
+    }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
         for (const char *good : {"v2026.10.09-3721b65", "v2026.10.09-3721b65-r2"}) QVERIFY2(validTag(good), good);
