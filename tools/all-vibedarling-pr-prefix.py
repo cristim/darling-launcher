@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lock and integrate VibeDarling default branches plus their open PR heads.
+"""Lock and integrate VibeDarling default branches and, with --include-prs, their open PR heads.
 
 The lock is a point-in-time input list. Checkout creates an independent clone;
 it never updates an existing checkout, build directory, or prefix.
@@ -26,8 +26,25 @@ ROOT = "https://github.com/VibeDarling/darling.git"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
+# Children (git, cmake, ninja, the built runtime and guests) get only these variables; tokens,
+# credentials and GIT_CONFIG_* overrides stay out. api() reads GITHUB_TOKEN in this process.
+CHILD_VARIABLES = frozenset((
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TERM", "TZ", "TMPDIR",
+    "XDG_RUNTIME_DIR", "DISPLAY", "WAYLAND_DISPLAY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+    "CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS"))
+
+
+def child_env(**extra):
+    """Environment for child processes, built from an allow-list of the current one."""
+    env = {k: v for k, v in os.environ.items() if k in CHILD_VARIABLES or k.startswith("LC_")}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env.update(extra)
+    return env
+
+
 def run(*args, cwd=None, env=None):
-    p = subprocess.run(args, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE,
+    p = subprocess.run(args, cwd=cwd, env=child_env() if env is None else env, text=True, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE)
     if p.returncode:
         raise RuntimeError(f"{' '.join(map(str, args))}: {p.stderr.strip()}")
@@ -170,7 +187,7 @@ def resolve(args):
     for item in items:
         by_repo.setdefault(item["repo"].lower(), []).append(item)
     excluded = []
-    for pr in open_prs():
+    for pr in open_prs() if args.include_prs else []:
         repo = pr["repository_url"].rsplit("/", 1)[-1]
         key = repo.lower()
         record = {"number": pr["number"], "url": pr["html_url"],
@@ -200,7 +217,7 @@ def resolve(args):
         raise RuntimeError("source HEAD is stale; fetch and check out current VibeDarling master")
     lock = {"schema": 1, "owner": OWNER,
             "resolved_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "complete": not bool(args.repo), "repos": items,
+            "complete": not bool(args.repo), "include_prs": args.include_prs, "repos": items,
             "excluded_open_prs": excluded}
     out = Path(args.output).resolve()
     if out.exists():
@@ -230,7 +247,7 @@ def integrate(repo, item):
     run("git", "checkout", "--detach", item["base"], cwd=repo)
     for pr in item["prs"]:
         object_at(repo, pr["head"], pr["ref"])
-        env = dict(os.environ, GIT_AUTHOR_NAME="Darling PR integration",
+        env = child_env(GIT_AUTHOR_NAME="Darling PR integration",
                    GIT_AUTHOR_EMAIL="integration@localhost",
                    GIT_COMMITTER_NAME="Darling PR integration",
                    GIT_COMMITTER_EMAIL="integration@localhost")
@@ -319,7 +336,7 @@ def checkout(args):
             object_at(target, sha, "HEAD")
             run("git", "checkout", "--detach", sha, cwd=target)
             external.append({"path": path, "url": item["url"], "gitlink": sha})
-    env = dict(os.environ, GIT_AUTHOR_NAME="Darling PR integration",
+    env = child_env(GIT_AUTHOR_NAME="Darling PR integration",
                GIT_AUTHOR_EMAIL="integration@localhost",
                GIT_COMMITTER_NAME="Darling PR integration",
                GIT_COMMITTER_EMAIL="integration@localhost")
@@ -370,8 +387,7 @@ def resolve_nested(args):
             by_repo[key]["occurrences"].append(occurrence)
     top = json.loads((workspace / "refs.lock.json").read_text())
     top_repos = {item["repo"].lower() for item in top["repos"]}
-    prs = open_prs()
-    for pr in prs:
+    for pr in open_prs() if args.include_prs else []:
         repo = pr["repository_url"].rsplit("/", 1)[-1].lower()
         if repo in by_repo:
             by_repo[repo]["prs"].append({"number": pr["number"],
@@ -387,7 +403,7 @@ def resolve_nested(args):
     lock = {"schema": 1, "owner": OWNER,
             "resolved_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "top_lock_sha256": hashlib.sha256((workspace / "refs.lock.json").read_bytes()).hexdigest(),
-            "vibedarling": items, "external_pinned": external}
+            "include_prs": args.include_prs, "vibedarling": items, "external_pinned": external}
     output = Path(args.output).resolve()
     if output.exists():
         raise RuntimeError(f"refusing to overwrite nested lock: {output}")
@@ -438,7 +454,7 @@ def checkout_nested(args):
             raise RuntimeError(f"deeper nested modules need a new integration step: {target}")
         realized.append({"path": str(Path(o["parent"]) / o["path"]),
                          "repo": o["repo"], "commit": o["pin"]})
-    env = dict(os.environ, GIT_AUTHOR_NAME="Darling PR integration",
+    env = child_env(GIT_AUTHOR_NAME="Darling PR integration",
                GIT_AUTHOR_EMAIL="integration@localhost",
                GIT_COMMITTER_NAME="Darling PR integration",
                GIT_COMMITTER_EMAIL="integration@localhost")
@@ -488,9 +504,9 @@ def build(args):
         run("cmake", "--build", str(builddir), "--parallel", str(args.jobs))
         if "no work to do" not in run("ninja", "-C", str(builddir), "-n").lower():
             raise RuntimeError("build graph still has pending work")
-    run("cmake", "--install", str(builddir), env=dict(os.environ, DESTDIR=str(image)))
+    run("cmake", "--install", str(builddir), env=child_env(DESTDIR=str(image)))
     launcher = builddir / "src/startup/darling"
-    env = dict(os.environ, DPREFIX=str(prefix), DARLING_INSTALL_PREFIX=str(image / "usr/local"))
+    env = child_env(DPREFIX=str(prefix), DARLING_INSTALL_PREFIX=str(image / "usr/local"))
     run(str(launcher), "shell", "true", env=env)
     run(str(launcher), "shutdown", env=env)
     if not (prefix / "private/etc/passwd").is_file():
@@ -506,6 +522,7 @@ def main():
     discover.add_argument("--output", required=True)
     discover.add_argument("--repo", action="append", help="limited diagnostic resolution only")
     discover.add_argument("--jobs", type=int, default=8)
+    discover.add_argument("--include-prs", action="store_true", help="also lock open PR heads (default: default branches only)")
     materialize = commands.add_parser("checkout", help="clone and integrate locked refs")
     materialize.add_argument("--lock", required=True)
     materialize.add_argument("--workspace", required=True)
@@ -516,6 +533,7 @@ def main():
     nested_discover.add_argument("--workspace", required=True)
     nested_discover.add_argument("--output", required=True)
     nested_discover.add_argument("--jobs", type=int, default=8)
+    nested_discover.add_argument("--include-prs", action="store_true", help="also lock open PR heads (default: default branches only)")
     nested_materialize = commands.add_parser("checkout-nested", help="integrate locked nested refs")
     nested_materialize.add_argument("--workspace", required=True)
     nested_materialize.add_argument("--lock", required=True)

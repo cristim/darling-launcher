@@ -135,7 +135,9 @@ void PrefixBuilder::advance() {
         if (!phaseOutput.contains("resolve") || !phaseOutput.contains("checkout") || !phaseOutput.contains("build")) { fail("The selected script does not expose the expected builder interface"); return; }
         supportsNested = phaseOutput.contains("resolve-nested") && phaseOutput.contains("checkout-nested");
         provenance.insert("nested_submodule_workflow", supportsNested);
-        run(Phase::Resolve, {"resolve", "--source", request.source, "--output", staging.path() + "/discovery.lock.json", "--jobs", QString::number(request.jobs)});
+        QStringList resolve{"resolve", "--source", request.source, "--output", staging.path() + "/discovery.lock.json", "--jobs", QString::number(request.jobs)};
+        if (request.includePrs) resolve << "--include-prs";
+        run(Phase::Resolve, resolve);
     } else if (phase == Phase::Resolve) {
         QJsonObject discovery, selected; QString message;
         if (!loadJson(staging.path() + "/discovery.lock.json", &discovery)) { fail("Cannot read the discovery lock"); return; }
@@ -145,7 +147,9 @@ void PrefixBuilder::advance() {
     } else if (phase == Phase::Checkout) {
         if (!QFile::copy(staging.path() + "/discovery.lock.json", request.workspace + "/refs.discovery.lock.json") ||
             !saveJson(request.workspace + "/launcher-build-request.json", provenance)) { fail("Cannot retain discovery provenance in the new workspace"); return; }
-        if (supportsNested) run(Phase::ResolveNested, {"resolve-nested", "--workspace", request.workspace, "--output", staging.path() + "/nested.discovery.lock.json", "--jobs", QString::number(request.jobs)});
+        QStringList resolveNested{"resolve-nested", "--workspace", request.workspace, "--output", staging.path() + "/nested.discovery.lock.json", "--jobs", QString::number(request.jobs)};
+        if (request.includePrs) resolveNested << "--include-prs";
+        if (supportsNested) run(Phase::ResolveNested, resolveNested);
         else build();
     } else if (phase == Phase::ResolveNested) {
         QJsonObject discovery, selected; QString message;

@@ -127,7 +127,7 @@ private slots:
         QVERIFY2(completed.first()[0].toBool(), qPrintable(completed.first()[1].toString())); QCOMPARE(phases.size(), nested ? 6 : 4);
         QCOMPARE(completed.first()[2].toString(), workspace + "/prefix");
         auto discovery = readJson(workspace + "/refs.discovery.lock.json"), selected = readJson(workspace + "/refs.lock.json");
-        QCOMPARE(discovery.value("repos").toArray().first().toObject().value("prs").toArray().size(), 1);
+        QCOMPARE(discovery.value("repos").toArray().first().toObject().value("prs").toArray().size(), includePrs ? 1 : 0);
         QCOMPARE(selected.value("repos").toArray().first().toObject().value("prs").toArray().size(), includePrs ? 1 : 0);
         auto provenance = readJson(workspace + "/prefix/.darling-launcher/build-provenance.json");
         QCOMPARE(provenance.value("script_sha256").toString().size(), 64);
@@ -135,7 +135,7 @@ private slots:
         if (nested) {
             auto lock = readJson(workspace + "/nested.refs.lock.json"), original = readJson(workspace + "/nested.discovery.lock.json");
             QCOMPARE(lock.value("vibedarling").toArray().first().toObject().value("prs").toArray().size(), includePrs ? 1 : 0);
-            QCOMPARE(original.value("vibedarling").toArray().first().toObject().value("prs").toArray().size(), 1);
+            QCOMPARE(original.value("vibedarling").toArray().first().toObject().value("prs").toArray().size(), includePrs ? 1 : 0);
         }
         QCOMPARE(readJson(workspace + "/build-call.json").value("cmake_args").toArray(), QJsonArray{"-DENABLE_TESTS=ON"});
         QVERIFY(QDir(source).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty());
