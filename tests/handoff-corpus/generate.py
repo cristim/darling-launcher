@@ -92,6 +92,13 @@ add("clean-spec", "# Spec\n\nRequirement 1 (rung 3): _CFFoo returns NULL for an 
 add("r3-interface-alone", "@interface Foo : NSObject\n@end\n")
 add("unicode-unit-separator", "mov\x1fx0, x1\nldr x2, [sp, #8]\nbl _foo")
 
+# --- word boundaries: python's \w has no combining marks or connector punctuation (PCRE2 10.43+ UCP does) ---
+add("r5-combining-mark", "calls sub_12ab\u0301 x\n")
+add("r5-connector-punctuation", "x\u203fsub_1a x\n")
+add("r5-near-composed", "a\u0301sub_1 x\n")
+add("r5-near-mark-after-digit", "v1\u0301 = 2\n")
+add("r2-combining-mark", "at _foo\u0301+0x1c\n")
+
 # --- json raw_decode details (parity) ---
 add("json-dup-key-last-wins", '{"a": {"symbol": "_f", "regs": []}, "a": 1}\n')
 add("json-dup-key-trace-last", '{"a": 1, "a": {"symbol": "_f", "regs": []}}\n')

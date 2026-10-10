@@ -59,6 +59,10 @@ private slots:
         QCOMPARE(ws.importTrace(temp->path() + "/good.jsonl"), QString());
         QCOMPARE(mode(ws.stageDir("research") + "/trace/T0.jsonl"), 0600u); QCOMPARE(mode(ws.stageDir("research") + "/trace"), 0700u);
         QVERIFY(!ws.importTrace(temp->path() + "/good.jsonl").isEmpty()); // never overwrites
+        for (const QByteArray &line : {QByteArray("{\"symbol\": \"_f\", \"stack\": [1]}"), QByteArray("{\"symbol\": \"_f\", \"regs\": {\"x30\": 1}}"), QByteArray("{\"symbol\": \"_f\", \"\uff4c\uff52\": 1}"), QByteArray("not json")}) {
+            const auto other = make(); put(temp->path() + "/t.jsonl", "{\"symbol\": \"_ok\", \"count\": 2}\n" + line + "\n");
+            QVERIFY2(other.importTrace(temp->path() + "/t.jsonl").contains("line 2"), line.constData());
+        }
     }
     void deliverChecksHashAndNeverFollowsLinks() {
         const auto ws = make(); const auto r = release(ws, "facts\n");
@@ -81,8 +85,10 @@ private slots:
         QDir().mkpath(ws.stageDir("impl") + "/x"); QFile::copy(ws.root + "/handoff/" + r.name, ws.stageDir("impl") + "/x/t1.md");
         put(ws.stageDir("impl") + "/trace.txt", "{\"symbol\": \"_f\", \"x0\": 1}\n");
         QDir().mkpath(ws.stageDir("impl") + "/inputs"); put(ws.stageDir("impl") + "/inputs/extra.md", "x\n");
+        put(ws.stageDir("impl") + "/padded.txt", "{\"symbol\": \"_f\", \"x0\": 1}\n" + QByteArray(2 * 1024 * 1024, ' '));
+        put(ws.stageDir("impl") + "/huge.bin", QByteArray(9 * 1024 * 1024, 'a'));
         const QString problems = ws.firewall("impl", {}).join('\n');
-        for (const QString &p : {"copy.md is a copy", "x/t1.md is a copy", "trace.txt contains raw trace", "inputs/extra.md was not delivered"}) QVERIFY2(problems.contains(p), qPrintable(problems));
+        for (const QString &p : {"copy.md is a copy", "x/t1.md is a copy", "trace.txt contains raw trace", "inputs/extra.md was not delivered", "padded.txt contains raw trace", "huge.bin is too large"}) QVERIFY2(problems.contains(p), qPrintable(problems));
     }
     void taintMovesNeverDeletes() {
         const auto ws = make(); put(ws.stageDir("spec") + "/OUTPUT.md", "x");
@@ -100,8 +106,11 @@ private slots:
     }
     void recoversRunsLeftLocked() {
         PipelineWorkspace ws = make(); QCOMPARE(ws.lockFor("spec"), QString());
+        PipelineWorkspace live = make(); QCOMPARE(live.lockFor("spec"), QString());
+        const int held = live.holdRunLock(); QVERIFY(held >= 0); // a live run, maybe in another launcher process
         PipelineWorkspace other = make();
         const QStringList restored = PipelineWorkspace::recover(base);
+        QCOMPARE(mode(live.root), 0100u); ::close(held);
         QCOMPARE(restored, QStringList{ws.root});
         QCOMPARE(mode(ws.root), 0700u); QCOMPARE(mode(ws.stageDir("research")), 0700u);
         QVERIFY(HandoffStore::verifyChain(ws.root).summary.startsWith("records=1 "));

@@ -97,6 +97,11 @@ r4-near-small.txt	-	-
 clean-spec.txt	-	-
 r3-interface-alone.txt	R3	-
 unicode-unit-separator.txt	R1	-
+r5-combining-mark.txt	R5	-
+r5-connector-punctuation.txt	R5	-
+r5-near-composed.txt	-	-
+r5-near-mark-after-digit.txt	-	-
+r2-combining-mark.txt	R2	-
 json-dup-key-last-wins.txt	-	-
 json-dup-key-trace-last.txt	R7	-
 json-tab-in-string.txt	-	-
