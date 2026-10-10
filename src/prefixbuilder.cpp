@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <cerrno>
@@ -82,6 +83,7 @@ QString heavyBuildLock(QString *message) {
 bool validateRequest(const PrefixBuildRequest &request, QString *message) {
     if (!QDir::isAbsolutePath(request.python) || !QFileInfo(request.python).isExecutable()) return error(message, "Python 3 is unavailable");
     if (!QDir::isAbsolutePath(request.script) || !QFileInfo(request.script).isFile()) return error(message, "Select the prefix-builder script");
+    if (!QRegularExpression("^[0-9a-f]{64}$").match(request.scriptSha256).hasMatch()) return error(message, "The prefix-builder script has no pinned SHA-256");
     if (!QDir::isAbsolutePath(request.source) || !QFileInfo(request.source).isDir()) return error(message, "Select a clean VibeDarling source clone");
     if (!QDir::isAbsolutePath(request.workspace) || QFileInfo::exists(request.workspace) || QFileInfo(request.workspace).isSymLink()) return error(message, "Choose a new, nonexistent workspace path");
     QString parent = QFileInfo(request.workspace).absolutePath();
@@ -117,11 +119,14 @@ void PrefixBuilder::start(const PrefixBuildRequest &value) {
     if (!staging.isValid()) { fail("Cannot create lock staging directory"); return; }
     request = value;
     QFile script(request.script); if (!script.open(QIODevice::ReadOnly)) { fail(script.errorString()); return; }
-    QByteArray bytes = script.readAll(); scriptSnapshot = staging.path() + "/builder.py";
+    QByteArray bytes = script.readAll();
+    const QString digest = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+    if (digest != request.scriptSha256) { fail("The prefix-builder script changed after it was selected (expected SHA-256 " + request.scriptSha256 + ", found " + digest + "); nothing was run."); return; }
+    scriptSnapshot = staging.path() + "/builder.py";
     QFile snapshot(scriptSnapshot);
     if (!snapshot.open(QIODevice::WriteOnly) || snapshot.write(bytes) != bytes.size()) { fail("Cannot snapshot the selected builder script"); return; }
     snapshot.close();
-    provenance = {{"script", request.script}, {"script_sha256", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())},
+    provenance = {{"script", request.script}, {"script_sha256", digest},
                   {"source_clone", request.source}, {"workspace", request.workspace}, {"include_open_prs", request.includePrs}, {"jobs", request.jobs}, {"cmake_arguments", QJsonArray::fromStringList(request.cmakeArguments)}};
     run(Phase::Inspect, {"--help"});
 }
