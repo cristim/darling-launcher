@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <cerrno>
 #include <cstring>
+#include <algorithm>
 #include <map>
 namespace {
 const char *Audit = "AUDIT.jsonl", *Manifest = "MANIFEST.txt";
@@ -217,8 +218,10 @@ HandoffStore::Result HandoffStore::submit(const QString &runRoot, const QString 
         if (utf8.hasError()) result.reasons << Hit{0, "R9", "input is not valid UTF-8"};
         result.reasons += HandoffCheck::checkTextStrict(body);
         const QString inHash = sha256(data);
-        if (manifestHashes(hand.fd).contains(inHash)) result.reasons << Hit{0, "D1", "identical content is already released (re-release of a copy)"};
+        for (const QString &source : HandoffCheck::parseSources(body))
+            if (std::any_of(source.begin(), source.end(), [](QChar c) { return c.category() == QChar::Other_Control; })) { result.reasons << Hit{0, "R9", "control character in the Sources header"}; break; } // would split a MANIFEST line
         const Fd audit = lockAudit(hand.fd);
+        if (manifestHashes(hand.fd).contains(inHash)) result.reasons << Hit{0, "D1", "identical content is already released (re-release of a copy)"};
         const QList<QByteArray> lines = readRecords(audit.fd);
         refuseBroken(hand.fd, lines);
         const auto released = releasedMap(lines);
@@ -319,7 +322,7 @@ HandoffStore::Chain HandoffStore::verifyChain(const QString &runRoot, bool check
                 const QByteArray content = readAll(body.fd, std::numeric_limits<qint64>::max());
                 if (sha256(content) != rec.value("output_sha256").toString()) chain.problems << where + "released file " + name + " was modified";
                 const QString from = rec.value("from").toString();
-                static const QRegularExpression hash64("\\b[0-9a-f]{64}\\b", QRegularExpression::CaseInsensitiveOption | QRegularExpression::UseUnicodePropertiesOption);
+                static const QRegularExpression hash64("(?<![\\p{L}\\p{N}_])[0-9a-f]{64}(?![\\p{L}\\p{N}_])", QRegularExpression::CaseInsensitiveOption | QRegularExpression::UseUnicodePropertiesOption); // python's \\b
                 if (from != "research")
                     for (auto it = hash64.globalMatch(HandoffCheck::parseHeader(QString::fromUtf8(content), "Inputs").value_or(QString())); it.hasNext();) {
                         const QString h = it.next().captured();
