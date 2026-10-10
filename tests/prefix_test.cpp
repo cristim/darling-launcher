@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QRegularExpression>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QtTest>
@@ -344,7 +345,7 @@ private slots:
         QCOMPARE(installArchive(download, sha256File(good), runtimes, "v2026.10.09-000000e", gh, "VibeDarling/darling", roomyUnpackedSize), QString());
         QFile launcher(runtimes + "/v2026.10.09-000000e/" + launcherPath); QVERIFY(launcher.open(QIODevice::ReadOnly)); QCOMPARE(launcher.readAll(), QByteArray("x"));
         QCOMPARE(sha256File(download), sha256File(evil));
-        QCOMPARE(QDir(runtimes).entryList(QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot), QStringList{"v2026.10.09-000000e"});
+        QCOMPARE(QDir(runtimes).entryList(QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot).filter(QRegularExpression("^(?!\\.archive\\.lock$)")), QStringList{"v2026.10.09-000000e"});
         QCOMPARE(::mkfifo(QFile::encodeName(root + "/fifo.tar.zst").constData(), 0600), 0);
         QVERIFY(installArchive(root + "/fifo.tar.zst", sha256File(good), runtimes, "v2026.10.09-000000f", gh, "VibeDarling/darling", roomyUnpackedSize).contains("not a regular file"));
         QVERIFY(QFile::link(good, root + "/link.tar.zst"));
@@ -359,7 +360,7 @@ private slots:
         const QString bomb = makeArchive(root, "bomb", bombMembers); QVERIFY(!bomb.isEmpty()); QVERIFY(QFileInfo(bomb).size() < 64 << 10);
         const QString error = installArchive(bomb, sha256File(bomb), runtimes, "v2026.10.09-0000010", gh, "VibeDarling/darling", 4096);
         QVERIFY2(error.contains("more than the 4096 in manifest.json"), qPrintable(error));
-        QCOMPARE(QDir(runtimes).entryList(QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot), QStringList());
+        QCOMPARE(QDir(runtimes).entryList(QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot).filter(QRegularExpression("^(?!\\.archive\\.lock$)")), QStringList());
         QCOMPARE(installArchive(bomb, sha256File(bomb), runtimes, "v2026.10.09-0000011", gh, "VibeDarling/darling", (8 << 20) + 1), QString());
         QVERIFY(installArchive(bomb, sha256File(bomb), runtimes, "v2026.10.09-0000012", gh, "VibeDarling/darling", 0).contains("no unpacked size"));
         // A tar that writes more than its listing promised is stopped while it runs.
