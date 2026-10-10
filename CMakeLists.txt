@@ -53,7 +53,7 @@ target_link_libraries(launcher-pipeline-tests PRIVATE launcher_core Qt6::Widgets
 target_compile_definitions(launcher-pipeline-tests PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME launcher-pipeline-tests COMMAND launcher-pipeline-tests -nocrashhandler)
 set_tests_properties(launcher-pipeline-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PYTHONDONTWRITEBYTECODE=1")
-set_tests_properties(launcher-handoff-tests launcher-handoff-store-tests launcher-pipeline-workspace-tests launcher-pipeline-tests PROPERTIES TIMEOUT 240)
+set_tests_properties(launcher-handoff-tests launcher-handoff-store-tests launcher-pipeline-workspace-tests launcher-stage-supervisor-tests launcher-pipeline-tests PROPERTIES TIMEOUT 240)
 
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
