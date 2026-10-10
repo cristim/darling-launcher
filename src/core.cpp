@@ -283,7 +283,7 @@ bool saveCatalog(const QString &prefix, const QJsonObject &catalog, QString *err
     if (!file.commit()) return fail(error, file.errorString());
     return true;
 }
-bool stageBrewfile(const QString &prefix, const QString &source, QString *guestPath, QString *error) {
+bool stageBrewfile(const QString &prefix, const QString &source, QString *guestPath, QString *sha256, QString *error) {
     if (!QFileInfo(prefix).isDir()) return fail(error, "Prefix does not exist");
     QFile input(source);
     if (!input.open(QIODevice::ReadOnly)) return fail(error, input.errorString());
@@ -297,6 +297,7 @@ bool stageBrewfile(const QString &prefix, const QString &source, QString *guestP
     if (!target.open(QIODevice::WriteOnly) || target.write(data) != data.size() || !target.commit())
         return fail(error, "Cannot stage Brewfile");
     if (guestPath) *guestPath = "/.darling-launcher/Brewfile";
+    if (sha256) *sha256 = QString::fromLatin1(QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex());
     return true;
 }
 QString issueDraft(const AppEntry &app, const QJsonArray &chain, const QString &output,

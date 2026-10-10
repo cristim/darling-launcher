@@ -206,8 +206,11 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         QString p = prefix->text();
         QString brew = p + "/opt/homebrew/bin/brew";
         if (!QFileInfo(brew).isFile() || QFileInfo(brew).isSymLink()) { QMessageBox::warning(this, "Brewfile", "Native guest Homebrew is not installed in this prefix."); return; }
-        QString guestPath, error;
-        if (!LauncherCore::stageBrewfile(p, source, &guestPath, &error)) { QMessageBox::warning(this, "Brewfile", error); return; }
+        QString guestPath, digest, error;
+        if (!LauncherCore::stageBrewfile(p, source, &guestPath, &digest, &error)) { QMessageBox::warning(this, "Brewfile", error); return; }
+        if (QMessageBox::question(this, "Run Brewfile?", "A Brewfile is Ruby code. Installing it runs that code in this prefix with your user's rights, and a Darling prefix can read and change your files.\n\n"
+                "Only continue if you trust where this file came from.\n\nFile: " + source + "\nSHA-256 of the copy that will run: " + digest,
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) { QFile::remove(p + guestPath); return; }
         runCommand("Brewfile", {"exec", "/opt/homebrew/bin/brew", "bundle", "--file", guestPath});
     });
     settingsLayout->addLayout(settingsToolbar);
