@@ -20,7 +20,7 @@ class TroubleshootingTest : public QObject {
     Q_OBJECT
     QTemporaryDir isolatedHome;
 private slots:
-    void initTestCase() { QVERIFY(isolatedHome.isValid()); qputenv("HOME", isolatedHome.path().toUtf8()); }
+    void initTestCase() { QVERIFY(isolatedHome.isValid()); qputenv("HOME", isolatedHome.path().toUtf8()); qputenv("DARLING_LAUNCHER_LOCK_DIR", (isolatedHome.path() + "/locks").toUtf8()); }
     void rememberedLaunchChoicesAndMountOffer() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", temporary.path().toUtf8());
         LauncherTroubleshooting::saveRecoveryChoices({true, true, false, true, "codex"});
@@ -146,6 +146,20 @@ private slots:
         QVERIFY(QFile::link(temporary.path(), prefix + "/hop")); QVERIFY(status(tools.deploy, {workspace + "/payload", "hop/escaped"}) != 0); QVERIFY(!QFileInfo::exists(temporary.path() + "/escaped"));
         for (const QString &bad : {"-c", "config", "push", "clone", "fetch", "worktree", "checkout"}) QVERIFY2(status(tools.git, {bad}) != 0, qPrintable(bad));
         QVERIFY(status(tools.git, {"commit", "-c", "core.hooksPath=/tmp"}) != 0); QVERIFY(status(tools.git, {"diff", "--no-index", "/dev/null", "/etc/passwd"}) != 0); QVERIFY(status(tools.git, {"log", "--output=/tmp/x"}) != 0);
+    }
+    void agentBuildUsesTheLaunchersPrivateLock() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("HOME", temporary.path().toUtf8());
+        const QByteArray previous = qgetenv("DARLING_LAUNCHER_LOCK_DIR"); auto restore = qScopeGuard([=] { qputenv("DARLING_LAUNCHER_LOCK_DIR", previous); });
+        const QString workspace = temporary.path() + "/ws", clone = temporary.path() + "/clone"; QVERIFY(QDir().mkpath(workspace)); QVERIFY(QDir().mkpath(clone));
+        const QJsonObject diagnostic{{"prefix", temporary.path() + "/prefix"}, {"runtime", temporary.path()}, {"launcher", temporary.path() + "/darling"}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}};
+        qputenv("DARLING_LAUNCHER_LOCK_DIR", (temporary.path() + "/locks").toUtf8());
+        const auto tools = LauncherTroubleshooting::prepareAgentTools(diagnostic, workspace, clone); QVERIFY2(tools.valid(), qPrintable(tools.error));
+        QFile build(tools.build); QVERIFY(build.open(QIODevice::ReadOnly)); const QString script = QString::fromUtf8(build.readAll());
+        QVERIFY(script.contains("flock -w 1800 '" + temporary.path() + "/locks/darling-heavy-build.lock'")); QVERIFY(!script.contains("/tmp/agent-locks"));
+        // The lock path is interpolated into a shell script, so it gets the same character allowlist as every other path.
+        QVERIFY(QDir().mkpath(temporary.path() + "/it's"));
+        qputenv("DARLING_LAUNCHER_LOCK_DIR", (temporary.path() + "/it's/locks").toUtf8());
+        QVERIFY(!LauncherTroubleshooting::prepareAgentTools(diagnostic, workspace, clone).valid());
     }
     void worktreeTrustFollowsTheLauncherClone() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("HOME", temporary.path().toUtf8());
