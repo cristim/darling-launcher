@@ -18,6 +18,7 @@ case $mode in
   ok) out ;;
   reconcile) out; echo 'Reconcile: _CFFoo' >> OUTPUT.md ;;
   r10) printf 'Loaded from libsystem_kernel.dylib+0x1c2 (attempt %s)\n' "$n" > OUTPUT.md ;;
+  passhit) printf 'VERDICT: PASS\nMatches the spec; the old code called sub_1A2B.\n' > OUTPUT.md ;;
   badrecon) printf 'The function is absent and nobody calls it.\n' > OUTPUT.md ;;
   taint) printf 'Notes: the function calls sub_1A2B first.\n' > OUTPUT.md ;;
   revise) printf 'Loaded from /System/Library/Frameworks/Foo.framework (attempt %s)\n' "$n" > OUTPUT.md ;;

@@ -141,6 +141,22 @@ private slots:
         if (python.isEmpty()) QSKIP("python3 not found: the python oracle did NOT verify the chain with a recon release");
         QCOMPARE(QProcess::execute(python, {TEST_SOURCE_DIR "/tests/handoff-oracle/check_handoff.py", "--verify-chain", "--run-root", r.ws.root}), 0);
     }
+    void reconRunsOncePerSpecRelease() {
+        ReconcileTracker t;
+        const HandoffStore::Release first{"02-spec-to-impl.md", QString(64, 'a'), "spec", "impl"}, revised{"05-spec-to-impl.md", QString(64, 'b'), "spec", "impl"};
+        QVERIFY(t.shouldReconcile(first, "Req 1\nReconcile: _CFFoo\n"));
+        QVERIFY(!t.shouldReconcile(first, "Req 1\nReconcile: _CFFoo\n"));          // same release hash: no second reconciler
+        QVERIFY(t.shouldReconcile(revised, "Req 1b\nReconcile: _CFFoo, _CFBar\n")); // revised spec, new line: its own reconciler
+        QVERIFY(!t.shouldReconcile({"06-spec-to-impl.md", QString(64, 'c'), "spec", "impl"}, "no line\n"));
+        QVERIFY(!t.shouldReconcile({"07-impl-to-validate.md", QString(64, 'd'), "impl", "validate"}, "Reconcile: _X\n"));
+        for (const char *bad : {"Reconcile:\n", "Reconcile: a name here\n", "- Reconcile: _X\n", "reconcile: _X\n", "Not a Reconcile: _X line\n"})
+            QVERIFY2(!t.shouldReconcile({"08-spec-to-impl.md", QString(64, 'e'), "spec", "impl"}, bad), bad);
+        QVERIFY(t.shouldReconcile({"09-spec-to-impl.md", QString(64, 'f'), "spec", "impl"}, "Req\r\nReconcile: _X, _Y$1, objc.sel@2\n"));
+        // In a run, the validation loop back to impl does not start a second reconciler for the same spec.
+        plan("spec 1 reconcile\nvalidate 1 mismatch\n");
+        const auto r = run(); QCOMPARE(r.state, State::Done);
+        QCOMPARE(read(fake + "/calls").count(" recon "), 1); QVERIFY(read(fake + "/calls").contains("impl 2"));
+    }
     void badReconAnswerIsRevised() {
         plan("spec 1 reconcile\nrecon 1 badrecon\n");
         const auto r = run(); QCOMPARE(r.state, State::Done);
@@ -161,6 +177,31 @@ private slots:
         QVERIFY(std::any_of(recs.begin(), recs.end(), [](const QJsonObject &o) { return o.value("verdict") == "TAINT" && o.value("compliance_rules").toArray().contains("R10"); }));
         QVERIFY(HandoffStore::verifyChain(r.ws.root).summary.contains("compliance_reports=2"));
         QVERIFY(read(LauncherLog::path()).contains("REPORT-TO-COMPLIANCE: rule R10"));
+    }
+    // Compliance review C2-1: cancel pressed while the check runs must not drop a compliance reject.
+    void cancelDuringSubmitStillReportsAndTaints() {
+        plan("spec 1 r10\n");
+        QStringList reported;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) {
+            connect(&p, &MissingSymbolPipeline::complianceReport, &p, [&](const QString &stage, const QStringList &rules) { reported << stage + ':' + rules.join(','); });
+            connect(&p, &MissingSymbolPipeline::statusChanged, &p, [&p](const QString &m) { if (m.startsWith("Checking the spec output")) p.cancel(); });
+        });
+        QCOMPARE(r.state, State::Cancelled); QCOMPARE(reported, QStringList{"spec:R10"});
+        const QStringList v = verdicts(r.ws);
+        QVERIFY2(v.indexOf("TAINT") >= 0 && v.indexOf("TAINT") < v.indexOf("CANCEL"), qPrintable(v.join(',')));
+        QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1);
+        QVERIFY(read(LauncherLog::path()).contains("REPORT-TO-COMPLIANCE: rule R10"));
+    }
+    // Compliance review C2-3: a validation PASS report with a compliance hit is reported with its rule ids.
+    void validationReportWithComplianceHitIsReported() {
+        plan("validate 1 passhit\n");
+        QStringList reported;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) {
+            connect(&p, &MissingSymbolPipeline::complianceReport, &p, [&](const QString &stage, const QStringList &rules) { reported << stage + ':' + rules.join(','); });
+        });
+        QCOMPARE(r.state, State::Done); QCOMPARE(reported, QStringList{"validate:R5"});
+        const auto recs = audit(r.ws);
+        QVERIFY(std::any_of(recs.begin(), recs.end(), [](const QJsonObject &o) { return o.value("verdict") == "TAINT" && o.value("stage") == "validate" && o.value("compliance_rules").toArray().contains("R5"); }));
     }
     void rejectedOutputIsRevisedThenFails() {
         plan("research 1 revise\n");
