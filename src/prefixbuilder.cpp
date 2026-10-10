@@ -10,6 +10,9 @@
 #include <QJsonDocument>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <cerrno>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 bool error(QString *target, const QString &message) { if (target) *target = message; return false; }
@@ -61,6 +64,20 @@ bool selectNestedInputs(const QJsonObject &discovery, bool includePrs, QJsonObje
     result.insert("launcher_input_selection", includePrs ? "default-branches-and-open-prs" : "default-branches-only");
     if (selected) *selected = result;
     return true;
+}
+QString heavyBuildLock(QString *message) {
+    const QString override = qEnvironmentVariable("DARLING_LAUNCHER_LOCK_DIR"), runtime = qEnvironmentVariable("XDG_RUNTIME_DIR");
+    if (override.isEmpty() && runtime.isEmpty()) { error(message, "XDG_RUNTIME_DIR is not set; set DARLING_LAUNCHER_LOCK_DIR to a private directory for the heavy-build lock"); return {}; }
+    const QString directory = override.isEmpty() ? runtime + "/darling-launcher" : override;
+    if (!QDir::isAbsolutePath(directory)) { error(message, "The heavy-build lock directory must be an absolute path: " + directory); return {}; }
+    const QByteArray path = QFile::encodeName(directory);
+    struct stat status {};
+    if ((::mkdir(path.constData(), 0700) != 0 && errno != EEXIST) || ::lstat(path.constData(), &status) != 0 || !S_ISDIR(status.st_mode)
+        || status.st_uid != ::getuid() || (status.st_mode & (S_IWGRP | S_IWOTH))) {
+        error(message, "The heavy-build lock directory " + directory + " must be a directory you own that others cannot write");
+        return {};
+    }
+    return directory + "/darling-heavy-build.lock";
 }
 bool validateRequest(const PrefixBuildRequest &request, QString *message) {
     if (!QDir::isAbsolutePath(request.python) || !QFileInfo(request.python).isExecutable()) return error(message, "Python 3 is unavailable");
@@ -125,9 +142,10 @@ void PrefixBuilder::run(Phase next, const QStringList &arguments) {
     QStringList args{"-u", scriptSnapshot}; args.append(arguments);
     if (next == Phase::Build) {
         const QString flock = QStandardPaths::findExecutable("flock");
-        const QString lockDirectory = qEnvironmentVariable("DARLING_LAUNCHER_LOCK_DIR", "/tmp/agent-locks");
-        if (flock.isEmpty() || !QDir().mkpath(lockDirectory)) { fail("Cannot acquire the shared Darling heavy-build lock; install flock and check the lock directory."); return; }
-        process.start(flock, QStringList{"-w", "1800", lockDirectory + "/darling-heavy-build.lock", request.python} + args);
+        QString message; const QString lock = LauncherPrefix::heavyBuildLock(&message);
+        if (flock.isEmpty()) { fail("Cannot acquire the Darling heavy-build lock; install flock."); return; }
+        if (lock.isEmpty()) { fail(message); return; }
+        process.start(flock, QStringList{"-w", "1800", lock, request.python} + args);
     } else process.start(request.python, args);
 }
 void PrefixBuilder::advance() {

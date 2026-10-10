@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSignalSpy>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -25,6 +26,25 @@ private slots:
         QVERIFY(text.contains("[test] first line")); QVERIFY(text.contains("[test] second line"));
     }
     void initTestCase() { QVERIFY(isolatedHome.isValid()); qputenv("HOME", isolatedHome.path().toUtf8()); qputenv("DARLING_LAUNCHER_LOCK_DIR", (isolatedHome.path() + "/locks").toUtf8()); }
+    void heavyBuildLockIsPrivatePerUser() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QByteArray previousOverride = qgetenv("DARLING_LAUNCHER_LOCK_DIR"), previousRuntime = qgetenv("XDG_RUNTIME_DIR");
+        auto restore = qScopeGuard([=] { qputenv("DARLING_LAUNCHER_LOCK_DIR", previousOverride); qputenv("XDG_RUNTIME_DIR", previousRuntime); });
+        qunsetenv("DARLING_LAUNCHER_LOCK_DIR"); qputenv("XDG_RUNTIME_DIR", temporary.path().toUtf8());
+        QString error; const QString directory = temporary.path() + "/darling-launcher";
+        QCOMPARE(LauncherPrefix::heavyBuildLock(&error), directory + "/darling-heavy-build.lock");
+        QCOMPARE(QFileInfo(directory).permissions() & (QFile::WriteGroup | QFile::WriteOther | QFile::ReadOther | QFile::ExeOther), QFile::Permissions());
+        // A directory another user could have planted entries in, or a symlink to one, is refused.
+        QVERIFY(QFile::setPermissions(directory, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::WriteOther | QFile::ExeOther | QFile::ReadOther));
+        QVERIFY(LauncherPrefix::heavyBuildLock(&error).isEmpty()); QVERIFY(error.contains(directory));
+        QVERIFY(QDir(directory).removeRecursively()); QVERIFY(QDir().mkpath(temporary.path() + "/elsewhere")); QVERIFY(QFile::link(temporary.path() + "/elsewhere", directory));
+        QVERIFY(LauncherPrefix::heavyBuildLock(&error).isEmpty());
+        // The override is honoured as is, under the same ownership rules.
+        qputenv("DARLING_LAUNCHER_LOCK_DIR", (temporary.path() + "/override").toUtf8());
+        QCOMPARE(LauncherPrefix::heavyBuildLock(&error), temporary.path() + "/override/darling-heavy-build.lock");
+        qputenv("DARLING_LAUNCHER_LOCK_DIR", "relative/locks"); QVERIFY(LauncherPrefix::heavyBuildLock(&error).isEmpty());
+        qunsetenv("DARLING_LAUNCHER_LOCK_DIR"); qunsetenv("XDG_RUNTIME_DIR"); QVERIFY(LauncherPrefix::heavyBuildLock(&error).isEmpty()); QVERIFY(error.contains("XDG_RUNTIME_DIR"));
+    }
     void independentClone() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString git = QStandardPaths::findExecutable("git"); QVERIFY(!git.isEmpty());
