@@ -57,7 +57,12 @@ add_test(NAME launcher-pipeline-workspace-tests COMMAND launcher-pipeline-worksp
 add_executable(launcher-stage-supervisor-tests tests/stage_supervisor_test.cpp)
 target_link_libraries(launcher-stage-supervisor-tests PRIVATE launcher_core Qt6::Test)
 add_test(NAME launcher-stage-supervisor-tests COMMAND launcher-stage-supervisor-tests -nocrashhandler)
-set_tests_properties(launcher-handoff-tests launcher-handoff-store-tests launcher-pipeline-workspace-tests launcher-stage-supervisor-tests PROPERTIES TIMEOUT 240)
+add_executable(launcher-pipeline-tests tests/pipeline_test.cpp src/pipeline.cpp src/troubleshooting.cpp)
+target_link_libraries(launcher-pipeline-tests PRIVATE launcher_core Qt6::Widgets Qt6::Concurrent Qt6::Test)
+target_compile_definitions(launcher-pipeline-tests PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME launcher-pipeline-tests COMMAND launcher-pipeline-tests -nocrashhandler)
+set_tests_properties(launcher-pipeline-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PYTHONDONTWRITEBYTECODE=1")
+set_tests_properties(launcher-handoff-tests launcher-handoff-store-tests launcher-pipeline-workspace-tests launcher-pipeline-tests PROPERTIES TIMEOUT 240)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME launcher-mount-script-tests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/mount_script_test.py)
