@@ -16,12 +16,13 @@ parser.add_argument("--lock")
 parser.add_argument("--workspace")
 parser.add_argument("--jobs", type=int, default=1)
 parser.add_argument("--cmake-arg", action="append", default=[])
+parser.add_argument("--include-prs", action="store_true")
 args = parser.parse_args()
 if args.command == "resolve":
     lock = {
         "schema": 1, "owner": "VibeDarling", "complete": True,
         "repos": [{"repo": "darling", "branch": "master", "base": "a" * 40,
-                   "prs": [{"number": 7, "head": "b" * 40, "ref": "refs/pull/7/head"}]}],
+                   "prs": [{"number": 7, "head": "b" * 40, "ref": "refs/pull/7/head"}] if args.include_prs else []}],
         "fail_checkout": (Path(args.source) / "fail-checkout").exists(),
     }
     Path(args.output).write_text(json.dumps(lock))
@@ -38,7 +39,7 @@ elif args.command == "resolve-nested":
     lock = {"schema": 1, "owner": "VibeDarling",
             "top_lock_sha256": hashlib.sha256((workspace / "refs.lock.json").read_bytes()).hexdigest(),
             "vibedarling": [{"repo": "nested", "branch": "main", "base": "c" * 40,
-                            "prs": [{"number": 2, "head": "d" * 40}]}], "external_pinned": []}
+                            "prs": [{"number": 2, "head": "d" * 40}] if args.include_prs else []}], "external_pinned": []}
     Path(args.output).write_text(json.dumps(lock))
 elif args.command == "checkout-nested":
     workspace = Path(args.workspace)
