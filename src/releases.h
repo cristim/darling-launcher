@@ -29,7 +29,8 @@ constexpr const char *signerSourceRef = "refs/heads/master";
 // Runs `gh attestation verify <archive> --repo <repo> --signer-workflow <signerWorkflow> --source-ref <signerSourceRef>
 // --deny-self-hosted-runners`. Empty string = verified.
 QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo);
-// Copies the archive into a private 0700 folder under runtimesRoot, then verifies the digest and attestation of
+// Removes .archive-* copies left by a killed install when no other install holds .archive.lock, then copies the
+// archive into a private 0700 folder under runtimesRoot, then verifies the digest and attestation of
 // that copy and vets the member list (relative paths under usr/local only, no device or
 // hard-link members, nothing written through a symlink, no symlink at usr/local/bin/darling, the private/etc
 // marker or any of their parents), then extracts and checks extractedTreeError before moving it
