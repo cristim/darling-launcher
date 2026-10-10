@@ -48,6 +48,11 @@ case $mode in
   hardlink) ln "$F/outside.md" OUTPUT.md ;;
   chmod) chmod 700 ../research 2>/dev/null; ls ../research > /dev/null 2>&1; chmod 000 ../research 2>/dev/null; out ;;
   sleep) sleep 600 ;;
+  chmod-then-sleep) chmod 700 ../research 2>/dev/null; chmod 000 ../research 2>/dev/null; sleep 600 ;;
+  stubborn) trap '' TERM; sleep 600 ;;
+  slow) sleep 2; out ;;
+  biglog) head -c 9000000 /dev/zero | tr '\0' 'a'; echo; echo '{"msg": "x\\nContents of (__TEXT,__text) section"}'; out ;;
+  bigclean) head -c 9000000 /dev/zero | tr '\0' 'a'; echo; out ;;
   escape) F="$F" setsid sh -c 'echo $$ > "$F/bgpid"; cd /; exec sleep 600' > /dev/null 2>&1 < /dev/null & sleep 1; out ;;
   checkbg) if kill -0 "$(cat "$F/bgpid")" 2>/dev/null; then echo alive > "$F/bg-state"; else echo dead > "$F/bg-state"; fi; out ;;
   probe)
@@ -81,7 +86,9 @@ class PipelineTest : public QObject {
         p.start();
         if (during) during(p);
         if (done.isEmpty()) done.wait(120000);
-        return {p.state(), done.isEmpty() ? QString("no finish") : done[0][1].toString(), p.workspace()};
+        const QString message = done.isEmpty() ? QString("no finish") : done[0][1].toString();
+        qInfo().noquote() << "pipeline finished:" << message;
+        return {p.state(), message, p.workspace()};
     }
 private slots:
     void initTestCase() { qRegisterMetaType<MissingSymbolPipeline::State>(); }
@@ -121,13 +128,15 @@ private slots:
         QFETCH(QString, cli);
         plan("impl 1 probe\n");
         const auto r = run({"claude", "codex", cli, "claude"});
-        QCOMPARE(r.state, State::Done);
         const QString listing = read(fake + "/listing-" + cli);
         QVERIFY2(listing.contains("./inputs/02-spec-to-impl.md") && !listing.contains("research-to-spec") && !listing.contains("T0"), qPrintable(listing));
-        if (::geteuid() == 0) QSKIP("running as root: directory modes do not stop root, the access probe is not meaningful");
-        const QString probe = read(fake + "/probe-" + cli);
-        QVERIFY2(!probe.contains("READ") && !probe.contains("COPIED") && probe.count("DENIED") == 7, qPrintable(probe));
-        QVERIFY(!QFileInfo::exists(fake + "/stolen-" + cli + "/trace"));
+        if (::geteuid() != 0) {
+            const QString probe = read(fake + "/probe-" + cli);
+            QVERIFY2(!probe.contains("READ") && !probe.contains("COPIED") && probe.count("DENIED") == 7, qPrintable(probe));
+            QVERIFY(!QFileInfo::exists(fake + "/stolen-" + cli + "/trace"));
+        }
+        QCOMPARE(r.state, State::Done);
+        if (::geteuid() == 0) QSKIP("running as root: directory modes do not stop root, the access probe was not checked");
     }
     void taintedStageIsMovedAsideAndReplaced() {
         plan("spec 1 taint\n");
@@ -148,6 +157,12 @@ private slots:
         const auto r = run();
         QCOMPARE(r.state, State::Done); QCOMPARE(QDir(r.ws.root + "/research.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1);
         QVERIFY(QFileInfo::exists(r.ws.stageDir("research") + "/trace/T0.jsonl")); // fresh workspace gets the trace again
+    }
+    void largeLogsAreScannedNotRejected() {
+        plan("research 1 bigclean\nspec 1 biglog\n");
+        const auto r = run(); QCOMPARE(r.state, State::Done);
+        QVERIFY(!QFileInfo::exists(r.ws.root + "/research.tainted"));
+        QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1); // marker in a JSON string after 9 MB
     }
     void rejectedOutputIsRevisedThenFails() {
         plan("research 1 revise\n");
@@ -193,10 +208,29 @@ private slots:
         QCOMPARE(PipelineWorkspace::processesUsing(r.ws.root), QList<qint64>());
         QVERIFY(QFileInfo(r.ws.root).permissions().testFlag(QFile::ReadOwner)); // unlocked
     }
+    void cancelStopsAnAgentThatIgnoresSigterm() {
+        plan("research 1 stubborn\n");
+        QElapsedTimer timer; timer.start();
+        const auto r = run({"claude", "codex", "opencode", "claude"}, 60, [](MissingSymbolPipeline &p) { QTimer::singleShot(1000, &p, &MissingSymbolPipeline::cancel); });
+        QCOMPARE(r.state, State::Cancelled); QVERIFY(timer.elapsed() < MissingSymbolPipeline::StopGraceSeconds * 1000);
+        QCOMPARE(PipelineWorkspace::processesUsing(r.ws.root), QList<qint64>());
+    }
+    void unmarkedProcessInTheRunFolderStopsTheRunWithoutBeingKilled() {
+        plan("research 1 slow\n");
+        QProcess viewer;
+        const auto r = run({"claude", "codex", "opencode", "claude"}, 60, [&viewer](MissingSymbolPipeline &p) {
+            viewer.setWorkingDirectory(p.workspace().stageDir("research")); viewer.start("sleep", {"60"}); viewer.waitForStarted();
+        });
+        QCOMPARE(r.state, State::Failed); QVERIFY2(r.message.contains(QString::number(viewer.processId()) + " (") && r.message.contains("sleep 60)"), qPrintable(r.message));
+        QCOMPARE(viewer.state(), QProcess::Running);
+        QVERIFY(verdicts(r.ws).contains("STRAY")); QVERIFY(!QFileInfo::exists(r.ws.root + "/research.tainted"));
+        viewer.kill(); viewer.waitForFinished();
+    }
     void timeoutStopsTheAgent() {
-        plan("spec 1 sleep\n");
+        plan("spec 1 chmod-then-sleep\n");
         const auto r = run({"claude", "codex", "opencode", "claude"}, 2);
         QCOMPARE(r.state, State::TimedOut); QCOMPARE(verdicts(r.ws).last(), QString("TIMEOUT"));
+        if (::geteuid() != 0) { QVERIFY(verdicts(r.ws).contains("TAINT")); QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1); } // tampering is not hidden by timing out
         QCOMPARE(PipelineWorkspace::processesUsing(r.ws.root), QList<qint64>());
     }
     void silentAgentIsRevisedThenFails() {

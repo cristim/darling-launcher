@@ -9,8 +9,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <set>
 #include <vector>
 namespace {
+// Total stop time stays below the launcher's StopGraceSeconds (10 s): 3 s grace + at most 4 s of sweeping.
+constexpr int GraceSeconds = 3, SweepRounds = 200;
 volatile sig_atomic_t stopRequested = 0, graceOver = 0;
 void onStop(int) { stopRequested = 1; }
 void onAlarm(int) { graceOver = 1; }
@@ -32,20 +35,26 @@ std::vector<pid_t> children() {
     closedir(proc);
     return out;
 }
-void reap() { while (waitpid(-1, nullptr, WNOHANG) > 0) {} }
-// Signals every remaining descendant until none is left; returns how many were found.
-int sweep(int signal, int rounds) {
-    int found = 0;
+pid_t agent = -1;
+int agentStatus = 0;
+bool agentReaped = false;
+// Reaps every exited child, remembering the agent's status (its pid must never be signalled once reaped).
+void reap() {
+    int st = 0; pid_t p;
+    while ((p = waitpid(-1, &st, WNOHANG)) > 0) if (p == agent) { agentStatus = st; agentReaped = true; }
+}
+// SIGKILLs every remaining descendant until none is left; returns how many, the agent not counted.
+int sweep(int rounds) {
+    std::set<pid_t> found;
     for (int i = 0; i < rounds; ++i) {
         reap();
         const auto kids = children();
         if (kids.empty()) break;
-        found += int(kids.size());
-        for (pid_t k : kids) kill(k, signal);
+        for (pid_t k : kids) { kill(k, SIGKILL); if (k != agent) found.insert(k); }
         usleep(20000);
     }
     reap();
-    return found;
+    return int(found.size());
 }
 }
 int StageSupervisor::run(int argc, char **argv) {
@@ -54,29 +63,31 @@ int StageSupervisor::run(int argc, char **argv) {
     struct sigaction sa {}; sa.sa_handler = onStop; sigemptyset(&sa.sa_mask);
     sigaction(SIGTERM, &sa, nullptr); sigaction(SIGINT, &sa, nullptr); sigaction(SIGHUP, &sa, nullptr);
     sa.sa_handler = onAlarm; sigaction(SIGALRM, &sa, nullptr);
-    const pid_t agent = fork();
+    agent = fork();
     if (agent < 0) { perror("stage-supervisor: fork"); return 2; }
     if (agent == 0) {
         signal(SIGTERM, SIG_DFL); signal(SIGINT, SIG_DFL); signal(SIGHUP, SIG_DFL); signal(SIGALRM, SIG_DFL);
         execvp(argv[2], argv + 2);
         perror("stage-supervisor: exec"); _exit(127);
     }
-    int status = 0; bool stopping = false;
-    for (;;) {
-        int st = 0; const pid_t p = waitpid(-1, &st, WNOHANG); // polled: a blocking wait could miss a signal racing it
-        if (p == agent) { status = st; break; }
-        if (p < 0 && errno == ECHILD) break;
-        if (p == 0) usleep(50000);
-        if (stopRequested && !stopping) {
+    bool stopping = false;
+    // Polled: a blocking wait could miss a stop signal that races it.
+    while (!agentReaped && !graceOver) {
+        reap();
+        if (stopRequested && !stopping && !agentReaped) {
             stopping = true;
             kill(agent, SIGTERM);
-            sweep(SIGTERM, 1);
-            alarm(5);
+            for (pid_t k : children()) if (k != agent) kill(k, SIGTERM);
+            alarm(GraceSeconds);
         }
-        if (graceOver) kill(agent, SIGKILL);
+        if (!agentReaped) usleep(50000);
     }
     alarm(0);
-    if (const int left = sweep(SIGKILL, 500)) fprintf(stderr, "stage-supervisor: stopped %d process(es) the agent left running\n", left);
-    if (WIFEXITED(status)) return WEXITSTATUS(status);
-    return 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+    if (!agentReaped) kill(agent, SIGKILL); // not reaped yet, so the pid is still ours
+    const int left = sweep(SweepRounds);
+    if (left > 0) fprintf(stderr, "stage-supervisor: stopped %d process(es) the agent left running\n", left);
+    if (!children().empty()) fprintf(stderr, "stage-supervisor: warning: processes the agent started are still running and escape supervision\n");
+    if (!agentReaped) return 128 + SIGKILL;
+    if (WIFEXITED(agentStatus)) return WEXITSTATUS(agentStatus);
+    return 128 + (WIFSIGNALED(agentStatus) ? WTERMSIG(agentStatus) : 0);
 }

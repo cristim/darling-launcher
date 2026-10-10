@@ -50,7 +50,7 @@ private:
     QString activeStage, agentId, agentCli, anchor;
     QHash<QString, int> launches, revisions, replacements;
     QHash<QString, QList<HandoffStore::Release>> delivered, inputs; // per stage: all deliveries / those named in Inputs
-    int validationRounds = 0, logFd = -1;
+    int validationRounds = 0, logFd = -1, runLock = -1;
     bool cancelling = false, timedOut = false;
     QProcess *process = nullptr;
     QTimer timeout;

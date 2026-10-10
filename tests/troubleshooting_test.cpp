@@ -41,7 +41,7 @@ private slots:
         qputenv("PATH", bin.path().toUtf8());
         PipelineConsentDialog dialog("/home/u/.darling/trace.jsonl", "_CFFoo", "CoreFoundation"); dialog.show();
         const QString text = dialog.findChild<QLabel *>("pipelineIsolation")->text();
-        for (const char *must : {"This is not a sandbox", "runs as your user account", "Codex and OpenCode can read outside the folder", "session history", "/home/u/.darling/trace.jsonl", "specification only"})
+        for (const char *must : {"This is not a sandbox", "runs as your user account", "Codex and OpenCode can read outside the folder", "session history", "/home/u/.darling/trace.jsonl", "never the trace or the research facts"})
             QVERIFY2(text.contains(must), must);
         auto *ok = dialog.findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok);
         QVERIFY(!ok->isEnabled()); dialog.findChild<QCheckBox *>("approvePipeline")->setChecked(true); QVERIFY(ok->isEnabled());

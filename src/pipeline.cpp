@@ -5,6 +5,7 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
@@ -23,6 +24,47 @@ QStringList names(const QList<HandoffStore::Release> &releases) { QStringList ou
 // "records=N last_hash=H": what an outside edit of AUDIT.jsonl would change.
 QString chainHead(const QString &root) { return HandoffStore::verifyChain(root, false).summary.section(' ', 0, 1); }
 QString describe(const HandoffCheck::Hit &h) { return QString("line %1: [%2] %3").arg(h.line).arg(h.rule, h.description); }
+constexpr qint64 ScanChunk = 4 * 1024 * 1024;
+const char *Marker = "DARLING_PIPELINE_AGENT";
+bool hasMarker(qint64 pid, const QString &agentId) {
+    QFile env(QString("/proc/%1/environ").arg(pid));
+    return env.open(QIODevice::ReadOnly) && env.readAll().split('\0').contains(QByteArray(Marker) + '=' + agentId.toUtf8());
+}
+QString command(qint64 pid) {
+    QFile f(QString("/proc/%1/cmdline").arg(pid));
+    return f.open(QIODevice::ReadOnly) ? QString::fromLocal8Bit(f.read(200).replace('\0', ' ')).trimmed() : QString("?");
+}
+// CLI logs in JSON lines escape newlines; scan the decoded strings as well as the raw text.
+QString withJsonStrings(const QByteArray &data) {
+    QString text = QString::fromUtf8(data);
+    for (const QByteArray &line : data.split('\n')) {
+        if (!line.trimmed().startsWith('{')) continue;
+        QList<QJsonValue> stack{QJsonDocument::fromJson(line).object()};
+        while (!stack.isEmpty()) {
+            const QJsonValue v = stack.takeLast();
+            if (v.isString()) text += '\n' + v.toString();
+            else if (v.isObject()) for (const auto &x : v.toObject()) stack << x;
+            else if (v.isArray()) for (const auto &x : v.toArray()) stack << x;
+        }
+    }
+    return text;
+}
+// Exposure markers in a file of any size, read in chunks cut at line ends. Returns a reason or empty.
+QString scanFile(const QString &path) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return " cannot be read for checking";
+    auto exposed = [](const QByteArray &part) { return !HandoffCheck::exposureMarkers(withJsonStrings(part)).isEmpty(); };
+    QByteArray buffer;
+    while (!f.atEnd()) {
+        buffer += f.read(ScanChunk);
+        qsizetype cut = f.atEnd() ? buffer.size() : buffer.lastIndexOf('\n') + 1;
+        if (cut == 0 && buffer.size() < 2 * ScanChunk) continue; // keep reading a long line
+        if (cut == 0) cut = buffer.size();                        // a line over 8 MB is scanned in pieces
+        if (exposed(buffer.left(cut))) return " contains disassembly or decompiler markers";
+        buffer.remove(0, cut);
+    }
+    return !buffer.isEmpty() && exposed(buffer) ? " contains disassembly or decompiler markers" : QString();
+}
 }
 QStringList MissingSymbolPipeline::defaultAgents(const QStringList &installed) {
     QStringList out;
@@ -39,6 +81,7 @@ MissingSymbolPipeline::MissingSymbolPipeline(PipelineWorkspace workspace, Option
     connect(&watcher, &QFutureWatcher<HandoffStore::Result>::finished, this, [this] { submitted(watcher.result()); });
 }
 MissingSymbolPipeline::~MissingSymbolPipeline() {
+    if (runLock >= 0) ::close(runLock);
     if (!process) return;
     process->disconnect();
     process->terminate();
@@ -55,6 +98,8 @@ bool MissingSymbolPipeline::record(const QString &verdict, QJsonObject fields) {
 void MissingSymbolPipeline::start() {
     if (current != State::Idle) return;
     current = State::Running;
+    runLock = ws.holdRunLock();
+    if (runLock < 0) { finish(State::Failed, "Another launcher process is running this pipeline."); return; }
     if (opts.agents.size() != HandoffStore::Stages.size()) { finish(State::Failed, "Choose an agent for each stage."); return; }
     if (!record("START", {{"run", ws.runId}, {"symbol", opts.symbol}, {"library", opts.library}, {"agents", QJsonArray::fromStringList(opts.agents)}})) return;
     if (const QString error = ws.importTrace(opts.trace); !error.isEmpty()) {
@@ -66,8 +111,8 @@ void MissingSymbolPipeline::start() {
 void MissingSymbolPipeline::cancel() {
     if (current != State::Running) return;
     cancelling = true;
+    // Between stages the only asynchronous step is the submit, whose completion handler sees the flag.
     if (process) { process->terminate(); QTimer::singleShot(StopGraceSeconds * 1000, process, &QProcess::kill); }
-    else if (!watcher.isRunning() && record("CANCEL", {{"stage", activeStage}})) finish(State::Cancelled, "Cancelled.");
 }
 QString MissingSymbolPipeline::agentFor(const QString &stage) const {
     const QString chosen = opts.agents.value(HandoffStore::Stages.indexOf(stage));
@@ -116,7 +161,7 @@ void MissingSymbolPipeline::launch(const QString &stage) {
     if (agentCli == "claude") args.prepend("--no-session-persistence");
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     for (const QString &name : env.keys()) if (name.startsWith("DYLD_") || name.startsWith("DARLING_MISSING_SYMBOLS")) env.remove(name);
-    env.insert("TMPDIR", dir + "/.tmp");
+    env.insert("TMPDIR", dir + "/.tmp"); env.insert(Marker, agentId);
     timedOut = false;
     process = new QProcess(this);
     process->setWorkingDirectory(dir); process->setProcessChannelMode(QProcess::MergedChannels); process->setProcessEnvironment(env);
@@ -133,26 +178,36 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
     const QByteArray rest = process->readAllStandardOutput();
     if (logFd >= 0) { if (::write(logFd, rest.constData(), size_t(rest.size())) < 0) {} ::close(logFd); logFd = -1; }
     process->disconnect(this); process->deleteLater(); process = nullptr;
-    QStringList reasons;
-    if (const auto pids = PipelineWorkspace::processesUsing(ws.root); !pids.isEmpty()) {
-        for (qint64 pid : pids) ::kill(pid_t(pid), SIGKILL);
-        reasons << QString("%1 process(es) still used the run folder after the agent exited").arg(pids.size());
+    QStringList reasons, strays;
+    for (qint64 pid : PipelineWorkspace::processesUsing(ws.root)) {
+        // Only processes carrying this agent's marker are its own; a viewer the user opened is not killed.
+        if (hasMarker(pid, agentId)) { ::kill(pid_t(pid), SIGKILL); reasons << QString("process %1 of the agent still used the run folder").arg(pid); }
+        else strays << QString("%1 (%2)").arg(pid).arg(command(pid));
     }
     bool tampered = false;
     if (const QString error = ws.unlock(&tampered); !error.isEmpty()) { finish(State::Failed, error); return; }
+    // An unmarked process may be the agent's (the marker is easy to drop), so the run never continues past it.
+    if (!strays.isEmpty()) {
+        if (record("STRAY", {{"stage", activeStage}, {"processes", QJsonArray::fromStringList(strays)}}))
+            finish(State::Failed, "These processes still use the pipeline folder: " + strays.join(", ") + ". Close them and start the pipeline again.");
+        return;
+    }
     if (tampered) reasons << "a folder locked during the stage was changed";
-    if (cancelling) { if (record("CANCEL", {{"stage", activeStage}, {"agent", agentId}})) finish(State::Cancelled, "Cancelled."); return; }
-    if (timedOut) { if (record("TIMEOUT", {{"stage", activeStage}, {"agent", agentId}})) finish(State::TimedOut, "The " + activeStage + " stage timed out."); return; }
     const QString dir = ws.stageDir(activeStage);
     if (QFileInfo::exists(dir + "/TAINTED.md")) reasons << "the agent reported exposure in TAINTED.md";
-    static const QRegularExpression scanned("(?:\\.md|\\.txt|\\.log|\\.json)$");
     for (QDirIterator it(dir, QDir::Files | QDir::Hidden | QDir::NoSymLinks, QDirIterator::Subdirectories); it.hasNext();) {
         const QString path = it.next(), rel = path.mid(dir.size() + 1);
-        if (rel.startsWith("inputs/") || rel.startsWith("trace/") || !scanned.match(rel).hasMatch()) continue;
-        QFile f(path);
-        if (f.open(QIODevice::ReadOnly) && !HandoffCheck::exposureMarkers(QString::fromUtf8(f.read(8 * 1024 * 1024))).isEmpty()) reasons << rel + " contains disassembly or decompiler markers";
+        if (rel.startsWith("inputs/") || rel.startsWith("trace/") || rel.startsWith(".tmp/")) continue;
+        if (const QString problem = scanFile(path); !problem.isEmpty()) reasons << rel + problem;
     }
     if (activeStage == "impl" || activeStage == "validate") reasons += ws.firewall(activeStage, names(delivered.value(activeStage)));
+    // A stage that saw disallowed material is tainted even when it was cancelled or timed out.
+    if (!reasons.isEmpty() && (cancelling || timedOut)) {
+        if (!record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", reasons.join("; ")}, {"moved_to", activeStage + ".tainted/" + agentId}, {"report_to_compliance", true}})) return;
+        if (const QString error = ws.taint(activeStage, agentId); !error.isEmpty()) { finish(State::Failed, error); return; }
+    }
+    if (cancelling) { if (record("CANCEL", {{"stage", activeStage}, {"agent", agentId}})) finish(State::Cancelled, "Cancelled."); return; }
+    if (timedOut) { if (record("TIMEOUT", {{"stage", activeStage}, {"agent", agentId}})) finish(State::TimedOut, "The " + activeStage + " stage timed out."); return; }
     if (!reasons.isEmpty()) { taint(reasons.join("; ")); return; }
     const QString output = dir + "/OUTPUT.md";
     struct stat st {};
@@ -247,6 +302,8 @@ void MissingSymbolPipeline::finish(State state, const QString &message) {
     if (current != State::Running) return;
     current = state;
     timeout.stop();
+    if (logFd >= 0) { ::close(logFd); logFd = -1; }
+    bool tampered = false; ws.unlock(&tampered); // no-op unless a launch failed after locking
     if (state == State::Failed) HandoffStore::appendEvent(ws.root, "FAILED", {{"stage", activeStage}, {"reason", message}});
     emit statusChanged(message);
     emit finished(state, message);
