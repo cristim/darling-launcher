@@ -210,6 +210,10 @@ private slots:
         const QString setuid = runtimes + "/v2026.10.09-000000e/usr/local"; QVERIFY(QDir().mkpath(setuid + "/bin")); QVERIFY(QDir().mkpath(setuid + "/libexec/darling/private/etc"));
         QVERIFY(QFile::copy(root + "/hostlocal/bin/darling", setuid + "/bin/darling")); QCOMPARE(::chmod(QFile::encodeName(setuid + "/bin/darling").constData(), 04700), 0);
         for (const QString &launcher : {linked + "/bin/darling", setuid + "/bin/darling"}) QVERIFY2(QFileInfo(launcher).isExecutable(), qPrintable(launcher));
+        // The install lock file and a leftover private archive copy sit beside the runtimes and are never listed.
+        { QFile lock(runtimes + "/.archive.lock"); QVERIFY(lock.open(QIODevice::WriteOnly)); }
+        const QString stale = runtimes + "/.archive-Ab12Cd/usr/local"; QVERIFY(QDir().mkpath(stale + "/bin")); QVERIFY(QDir().mkpath(stale + "/libexec/darling/private/etc"));
+        QVERIFY(QFile::copy(root + "/hostlocal/bin/darling", stale + "/bin/darling"));
         const auto found = LauncherDiscovery::runtimes({}, {});
         QCOMPARE(found.size(), 1); QCOMPARE(found.first().launcher, good + "/bin/darling");
     }
