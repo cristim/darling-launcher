@@ -40,17 +40,22 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
     auto reopen = [this, background](bool success) { background->setEnabled(false); emit finished(); if (!(automatic && success)) { show(); raise(); activateWindow(); } };
     auto newWorkspace = [workspaceLabel, data] { QDir().mkpath(data + "/workspaces"); workspaceLabel->setText(LauncherDiscovery::newWorkspace(data + "/workspaces")); };
     newWorkspace();
-    QString script = scriptOverride;
+    QString script = scriptOverride, scriptSha256;
     if (script.isEmpty()) {
         QFile bundled(":/launcher/tools/all-vibedarling-pr-prefix.py");
         if (bundled.open(QIODevice::ReadOnly)) {
             const QByteArray bytes = bundled.readAll();
-            const QString tool = data + "/tools/all-vibedarling-pr-prefix-" + QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()) + ".py";
+            const QString digest = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+            const QString tool = data + "/tools/all-vibedarling-pr-prefix-" + digest + ".py";
             if (QDir().mkpath(data + "/tools")) {
                 if (!QFileInfo::exists(tool)) { QSaveFile file(tool); if (file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size() && file.commit()) script = tool; }
                 else { QFile file(tool); if (file.open(QIODevice::ReadOnly) && file.readAll() == bytes) script = tool; }
             }
+            if (!script.isEmpty()) scriptSha256 = digest;
         }
+    } else {
+        QFile chosen(script);
+        if (chosen.open(QIODevice::ReadOnly)) scriptSha256 = QString::fromLatin1(QCryptographicHash::hash(chosen.readAll(), QCryptographicHash::Sha256).toHex());
     }
     auto startBuild = [=] {
         newWorkspace();
@@ -58,7 +63,7 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
         QString volume = QFileInfo(sourceVolume).canonicalFilePath();
         QString parent = QFileInfo(QFileInfo(workspace).absolutePath()).canonicalFilePath();
         if (!volume.isEmpty() && (parent == volume || parent.startsWith(volume + '/'))) { status->setText("The build workspace must be outside the macOS source volume."); return; }
-        PrefixBuildRequest request{QStandardPaths::findExecutable("python3"), script, source, workspace, scope->currentIndex() == 1, jobs->value(), {}};
+        PrefixBuildRequest request{QStandardPaths::findExecutable("python3"), script, source, workspace, scope->currentIndex() == 1, jobs->value(), {}, scriptSha256};
         for (const auto &line : cmake->toPlainText().split('\n', Qt::SkipEmptyParts)) request.cmakeArguments << line.trimmed();
         QString message;
         if (!LauncherPrefix::validateRequest(request, &message)) { status->setText(message); return; }

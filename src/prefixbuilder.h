@@ -13,6 +13,7 @@ struct PrefixBuildRequest {
     bool includePrs = false;
     int jobs = 1;
     QStringList cmakeArguments;
+    QString scriptSha256; // hash of the script the user chose; the builder runs only those bytes
 };
 namespace LauncherPrefix {
 bool selectInputs(const QJsonObject &discovery, bool includePrs, QJsonObject *selected, QString *error);
