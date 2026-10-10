@@ -97,7 +97,6 @@ private slots:
         QCOMPARE(HandoffCheck::exposureMarkers("x\nContents of (__TEXT,__text) section\n").value(0).line, 2);
         QCOMPARE(HandoffCheck::exposureMarkers("calls \u0455ub_1A2B\n").size(), 1); // look-alike folded
         QVERIFY(HandoffCheck::exposureMarkers("ZWNobyBzdWJfMTIzNCBoZXJl\n").isEmpty()); // logs are not base64-decoded
-        QCOMPARE(HandoffCheck::forbiddenTraceFields("{\"symbol\": \"_f\", \"lr\": 1}\n").size(), 1);
         QCOMPARE(HandoffCheck::rawTraceObjects("{\"symbol\": \"_f\", \"x0\": 1}\n").size(), 1);
     }
     // R1 must cover the common AArch64 and x86 instruction families, not a fixed sample.

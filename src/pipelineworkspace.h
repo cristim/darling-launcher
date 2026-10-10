@@ -13,15 +13,17 @@ public:
     static QString defaultBase();
     // New run with a random id under base (created 0700 if missing).
     static PipelineWorkspace create(const QString &base, QString *error);
-    // Restores the modes of runs left locked by a crash and logs INTERRUPTED. Returns their roots.
+    // flock on <root>.lock held while a run is live; -1 if another process holds it.
+    int holdRunLock() const;
+    // Restores the modes of runs left locked by a crash (not held by a live run) and logs INTERRUPTED.
     static QStringList recover(const QString &base);
     // Process ids (other than ours) with a cwd or open file under dir.
     static QList<qint64> processesUsing(const QString &dir);
     QString root, runId;
     bool valid() const { return !root.isEmpty(); }
     QString stageDir(const QString &stage) const { return root + '/' + stage; }
-    // Copies a trace into research/trace/T0.jsonl after refusing forbidden fields (caller address,
-    // PC, backtrace). The original stays where the tracer wrote it.
+    // Copies a trace into research/trace/T0.jsonl after checking every key against the fields the
+    // compliance ruling allows. The original stays where the tracer wrote it.
     QString importTrace(const QString &path) const;
     // Copies a released handoff into <stage>/inputs/ after re-checking its hash.
     QString deliver(const HandoffStore::Release &release, const QString &stage) const;

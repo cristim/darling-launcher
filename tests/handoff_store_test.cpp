@@ -139,6 +139,7 @@ private slots:
         auto r = HandoffStore::submit(root, "research", "spec", write(QByteArray("abc\0def", 7))); QCOMPARE(r.status, Status::Rejected); QVERIFY(rules(r).contains("R9"));
         r = HandoffStore::submit(root, "research", "spec", write("bad \xed\xa0\x80 surrogate\n", "research", "b.md")); QCOMPARE(r.status, Status::Rejected); QVERIFY(rules(r).contains("R9"));
         QCOMPARE(HandoffStore::submit(root, "research", "spec", write("nonchar \xef\xbf\xbe ok\n", "research", "c.md")).status, Status::Released);
+        r = HandoffStore::submit(root, "research", "spec", write("x\nSources: a\rfake 0000; b\n", "research", "d.md")); QCOMPARE(r.status, Status::Rejected); QVERIFY(rules(r).contains("R9"));
     }
     void chainTamperDetected_data() {
         QTest::addColumn<QString>("what"); QTest::addColumn<QString>("message");

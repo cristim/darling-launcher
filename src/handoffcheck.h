@@ -26,7 +26,6 @@ bool isComplianceRule(const Hit &hit);
 // signatures (R3) and decompiler names/byte macros (part of R5) only.
 QList<Hit> exposureMarkers(const QString &text);
 QList<Hit> rawTraceObjects(const QString &text); // R7 alone, for scanning workspaces
-QList<Hit> forbiddenTraceFields(const QString &text); // R8 alone, for vetting a T0 trace before research
 std::optional<QString> parseHeader(const QString &text, const QString &label);
 QStringList parseList(const QString &text, const QString &label);
 QStringList parseSources(const QString &text);
