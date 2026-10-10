@@ -1,0 +1,3 @@
+see sub_1A2B and libobjc.A.dylib+0x1c
+
+note 60

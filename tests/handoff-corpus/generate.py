@@ -109,6 +109,14 @@ add("r10-bulleted-backticks", "- `AppKit` @ 0x4f10\n")
 add("r10-pc-next-line", "QuartzCore drew it\npc 0x7ff800001234\n")
 add("r10-near-two-lines-apart", "QuartzCore drew it\n\npc 0x7ff800001234\n")
 
+# --- Turkish dotted/dotless I under re.I (PCRE2 does not fold them by default) ---
+add("r6-dotted-capital-i", "see /System/L\u0130brary/Frameworks for docs\n")
+add("r6-dotless-small-i", "see /System/L\u0131brary/Frameworks for docs\n")
+add("r10-dotless-i-lib", "see l\u0131bsystem_kernel.dylib+0x1c2\n")
+# --- compliance markers past the 4096-char window (strict re-check) ---
+add("long-line-sub-at-5000", "a " * 2500 + "calls sub_1A2B\n", "E4")
+add("long-line-lib-offset-at-9000", "b " * 4500 + "libsystem_kernel.dylib+0x1c2\n", "E4")
+
 # --- json raw_decode details (parity) ---
 add("json-dup-key-last-wins", '{"a": {"symbol": "_f", "regs": []}, "a": 1}\n')
 add("json-dup-key-trace-last", '{"a": 1, "a": {"symbol": "_f", "regs": []}}\n')

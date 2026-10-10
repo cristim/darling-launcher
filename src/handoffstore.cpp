@@ -19,7 +19,6 @@
 #include <map>
 namespace {
 const char *Audit = "AUDIT.jsonl", *Manifest = "MANIFEST.txt";
-const QSet<QString> Compliance{"R1", "R3", "R5"};
 struct Unsafe { QString message; };
 struct Fd {
     int fd = -1;
@@ -143,12 +142,13 @@ std::map<QString, Released> releasedMap(const QList<QByteArray> &lines) {
     }
     return out;
 }
-const QRegularExpression NN("^\\d\\d-"), NNmd("^\\d\\d-.*\\.md$", QRegularExpression::DotMatchesEverythingOption);
+// Anything in handoff/ that is not an audited release or one of the two bookkeeping files is stray.
+bool stray(const QString &name, const std::map<QString, Released> &released) { return !released.count(name) && name != Audit && name != Manifest; }
 void refuseBroken(int handoffFd, const QList<QByteArray> &lines) {
     const auto released = releasedMap(lines); const QStringList names = listDir(handoffFd);
     for (const QString &n : names) if (n.startsWith(".tmp-")) throw Unsafe{"leftover temp file " + n + " from a crashed release; run --verify-chain, investigate and remove it by hand"};
     for (const auto &[n, r] : released) if (!names.contains(n)) throw Unsafe{"released file " + n + " is missing (crashed release?); run --verify-chain and investigate"};
-    for (const QString &n : names) if (NN.match(n).hasMatch() && !released.count(n)) throw Unsafe{"stray file " + n + " has no audit record; run --verify-chain and investigate"};
+    for (const QString &n : names) if (stray(n, released)) throw Unsafe{"stray file " + n + " has no audit record; run --verify-chain and investigate"};
 }
 QSet<QString> manifestHashes(int handoffFd) {
     Fd fd(::openat(handoffFd, Manifest, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
@@ -271,6 +271,9 @@ HandoffStore::Result HandoffStore::submit(const QString &runRoot, const QString 
         result.status = Status::Released; result.released = name; result.sha256 = inHash;
     } catch (const Unsafe &e) {
         result.status = Status::Unsafe; result.error = e.message;
+        // A store failure must not drop a compliance report for hits already found.
+        for (const Hit &h : result.reasons) if (HandoffCheck::isComplianceRule(h)) { result.reportToCompliance = true; result.complianceRules << (h.inner.isEmpty() ? h.rule : h.inner); }
+        result.complianceRules.removeDuplicates(); result.complianceRules.sort();
     }
     return result;
 }
@@ -317,6 +320,7 @@ HandoffStore::Chain HandoffStore::verifyChain(const QString &runRoot, bool check
             const QJsonDocument doc = QJsonDocument::fromJson(lines[i]);
             if (!doc.isObject()) { chain.problems << where + "not a JSON object"; break; }
             const QJsonObject rec = doc.object();
+            if (rec.contains("report_to_compliance") && !rec.value("report_to_compliance").isBool()) chain.problems << where + "report_to_compliance is not a JSON boolean";
             if (rec.value("prev_hash").toString() != prev || !rec.value("prev_hash").isString()) chain.problems << where + "prev_hash mismatch (record removed or altered before it)";
             prev = sha256(lines[i]);
             if (rec.value("verdict").toString() != "RELEASE") continue;
@@ -340,8 +344,8 @@ HandoffStore::Chain HandoffStore::verifyChain(const QString &runRoot, bool check
         }
         if (check) {
             for (const QString &n : listDir(hand.fd)) {
-                if (NNmd.match(n).hasMatch() && !released.count(n)) chain.problems << n + ": released file with no audit record";
                 if (n.startsWith(".tmp-")) chain.problems << n + ": leftover temp file from a crashed release";
+                else if (stray(n, released)) chain.problems << n + ": stray file with no audit record";
             }
             std::map<QString, QString> manifest, expected;
             Fd m(::openat(hand.fd, Manifest, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
@@ -354,7 +358,7 @@ HandoffStore::Chain HandoffStore::verifyChain(const QString &runRoot, bool check
         }
         prev = lines.isEmpty() ? Genesis : sha256(lines.last());
         int tainted = 0, flagged = 0, recon = 0;
-        static const QRegularExpression taintDir("^(?:research|spec|impl|validate)\\.tainted$");
+        static const QRegularExpression taintDir("^(?:research|spec|impl|validate|recon)\\.tainted$"); // compliance ruling: recon counts
         for (const QString &n : listDir(rootFd.fd)) {
             if (!taintDir.match(n).hasMatch() || ::fstatat(rootFd.fd, local(n).constData(), &st, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISDIR(st.st_mode)) continue;
             const Fd t = openDir(rootFd.fd, n, n); int k = 0;

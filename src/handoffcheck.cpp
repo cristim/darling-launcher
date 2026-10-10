@@ -204,9 +204,38 @@ QList<HandoffCheck::Hit> sortedUnique(QList<HandoffCheck::Hit> hits) {
     return hits;
 }
 QString normalize(const QString &text) {
-    QString t = text.normalized(QString::NormalizationForm_KC);
-    t.remove(QChar(0xfeff)); t.replace("\r\n", "\n");
+    const QString nfkc = text.normalized(QString::NormalizationForm_KC);
+    // Format characters (zero-width joiners, BOM, soft hyphen) split tokens invisibly; lone CR, NEL, LS, PS are line breaks.
+    QString t; t.reserve(nfkc.size());
+    for (qsizetype i = 0; i < nfkc.size(); ++i) {
+        const char32_t c = nfkc[i].isHighSurrogate() && i + 1 < nfkc.size() ? QChar::surrogateToUcs4(nfkc[i], nfkc[i + 1]) : nfkc[i].unicode();
+        const int width = c > 0xffff ? 2 : 1;
+        if (QChar::category(c) != QChar::Other_Format) t += nfkc.mid(i, width);
+        i += width - 1;
+    }
+    t.replace("\r\n", "\n");
+    for (const QChar br : {QChar('\r'), QChar(0x85), QChar(0x2028), QChar(0x2029)}) t.replace(br, QChar('\n'));
     return t;
+}
+// Python's re.I folds U+0130/U+0131 with i/I; PCRE2 deliberately does not. Same length, so positions hold.
+QString caselessView(const QString &line) {
+    QString out = line;
+    for (QChar &c : out) { if (c.unicode() == 0x130) c = 'I'; else if (c.unicode() == 0x131) c = 'i'; }
+    return out;
+}
+// A long line as overlapping pieces short enough to match reliably; the overlap exceeds any marker.
+QStringList windows(const QString &line) {
+    constexpr int Overlap = 512;
+    if (line.size() <= HandoffCheck::MaxLineLength) return {line};
+    QStringList out;
+    for (qsizetype at = 0; at < line.size(); at += HandoffCheck::MaxLineLength - Overlap) {
+        out << line.mid(at, HandoffCheck::MaxLineLength);
+        if (at + HandoffCheck::MaxLineLength >= line.size()) break;
+    }
+    return out;
+}
+bool search(const RX &pattern, const QString &line, const QString &caseless) {
+    return pattern.match(pattern.patternOptions() & RX::CaseInsensitiveOption ? caseless : line).hasMatch();
 }
 }
 bool HandoffCheck::Hit::operator<(const Hit &o) const {
@@ -223,14 +252,16 @@ QList<HandoffCheck::Hit> HandoffCheck::checkText(const QString &input) {
         lines << stripMd(l);
     }
     QList<Hit> hits;
+    QStringList ci;
+    for (const QString &l : lines) ci << caselessView(l);
     const bool hasInterface = std::any_of(lines.begin(), lines.end(), [](const QString &l) { return OBJC_INTERFACE.match(l).hasMatch(); });
     for (int i = 0; i < lines.size(); ++i) {
-        for (const auto &rule : LINE_RULES) if (rule.pattern.match(lines[i]).hasMatch()) hits << Hit{i + 1, rule.id, rule.description};
+        for (const auto &rule : LINE_RULES) if (search(rule.pattern, lines[i], ci[i])) hits << Hit{i + 1, rule.id, rule.description};
         if (hasInterface && (OBJC_INTERFACE.match(lines[i]).hasMatch() || CLASSDUMP_IVAR.match(lines[i]).hasMatch())) hits << Hit{i + 1, "R3", "class-dump style @interface with ivar offsets"};
     }
     for (int i = 0; i < lines.size(); ++i) {
-        const auto nearLibrary = [&] { for (int k = qMax(0, i - 1); k <= qMin(int(lines.size()) - 1, i + 1); ++k) if (LIB_ONLY.match(lines[k]).hasMatch()) return true; return false; };
-        if (LIB_OFFSET.match(lines[i]).hasMatch() || (PC_VALUE.match(lines[i]).hasMatch() && nearLibrary()))
+        const auto nearLibrary = [&] { for (int k = qMax(0, i - 1); k <= qMin(int(lines.size()) - 1, i + 1); ++k) if (LIB_ONLY.match(ci[k]).hasMatch()) return true; return false; };
+        if (LIB_OFFSET.match(ci[i]).hasMatch() || (PC_VALUE.match(ci[i]).hasMatch() && nearLibrary()))
             hits << Hit{i + 1, "R10", "address/offset inside an Apple library image (library+offset, pc/lr/frame value)"};
     }
     for (int line : traceHits(text)) hits << Hit{line, "R7", line ? "raw trace (T0) JSON object" : "too many JSON candidates to scan"};
@@ -243,7 +274,7 @@ QList<HandoffCheck::Hit> HandoffCheck::checkText(const QString &input) {
             if (block.size() >= AsmBlock) hits << Hit{block[0], "R1", QString::number(block.size()) + " instruction-like lines in one block"};
             block.clear(); run.clear(); continue;
         }
-        if (asmLike(line)) {
+        if (asmLike(caselessView(line))) {
             block << i; run << i;
             if (run.size() == AsmRun) hits << Hit{run[0], "R1", QString::number(AsmRun) + "+ consecutive instruction-like lines"};
         } else run.clear();
@@ -324,18 +355,26 @@ QList<HandoffCheck::Hit> HandoffCheck::checkTextStrict(const QString &input) {
     for (const auto &[line, decoded] : base64Texts(text)) addNew("E2", "base64-decoded blob", checkText(decoded), line);
     // PCRE reports a hit-limit error as "no match"; very long lines would otherwise pass unchecked.
     const QStringList lines = text.split('\n');
-    for (int i = 0; i < lines.size(); ++i) if (lines[i].size() > MaxLineLength) hits << Hit{i + 1, "E4", "line longer than " + QString::number(MaxLineLength) + " characters"};
+    for (int i = 0; i < lines.size(); ++i) {
+        if (lines[i].size() <= MaxLineLength) continue;
+        hits << Hit{i + 1, "E4", "line longer than " + QString::number(MaxLineLength) + " characters"};
+        // Re-check the long line in short windows, so a match-limit error can never hide a compliance hit.
+        QSet<QString> seen;
+        for (const QString &window : windows(lines[i]))
+            for (const Hit &h : checkText(window))
+                if (!seen.contains(h.rule)) { seen.insert(h.rule); hits << Hit{i + 1, "E4", "long line, a window matches " + h.rule + " (" + h.description + ")", h.rule}; }
+    }
     return sortedUnique(hits);
 }
 QList<HandoffCheck::Hit> HandoffCheck::exposureMarkers(const QString &input) {
     static const RX markers = rx(R"(\b(?:sub|loc)_[0-9A-Fa-f]+\b|\b(?:LOBYTE|HIBYTE|LOWORD|HIWORD|LODWORD|HIDWORD)\s*\()");
     const QStringList lines = foldLookalikes(normalize(input)).split('\n');
     QList<Hit> hits;
-    for (int i = 0; i < lines.size(); ++i) {
-        const QString line = stripMd(lines[i].left(MaxLineLength));
-        if (LINE_RULES[1].pattern.match(line).hasMatch()) hits << Hit{i + 1, "R3", LINE_RULES[1].description};
-        if (markers.match(line).hasMatch()) hits << Hit{i + 1, "R5", "decompiler name or byte-access marker"};
-    }
+    for (int i = 0; i < lines.size(); ++i)
+        for (const QString &window : windows(stripMd(lines[i]))) {
+            if (search(LINE_RULES[1].pattern, window, caselessView(window))) hits << Hit{i + 1, "R3", LINE_RULES[1].description};
+            if (markers.match(window).hasMatch()) hits << Hit{i + 1, "R5", "decompiler name or byte-access marker"};
+        }
     return sortedUnique(hits);
 }
 QList<HandoffCheck::Hit> HandoffCheck::rawTraceObjects(const QString &text) {

@@ -1,6 +1,0 @@
-Agent: recon-1
-Inputs: 02-spec-to-impl.md e51ed97f044ca51e9e77f8533803d90978cc21ac89d2e304c41252222110e818
-Absent: _FooBar, _BazQux
-Branch: feature/x  Commit: 3ddf2a330123456789abcdef0123456789abcdef
-Callers exist: yes; files: src/a.c, include/b.h
-00001000  de ad be ef 00 11 22 33  44

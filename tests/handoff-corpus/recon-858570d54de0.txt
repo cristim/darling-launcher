@@ -1,0 +1,5 @@
+Agent: r
+Inputs: 01-research-to-spec.md 460d520938ad1f5f5e3010e0367e03ed6e115b0019f61339aaa34898da9a7a80
+Absent: _FooBar, _BazQux
+Branch: feature/x  Commit: 3ddf2a330123456789abcdef0123456789abcdef
+Callers exist: yes; files: src/a.c, include/b.h
