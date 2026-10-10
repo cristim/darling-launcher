@@ -12,6 +12,12 @@ Rule R10 (reported to compliance like R1/R3/R5) rejects library+offset forms (`l
 `AppKit + 0x4f10`, `lib:0x..`) and pc/lr/return-address/frame hex values next to an Apple library
 name on the same or an adjacent line. A library name or public symbol name alone is fine.
 
+Text is NFKC-normalised, Unicode format characters (category Cf, e.g. U+200B/U+200D) are stripped, and
+lone CR, U+0085, U+2028, U+2029 count as line breaks before any rule is matched. Any file in handoff/ that
+is not an audited release, AUDIT.jsonl or MANIFEST.txt (including names with non-ASCII digits) is a stray
+file (verify exit 1, release exit 2). report_to_compliance in an audit record must be a JSON boolean.
+If a store failure aborts a run after R1/R3/R5/R10 hits, the REPORT-TO-COMPLIANCE lines are still printed.
+
 Stages: research spec impl validate recon. recon (the tainted reconciler) may only send recon->impl, in the
 fixed three-statement format (rule F1), citing the authorising spec->impl release in Inputs:.
 """
@@ -252,7 +258,12 @@ def asm_weight(line):
 def check_text(text, src, dst):
     """Return sorted [(line_no, rule_id, description)]. src/dst are kept for the
     signature; every rule applies on every transition."""
-    text = unicodedata.normalize("NFKC", text).replace("\ufeff", "").replace("\r\n", "\n")
+    text = unicodedata.normalize("NFKC", text)
+    # Format characters (zero-width joiners etc.) split tokens invisibly; lone CR, NEL, LS, PS are line breaks.
+    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    text = text.replace("\r\n", "\n")
+    for br in ("\r", "\x85", "\u2028", "\u2029"):
+        text = text.replace(br, "\n")
     lines = [strip_md(l) for l in text.split("\n")]
     hits = []
     has_interface = any(OBJC_INTERFACE.match(l) for l in lines)
@@ -494,7 +505,7 @@ def refuse_broken(d, lines):
             raise UnsafePath(f"released file {n} is missing (crashed release?); "
                              "run --verify-chain and investigate")
     for n in sorted(names):
-        if re.match(r"^\d\d-", n) and n not in released:
+        if n not in released and n not in (AUDIT, MANIFEST):
             raise UnsafePath(f"stray file {n} has no audit record; run --verify-chain and investigate")
 
 
@@ -509,7 +520,7 @@ def manifest_hashes(d):
 
 
 # Accepted Inputs: header form from spec onward: "<NN-from-to-to.md> <sha256>" entries separated by ; or ,
-INPUT_ENTRY = re.compile(r"(\d\d-[a-z]+-to-[a-z]+\.md)\s+([0-9a-fA-F]{64})")
+INPUT_ENTRY = re.compile(r"([0-9][0-9]-[a-z]+-to-[a-z]+\.md)\s+([0-9a-fA-F]{64})")
 NEEDS_AGENT = ("impl", "validate", "recon")
 
 
@@ -602,13 +613,23 @@ def provenance(text, released, src, agent_flag, inputs_flag):
 
 
 def run_check(args):
+    reasons = []
+    try:
+        return _run_check(args, reasons)
+    except (UnsafePath, OSError, ValueError, RecursionError):
+        # A store failure must not drop a compliance report for hits already found.
+        for rid in sorted(COMPLIANCE_RULES & {r[1] for r in reasons}):
+            print(f"REPORT-TO-COMPLIANCE: rule {rid}", file=sys.stderr)
+        raise
+
+
+def _run_check(args, reasons):
     src, dst = args.from_stage, args.to_stage
     root = prepare_run_root(args.run_root)
     check_input_location(root, src, args.file)
     data = read_input(args.file)
     d = private_dir(os.path.join(root, "handoff"), True)
 
-    reasons = []
     if (src, dst) not in ALLOWED:
         reasons.append((0, "X1", f"transition {src}->{dst} not allowed"))
     if b"\0" in data:
@@ -657,7 +678,7 @@ def run_check(args):
     return 0
 
 
-TAINT_DIR = re.compile(r"^(?:research|spec|impl|validate)\.tainted$")
+TAINT_DIR = re.compile(r"^(?:research|spec|impl|validate|recon)\.tainted$")
 
 
 def count_tainted(root):
@@ -682,7 +703,7 @@ def summary_line(root, lines, prev):
     for l in lines:
         try:
             r = json.loads(l)
-            flagged += bool(r.get("report_to_compliance"))
+            flagged += r.get("report_to_compliance") is True
             recon += r.get("verdict") == "RELEASE" and r.get("from") == "recon"
         except (ValueError, AttributeError):
             pass
@@ -718,6 +739,8 @@ def verify_chain(run_root, check=True):
             break
         if rec.get("prev_hash") != prev:
             problems.append(f"audit line {i}: prev_hash mismatch (record removed or altered before it)")
+        if not isinstance(rec.get("report_to_compliance", False), bool):
+            problems.append(f"audit line {i}: report_to_compliance is not a JSON boolean")
         prev = sha256_bytes(raw)
         if rec.get("verdict") == "RELEASE":
             name = rec.get("output", "")
@@ -738,10 +761,10 @@ def verify_chain(run_root, check=True):
                         problems.append(f"{name}: Inputs hash {h[:12]}... matches no earlier released entry")
             released[name] = (rec.get("output_sha256"), rec.get("to"), rec.get("from"))
     for name in sorted(os.listdir(d)):
-        if re.match(r"^\d\d-.*\.md$", name) and name not in released:
-            problems.append(f"{name}: released file with no audit record")
         if name.startswith(".tmp-"):
             problems.append(f"{name}: leftover temp file from a crashed release")
+        elif name not in released and name not in (AUDIT, MANIFEST):
+            problems.append(f"{name}: stray file with no audit record")
     mpath = os.path.join(d, MANIFEST)
     manifest = {}
     if os.path.islink(mpath):
@@ -773,7 +796,7 @@ def main(argv=None):
     ap.add_argument("--verify-chain", action="store_true")
     ap.add_argument("--summary", action="store_true",
                     help="print the summary line without checking the chain. tainted_stages counts "
-                         "the immediate subdirs (one per agent id) of <run-root>/{research,spec,impl,validate}.tainted")
+                         "the immediate subdirs (one per agent id) of <run-root>/{research,spec,impl,validate,recon}.tainted")
     a = ap.parse_args(argv)
     try:
         if a.verify_chain or a.summary:

@@ -18,7 +18,8 @@ constexpr int MaxHexWords = 4, AsmRun = 3, AsmBlock = 6, MaxJsonFailures = 2000,
 // Oracle rules R1-R8, sorted and de-duplicated like check_text().
 QList<Hit> checkText(const QString &text);
 // checkText() plus launcher-only rules on decoded variants of the text: E1 look-alike letters folded,
-// E2 base64 blobs, E3 \x \u % &# escapes; E4 rejects lines too long to match reliably. Stricter than the oracle.
+// E2 base64 blobs, E3 \x \u % &# escapes; E4 flags lines over MaxLineLength and re-checks them in short
+// windows (a window hit carries its rule as inner). Stricter than the oracle.
 QList<Hit> checkTextStrict(const QString &text);
 // R1, R3, R5, R10 (and E hits of those) suggest exposure to disassembly: report and taint, not revise.
 bool isComplianceRule(const Hit &hit);

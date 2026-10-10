@@ -1,0 +1,3 @@
+Agent: recon-1
+Inputs: 02-spec-to-impl.md 7dc3292e9f388478c7574a83ff522804d7e1f9737e93ac743ac06a1be1b7bac3
+The functions are absent now and the callers do not exist.
