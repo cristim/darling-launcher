@@ -344,6 +344,25 @@ private slots:
         if (::geteuid() == 0) QSKIP("root ignores modes");
         QCOMPARE(read(fake + "/crossrun").trimmed(), QString("DENIED list\nDENIED read"));
     }
+    void stageAgentsGetAnAllowListedEnvironment() {
+        QProcessEnvironment user;
+        for (const char *n : {"HOME", "PATH", "LANG", "LC_ALL", "GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "LD_PRELOAD", "LD_LIBRARY_PATH", "DARLING_PREFIX", "DYLD_INSERT_LIBRARIES", "AWS_SECRET_ACCESS_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"}) user.insert(n, "v");
+        const auto claude = MissingSymbolPipeline::stageEnvironment(user, "claude"), codex = MissingSymbolPipeline::stageEnvironment(user, "codex"), opencode = MissingSymbolPipeline::stageEnvironment(user, "opencode");
+        for (const auto &env : {claude, codex, opencode}) {
+            for (const char *keep : {"HOME", "PATH", "LANG", "LC_ALL"}) QVERIFY2(env.contains(keep), keep);
+            for (const char *drop : {"GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "LD_PRELOAD", "LD_LIBRARY_PATH", "DARLING_PREFIX", "DYLD_INSERT_LIBRARIES", "AWS_SECRET_ACCESS_KEY"}) QVERIFY2(!env.contains(drop), drop);
+        }
+        QVERIFY(claude.contains("ANTHROPIC_API_KEY")); QVERIFY(!claude.contains("OPENAI_API_KEY"));
+        QVERIFY(codex.contains("OPENAI_API_KEY")); QVERIFY(!codex.contains("ANTHROPIC_API_KEY"));
+        QVERIFY(!opencode.contains("ANTHROPIC_API_KEY") && !opencode.contains("OPENAI_API_KEY"));
+        // and in a real run: the fake agent records what it received
+        qputenv("GH_TOKEN", "secret"); qputenv("SSH_AUTH_SOCK", "/run/agent");
+        auto restore = qScopeGuard([] { qunsetenv("GH_TOKEN"); qunsetenv("SSH_AUTH_SOCK"); });
+        plan("research 1 envdump\n");
+        QCOMPARE(run().state, State::Done);
+        const QString seen = read(fake + "/env");
+        QVERIFY2(!seen.contains("GH_TOKEN") && !seen.contains("SSH_AUTH_SOCK") && seen.contains("DARLING_PIPELINE_AGENT="), qPrintable(seen));
+    }
     void rejectedOutputIsRevisedThenFails() {
         plan("research 1 revise\n");
         auto r = run(); QCOMPARE(r.state, State::Done);
