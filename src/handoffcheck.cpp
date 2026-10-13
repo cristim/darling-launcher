@@ -327,15 +327,17 @@ QString decodeEscapes(const QString &text) {
 QList<QPair<int, QString>> base64Texts(const QString &text) {
     static const RX blob(R"((?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{16,}={0,2}(?![A-Za-z0-9+/=]))");
     QList<QPair<int, QString>> out;
+    int line = 1; qsizetype counted = 0; // line numbers in one pass, not a recount per blob
     for (auto it = blob.globalMatch(text); it.hasNext();) {
         const auto m = it.next();
+        line += int(QStringView(text).mid(counted, m.capturedStart() - counted).count('\n')); counted = m.capturedStart();
         const auto decoded = QByteArray::fromBase64Encoding(m.captured().toLatin1(), QByteArray::AbortOnBase64DecodingErrors);
         if (!decoded || decoded.decoded.size() < 8) continue;
         QStringDecoder utf8(QStringDecoder::Utf8, QStringDecoder::Flag::Stateless);
         const QString s = utf8.decode(decoded.decoded);
         if (utf8.hasError()) continue;
         const auto printable = std::count_if(s.begin(), s.end(), [](QChar c) { return c.isPrint() || c == '\n' || c == '\t' || c == '\r'; });
-        if (printable * 10 >= s.size() * 9) out << qMakePair(int(text.left(m.capturedStart()).count('\n')) + 1, s);
+        if (printable * 10 >= s.size() * 9) out << qMakePair(line, s);
     }
     return out;
 }

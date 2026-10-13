@@ -79,6 +79,12 @@ private slots:
         QVERIFY(std::any_of(hits.begin(), hits.end(), [](const auto &h) { return h.rule == "E4" && h.inner == "R5" && HandoffCheck::isComplianceRule(h); }));
         QVERIFY(!HandoffCheck::exposureMarkers(QString("x").repeated(20000) + " sub_1A2B\n").isEmpty()); // log scan past 4096 chars
     }
+    void manyBase64BlobsStayFast() {
+        QString text; for (int i = 0; i < 20000; ++i) text += "aGVsbG8gd29ybGQgZm9vYmFy\n"; // printable base64 on every line
+        QElapsedTimer t; t.start();
+        HandoffCheck::checkTextStrict(text);
+        QVERIFY2(t.elapsed() < 5000, qPrintable(QString::number(t.elapsed())));
+    }
     void headers() {
         const QString t = "Agent: res-1\nInputs: 01-a.md; 02-b.md\n";
         QCOMPARE(HandoffCheck::parseHeader(t, "Agent").value(), QString("res-1"));
