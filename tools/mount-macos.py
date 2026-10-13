@@ -29,6 +29,12 @@ def partitions(document):
     return result
 
 
+def physical_partition(item):
+    # Loop, zram, nbd and device-mapper nodes report no bus below "block"; anything running as the
+    # user can attach its own image as a loop device.
+    return item.get("type") == "part" and ":" in (item.get("subsystems") or "")
+
+
 def volumes(text):
     result, current = [], None
     for line in text.splitlines():
@@ -213,12 +219,17 @@ def mount_batch(options, uid, gid, run_command=run, emit_event=emit, check_devic
 
 
 def mount_volumes(root, root_fd, options, uid, gid, run_command, emit_event, check_device):
-    inventory = partitions(json.loads(run_command(["/usr/bin/lsblk", "--json", "--output", "PATH,FSTYPE,LABEL,MOUNTPOINTS"])))
+    inventory = partitions(json.loads(run_command(["/usr/bin/lsblk", "--json", "--output", "PATH,TYPE,FSTYPE,SUBSYSTEMS,LABEL,MOUNTPOINTS"])))
     selected, index, kernel = getattr(options, "device", None), getattr(options, "volume", None), getattr(options, "kernel", False)
     if selected is not None:
         inventory = [p for p in inventory if p.get("path") == selected]
         if not inventory:
             raise ValueError(f"{selected} is not a detected APFS/HFS partition")
+    else:
+        for partition in inventory:
+            if not physical_partition(partition):
+                emit_event("skip", device=partition.get("path", ""), reason="Not a partition on a physical disk; select it explicitly to mount it")
+        inventory = [p for p in inventory if physical_partition(p)]
     existing = mounted_records(run_command)
     owned = []
     for partition in inventory:

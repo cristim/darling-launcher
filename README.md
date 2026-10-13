@@ -185,7 +185,9 @@ This does not install over the system runtime or change other checkouts.
 ### Mount every detected macOS volume
 
 **Settings → Mount macOS source… → Mount all detected volumes read-only** scans
-APFS/HFS partitions detected by `lsblk`. For APFS it uses `apfsutil` metadata to
+APFS/HFS partitions detected by `lsblk`. It takes only partitions on a disk with a
+hardware bus; loop devices and anything else are skipped and must be selected
+individually. For APFS it uses `apfsutil` metadata to
 obtain actual volume indices, then mounts each unencrypted volume with APFS FUSE.
 It does not guess indices or unlock FileVault. The complete batch uses one `pkexec` authorization request and
 `ro,nodev,nosuid,noexec`; cancelling or denying authorization stops the batch.
