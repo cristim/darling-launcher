@@ -11,18 +11,24 @@
 namespace LauncherLog {
 static constexpr qint64 RotateBytes = 8 * 1024 * 1024;
 QString path() { return LauncherDiscovery::dataRoot() + "/logs/launcher.log"; }
-void write(const QString &source, const QString &text) {
+void write(const QString &source, const QString &text) { writeChecked(source, text); }
+bool writeChecked(const QString &source, const QString &text) {
     static QMutex mutex;
     QMutexLocker lock(&mutex);
     const QString file = path();
-    if (!QDir().mkpath(QFileInfo(file).absolutePath())) return;
+    if (!QDir().mkpath(QFileInfo(file).absolutePath())) return false;
     if (QFileInfo(file).size() > RotateBytes)
         QFile::rename(file, file + "." + QDateTime::currentDateTime().toString("yyyyMMdd-hhmmss"));
     QFile log(file);
-    if (!log.open(QIODevice::WriteOnly | QIODevice::Append)) return;
+    if (!log.open(QIODevice::WriteOnly | QIODevice::Append)) return false;
     const QString stamp = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
-    for (const QString &line : text.split('\n'))
-        if (!line.trimmed().isEmpty()) log.write((stamp + " [" + source + "] " + line + "\n").toUtf8());
+    bool ok = true;
+    for (const QString &line : text.split('\n')) {
+        if (line.trimmed().isEmpty()) continue;
+        const QByteArray bytes = (stamp + " [" + source + "] " + line + "\n").toUtf8();
+        ok = log.write(bytes) == bytes.size() && ok;
+    }
+    return log.flush() && ok;
 }
 void installQtHandler() {
     qInstallMessageHandler([](QtMsgType type, const QMessageLogContext &, const QString &message) {
