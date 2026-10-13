@@ -23,6 +23,11 @@ case $mode in
   badverdicthit) printf 'VERDICT: maybe\nThe old code called sub_1A2B.\n' > OUTPUT.md ;;
   r10slow) printf 'Loaded from libsystem_kernel.dylib+0x1c2\n' > OUTPUT.md; sleep 2 ;;
   fifosleep) mkfifo OUTPUT.md; sleep 600 ;;
+  crossrun)
+    base=$(dirname "$(dirname "$PWD")"); prev=$(cat "$F/prev-root")
+    { if ls "$base" > /dev/null 2>&1; then echo "READ list"; else echo "DENIED list"; fi
+      if cat "$prev/research/OUTPUT.md" > /dev/null 2>&1; then echo "READ read"; else echo "DENIED read"; fi; } > "$F/crossrun"
+    out ;;
   badrecon) printf 'The function is absent and nobody calls it.\n' > OUTPUT.md ;;
   taint) printf 'Notes: the function calls sub_1A2B first.\n' > OUTPUT.md ;;
   revise) printf 'Loaded from /System/Library/Frameworks/Foo.framework (attempt %s)\n' "$n" > OUTPUT.md ;;
