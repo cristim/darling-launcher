@@ -45,6 +45,8 @@ public:
     static constexpr int MaxReplacements = 2, MaxRevisions = 2, MaxValidationRounds = 2, StopGraceSeconds = 10;
     // Default: rotate through the installed CLIs so neighbouring stages use different providers.
     static QStringList defaultAgents(const QStringList &installed);
+    // Empty when the guest-supplied names are safe to put in a brief.
+    static QString checkNames(const QString &symbol, const QString &library);
     // The environment a stage agent of this CLI gets: an allow-list of the user's environment.
     static QProcessEnvironment stageEnvironment(const QProcessEnvironment &from, const QString &cli);
     // Command line of a stage agent: no user hooks, MCP servers, instruction files or shell where the CLI allows it.
