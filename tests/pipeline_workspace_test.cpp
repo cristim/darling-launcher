@@ -64,11 +64,16 @@ private slots:
         QVERIFY(ws.importTrace(temp->path() + "/bad.jsonl").contains("non-compliant"));
         QVERIFY(QFile::link(temp->path() + "/bad.jsonl", temp->path() + "/link.jsonl"));
         QVERIFY(!ws.importTrace(temp->path() + "/link.jsonl").isEmpty());
-        put(temp->path() + "/good.jsonl", "{\"symbol\": \"_CFFoo\", \"regs\": [\"0x2\"]}\n");
+        put(temp->path() + "/good.jsonl", "{\"symbol\": \"_CFFoo\", \"library\": \"CoreFoundation\", \"arch\": \"arm64\", \"count\": 3, \"seq\": 1, \"regs\": [\"0x2\", 7], \"fp_regs\": [\"0x3ff0000000000000\"], \"x8\": \"0x10\", \"weak\": false}\n{\"sym\": \"_g\", \"regs\": {\"rdi\": 1, \"rsi\": \"0xff\"}}\n");
         QCOMPARE(ws.importTrace(temp->path() + "/good.jsonl"), QString());
         QCOMPARE(mode(ws.stageDir("research") + "/trace/T0.jsonl"), 0600u); QCOMPARE(mode(ws.stageDir("research") + "/trace"), 0700u);
         QVERIFY(!ws.importTrace(temp->path() + "/good.jsonl").isEmpty()); // never overwrites
-        for (const QByteArray &line : {QByteArray("{\"symbol\": \"_f\", \"stack\": [1]}"), QByteArray("{\"symbol\": \"_f\", \"regs\": {\"x30\": 1}}"), QByteArray("{\"symbol\": \"_f\", \"\uff4c\uff52\": 1}"), QByteArray("not json")}) {
+        // compliance ruling F1: a stack-word-sized array and a dereferenced string under allowed keys are refused
+        for (const QByteArray &line : {QByteArray("{\"symbol\": \"_f\", \"args\": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]}"), QByteArray("{\"symbol\": \"_f\", \"x1\": \"com.apple.secret.key\"}"),
+                                       QByteArray("{\"symbol\": \"_f\", \"regs\": [\"Hello\"]}"), QByteArray("{\"symbol\": \"_f\", \"image\": \"CoreFoundation\"}"), QByteArray("{\"symbol\": \"_f\", \"position\": 4096}"),
+                                       QByteArray("{\"symbol\": \"_f\", \"regs\": {\"x0\": {\"x1\": 1}}}"), QByteArray("{\"symbol\": \"" + QByteArray(600, 'a') + "\"}"), QByteArray("{\"symbol\": \"_f\", \"q0\": \"0x" + QByteArray(40, '1') + "\"}"),
+                                       QByteArray("{\"symbol\": \"_f\", \"words\": [1]}"), QByteArray("{\"symbol\": \"_f\", \"pad\": \"") + QByteArray(70000, 'a') + "\"}",
+                                       QByteArray("{\"symbol\": \"_f\", \"stack\": [1]}"), QByteArray("{\"symbol\": \"_f\", \"regs\": {\"x30\": 1}}"), QByteArray("{\"symbol\": \"_f\", \"\uff4c\uff52\": 1}"), QByteArray("not json")}) {
             const auto other = make(); put(temp->path() + "/t.jsonl", "{\"symbol\": \"_ok\", \"count\": 2}\n" + line + "\n");
             QVERIFY2(other.importTrace(temp->path() + "/t.jsonl").contains("line 2"), line.constData());
         }
