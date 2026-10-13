@@ -89,6 +89,18 @@ bool ReconcileTracker::shouldReconcile(const HandoffStore::Release &release, con
     reconciled.insert(release.sha256);
     return true;
 }
+QProcessEnvironment MissingSymbolPipeline::stageEnvironment(const QProcessEnvironment &from, const QString &cli) {
+    // Only what a CLI needs to start and authenticate; no tokens for other services, agent sockets or loader overrides.
+    static const QStringList common{"HOME", "PATH", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LANGUAGE", "TZ", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"};
+    static const QHash<QString, QStringList> provider{
+        {"claude", {"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"}},
+        {"codex", {"OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME"}},
+        {"opencode", {"OPENCODE_CONFIG_DIR"}}};
+    QProcessEnvironment env;
+    for (const QString &name : from.keys())
+        if (common.contains(name) || name.startsWith("LC_") || provider.value(cli).contains(name)) env.insert(name, from.value(name));
+    return env;
+}
 QStringList MissingSymbolPipeline::defaultAgents(const QStringList &installed) {
     QStringList out;
     for (int i = 0; i < HandoffStore::Stages.size() && !installed.isEmpty(); ++i) out << installed[i % installed.size()];
@@ -187,8 +199,7 @@ void MissingSymbolPipeline::launch(const QString &stage) {
     if (const QString error = ws.lockFor(stage); !error.isEmpty()) { finish(State::Failed, error); return; }
     QStringList args = LauncherTroubleshooting::backgroundArguments(agentCli, brief(stage), {{dir}, {}});
     if (agentCli == "claude") args.prepend("--no-session-persistence");
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    for (const QString &name : env.keys()) if (name.startsWith("DYLD_") || name.startsWith("DARLING_MISSING_SYMBOLS")) env.remove(name);
+    QProcessEnvironment env = MissingSymbolPipeline::stageEnvironment(QProcessEnvironment::systemEnvironment(), agentCli);
     env.insert("TMPDIR", dir + "/.tmp"); env.insert(Marker, agentId);
     timedOut = false;
     process = new QProcess(this);

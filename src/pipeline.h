@@ -36,6 +36,8 @@ public:
     static constexpr int MaxReplacements = 2, MaxRevisions = 2, MaxValidationRounds = 2, StopGraceSeconds = 10;
     // Default: rotate through the installed CLIs so neighbouring stages use different providers.
     static QStringList defaultAgents(const QStringList &installed);
+    // The environment a stage agent of this CLI gets: an allow-list of the user's environment.
+    static QProcessEnvironment stageEnvironment(const QProcessEnvironment &from, const QString &cli);
     MissingSymbolPipeline(PipelineWorkspace workspace, Options options, QObject *parent = nullptr);
     ~MissingSymbolPipeline() override;
     void start();
