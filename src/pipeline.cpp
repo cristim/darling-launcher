@@ -82,12 +82,47 @@ QString scanFile(const QString &path) {
     return !buffer.isEmpty() && exposed(buffer) ? " contains disassembly or decompiler markers" : QString();
 }
 }
+namespace {
+QByteArray fileHash(const QString &path) {
+    QFile f(path);
+    if (!QFileInfo(path).isFile() || !f.open(QIODevice::ReadOnly)) return QFileInfo::exists(path) ? QByteArray("present") : QByteArray();
+    return QCryptographicHash::hash(f.read(16 * 1024 * 1024), QCryptographicHash::Sha256);
+}
+}
+AutoLoadedFiles AutoLoadedFiles::snapshot(const QString &runRoot) {
+    AutoLoadedFiles a;
+    static const QStringList names{"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".claude/settings.json", ".claude/settings.local.json", ".mcp.json", "opencode.json", "opencode.jsonc", ".opencode/opencode.json"};
+    for (QDir dir(QFileInfo(runRoot).absolutePath());; ) {
+        for (const QString &n : names) a.hashes.insert(dir.filePath(n), fileHash(dir.filePath(n)));
+        if (!dir.cdUp()) break;
+    }
+    const QString home = QDir::homePath();
+    for (const QString &n : {"/.claude/CLAUDE.md", "/.claude/settings.json", "/.config/opencode/opencode.json", "/.config/opencode/opencode.jsonc", "/.config/opencode/AGENTS.md", "/.codex/config.toml", "/.codex/AGENTS.md"})
+        a.hashes.insert(home + n, fileHash(home + n));
+    return a;
+}
+QString AutoLoadedFiles::changed() const {
+    for (auto it = hashes.begin(); it != hashes.end(); ++it) if (fileHash(it.key()) != it.value()) return it.key();
+    return {};
+}
 bool ReconcileTracker::shouldReconcile(const HandoffStore::Release &release, const QString &text) {
     // `Reconcile: <names>` (SKILL.md), names in the same grammar as the reconciler's `Absent:` line.
     static const QRegularExpression line("(?m)^Reconcile:\\s*[A-Za-z_$][\\w$.@]*(?:\\s*,\\s*[A-Za-z_$][\\w$.@]*)*\\s*$");
     if (release.from != "spec" || release.to != "impl" || !line.match(text).hasMatch() || reconciled.contains(release.sha256)) return false;
     reconciled.insert(release.sha256);
     return true;
+}
+// The prompt only points at BRIEF.md, so the brief never appears in a process listing.
+QStringList MissingSymbolPipeline::stageArguments(const QString &cli, const QString &dir) {
+    const QString prompt = "Read BRIEF.md in the current folder and follow it exactly.";
+    if (cli == "claude")
+        return {"--print", "--safe-mode", "--strict-mcp-config", "--no-session-persistence", "--permission-mode", "acceptEdits",
+                "--allowedTools", "Read,Edit,Write,Glob,Grep", "--disallowedTools", "Bash,WebFetch,WebSearch,Task", "--add-dir", dir, "--", prompt};
+    if (cli == "codex")
+        return {"exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "--config", "sandbox_workspace_write.network_access=false",
+                "--model", "gpt-6.1-sol", "--config", "model_reasoning_effort=\"low\"", "--json", prompt};
+    if (cli == "opencode") return {"run", "--pure", "--format", "json", prompt};
+    return {};
 }
 QProcessEnvironment MissingSymbolPipeline::stageEnvironment(const QProcessEnvironment &from, const QString &cli) {
     // Only what a CLI needs to start and authenticate; no tokens for other services, agent sockets or loader overrides.
@@ -137,6 +172,7 @@ void MissingSymbolPipeline::start() {
     runLock = ws.holdRunLock();
     if (runLock < 0) { finish(State::Failed, "Another launcher process is running this pipeline."); return; }
     if (opts.agents.size() != HandoffStore::Stages.size()) { finish(State::Failed, "Choose an agent for each stage."); return; }
+    autoLoaded = AutoLoadedFiles::snapshot(ws.root);
     if (!record("START", {{"run", ws.runId}, {"symbol", opts.symbol}, {"library", opts.library}, {"agents", QJsonArray::fromStringList(opts.agents)}})) return;
     if (const QString error = ws.importTrace(opts.trace); !error.isEmpty()) {
         record("TRACE_REFUSED", {{"reason", error}, {"report_to_compliance", error.contains("non-compliant")}});
@@ -192,15 +228,22 @@ void MissingSymbolPipeline::launch(const QString &stage) {
     QSaveFile briefFile(dir + "/BRIEF.md");
     if (!briefFile.open(QIODevice::WriteOnly) || briefFile.write(brief(stage).toUtf8()) < 0 || !briefFile.commit()) { finish(State::Failed, "Cannot write the " + stage + " brief."); return; }
     QDir().mkpath(dir + "/.tmp");
+    // Checked while the audit log is still readable, before the other folders are locked.
+    if (const QString changed = autoLoaded.changed(); !changed.isEmpty()) {
+        // An instruction or config file the CLIs load on their own changed during the run: it may carry another stage's material.
+        if (record("FAILED", {{"stage", stage}, {"reason", "auto-loaded file changed: " + changed}, {"report_to_compliance", true}}))
+            finish(State::Failed, "A file the agent CLIs load automatically changed during the run (" + changed + "); the run is stopped.");
+        return;
+    }
     if (!record("STAGE", {{"stage", stage}, {"agent", agentId}, {"cli", agentCli}, {"launch", launches[stage]}})) return;
     // Opened once: the agent can rename or replace AGENT.log but not redirect the launcher's writes.
     logFd = ::open(QFile::encodeName(dir + "/AGENT.log").constData(), O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (logFd < 0) { finish(State::Failed, "Cannot open the " + stage + " agent log."); return; }
     if (const QString error = ws.lockFor(stage); !error.isEmpty()) { finish(State::Failed, error); return; }
-    QStringList args = LauncherTroubleshooting::backgroundArguments(agentCli, brief(stage), {{dir}, {}});
-    if (agentCli == "claude") args.prepend("--no-session-persistence");
+    const QStringList args = stageArguments(agentCli, dir);
     QProcessEnvironment env = MissingSymbolPipeline::stageEnvironment(QProcessEnvironment::systemEnvironment(), agentCli);
     env.insert("TMPDIR", dir + "/.tmp"); env.insert(Marker, agentId);
+    if (agentCli == "opencode") env.insert("OPENCODE_CONFIG_CONTENT", OpencodePermissions);
     timedOut = false;
     process = new QProcess(this);
     process->setWorkingDirectory(dir); process->setProcessChannelMode(QProcess::MergedChannels); process->setProcessEnvironment(env);
