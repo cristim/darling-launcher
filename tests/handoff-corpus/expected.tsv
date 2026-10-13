@@ -127,6 +127,13 @@ json-int-4300-digits.txt	R7	E4
 json-rescan-after-failure.txt	R7	-
 json-continue-after-success.txt	R7	-
 json-nested-200.txt	R7	-
+json-padded-1001.txt	R7	-
+json-wrapped-1001.txt	R7	-
+json-padded-5000.txt	R7	E4
+json-wrapped-5000.txt	R7	E4
+json-padded-20000.txt	R7	E4
+json-wrapped-20000.txt	R7	E4
+json-padded-multiline-1001.txt	R7	-
 json-nan-infinity.txt	R7	-
 json-trailing-comma.txt	-	-
 json-leading-zero.txt	-	-
