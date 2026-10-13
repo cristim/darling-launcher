@@ -49,7 +49,8 @@ class PipelineTest : public QObject {
         if (done.isEmpty()) done.wait(120000);
         const QString message = done.isEmpty() ? QString("no finish") : done[0][1].toString();
         QCoreApplication::processEvents(); QCoreApplication::processEvents();
-        ::chmod(p.workspace().root.toLocal8Bit().constData(), 0700); // runs end closed (000); the test inspects it like a user would
+        // runs end closed (renamed, mode 000); the test moves it back and opens it like a user would
+        if (!p.closedRoot.isEmpty()) { ::chmod(p.closedRoot.toLocal8Bit().constData(), 0700); ::rename(p.closedRoot.toLocal8Bit().constData(), p.workspace().root.toLocal8Bit().constData()); }
         qInfo().noquote() << "pipeline finished:" << message;
         return {p.state(), message, p.workspace()};
     }
@@ -348,13 +349,16 @@ private slots:
     void laterRunsCannotReadEarlierRuns() {
         const auto first = run();
         QCOMPARE(first.state, State::Done);
+        // close it again as finish() does, and tell the second run's agent both the old and the closed path
+        QString closed; QCOMPARE(first.ws.close(&closed), QString());
         QFile prev(fake + "/prev-root"); QVERIFY(prev.open(QIODevice::WriteOnly)); prev.write(first.ws.root.toUtf8()); prev.close();
-        ::chmod(first.ws.root.toLocal8Bit().constData(), 0); // as finish() left it
+        QFile known(fake + "/closed-root"); QVERIFY(known.open(QIODevice::WriteOnly)); known.write(closed.toUtf8()); known.close();
         QFile::remove(fake + "/count-impl"); plan("impl 1 crossrun\n");
         const auto second = run();
         QCOMPARE(second.state, State::Done);
         if (::geteuid() == 0) QSKIP("root ignores modes");
-        QCOMPARE(read(fake + "/crossrun").trimmed(), QString("DENIED list\nDENIED read"));
+        // Documented limit: an agent running as the user that knows the closed path CAN chmod it back.
+        QCOMPARE(read(fake + "/crossrun").trimmed(), QString("DENIED list\nDENIED read\nDENIED closed\nCHMOD closed"));
     }
     void stageAgentsGetAnAllowListedEnvironment() {
         QProcessEnvironment user;

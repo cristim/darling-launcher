@@ -34,8 +34,8 @@ private slots:
     void baseIsUnlistableAndFinishedRunsClose() {
         auto ws = make();
         QCOMPARE(mode(base), 0300u);
-        QCOMPARE(ws.close(), QString()); QCOMPARE(mode(ws.root), 0u);
-        QCOMPARE(PipelineWorkspace::recover(base), QStringList()); QCOMPARE(mode(ws.root), 0u); QCOMPARE(mode(base), 0300u); // closed runs stay closed
+        QString closed; QCOMPARE(ws.close(&closed), QString()); QCOMPARE(mode(closed), 0u); QVERIFY(!QFileInfo::exists(ws.root)); QVERIFY(closed.startsWith(ws.root + ".closed-"));
+        QCOMPARE(PipelineWorkspace::recover(base), QStringList()); QCOMPARE(mode(closed), 0u); QCOMPARE(mode(base), 0300u); // closed runs stay closed
         auto live = make(); QCOMPARE(live.lockFor("impl"), QString());
         ::chmod(base.toLocal8Bit().constData(), 0700); // an agent makes the base listable
         bool tampered = false; QCOMPARE(live.unlock(&tampered), QString()); QVERIFY(tampered); QCOMPARE(mode(base), 0300u);

@@ -26,7 +26,10 @@ case $mode in
   crossrun)
     base=$(dirname "$(dirname "$PWD")"); prev=$(cat "$F/prev-root")
     { if ls "$base" > /dev/null 2>&1; then echo "READ list"; else echo "DENIED list"; fi
-      if cat "$prev/research/OUTPUT.md" > /dev/null 2>&1; then echo "READ read"; else echo "DENIED read"; fi; } > "$F/crossrun"
+      if cat "$prev/research/OUTPUT.md" > /dev/null 2>&1; then echo "READ read"; else echo "DENIED read"; fi
+      closed=$(cat "$F/closed-root")
+      if cat "$closed/research/OUTPUT.md" > /dev/null 2>&1; then echo "READ closed"; else echo "DENIED closed"; fi
+      if chmod 700 "$closed" 2>/dev/null; then echo "CHMOD closed"; chmod 000 "$closed"; else echo "NOCHMOD closed"; fi; } > "$F/crossrun"
     out ;;
   envdump) env | cut -d= -f1,1 | sort > "$F/env"; env | grep '^DARLING_PIPELINE_AGENT=' >> "$F/env"; out ;;
   argdump) printf '%s\n' "$@" > "$F/args"; printf '%s' "$OPENCODE_CONFIG_CONTENT" > "$F/opencode-env"; out ;;
