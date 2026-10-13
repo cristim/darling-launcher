@@ -247,6 +247,12 @@ private slots:
         const auto r = submit("spec", "impl", "see sub_1A2B and libobjc.A.dylib+0x1c\n");
         QCOMPARE(r.status, Status::Unsafe); QVERIFY(r.reportToCompliance); QCOMPARE(r.complianceRules, QStringList({"R10", "R5"}));
     }
+    void oversizedStoreFilesAreRefusedNotLoaded() {
+        QCOMPARE(submit("research", "spec", "facts\n").status, Status::Released);
+        { QFile a(hand + "/AUDIT.jsonl"); QVERIFY(a.open(QIODevice::Append)); a.resize(17 * 1024 * 1024); }
+        auto r = submit("spec", "impl", "x\n"); QCOMPARE(r.status, Status::Unsafe); QVERIFY(r.error.contains("larger than"));
+        const auto chain = HandoffStore::verifyChain(root); QCOMPARE(chain.exitCode, 2); QVERIFY(chain.problems.join(' ').contains("larger than"));
+    }
     void r10IsReportedToCompliance() {
         const auto r = submit("spec", "impl", "see libsystem_kernel.dylib+0x1c2\n");
         QCOMPARE(r.status, Status::Rejected); QVERIFY(r.reportToCompliance); QCOMPARE(r.complianceRules, QStringList{"R10"});

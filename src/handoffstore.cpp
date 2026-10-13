@@ -62,6 +62,13 @@ QByteArray readAll(int fd, qint64 limit) {
         if (n == 0 || (data += QByteArray(buf, n)).size() > limit) return data;
     }
 }
+// Store files are small; anything far larger was grown by someone else and is refused rather than loaded.
+constexpr qint64 MaxAuditBytes = 16 * 1024 * 1024;
+QByteArray readCapped(int fd, const QString &name) {
+    const QByteArray data = readAll(fd, MaxAuditBytes);
+    if (data.size() > MaxAuditBytes) throw Unsafe{name + " is larger than " + QString::number(MaxAuditBytes) + " bytes; investigate it"};
+    return data;
+}
 Fd openFile(int dir, const char *name, int flags) {
     Fd f(::openat(dir, name, flags | O_NOFOLLOW | O_CLOEXEC, 0600));
     if (f.fd < 0) throw Unsafe{(errno == ELOOP ? "refusing symlink: " : "cannot open ") + QString::fromLatin1(name) + (errno == ELOOP ? QString() : ": " + sysError())};
@@ -114,6 +121,7 @@ QByteArray readInput(const QString &root, const QString &from, const QString &fi
 QList<QByteArray> readRecords(int auditFd) {
     struct stat st {};
     if (::fstat(auditFd, &st) != 0) throw Unsafe{"cannot stat AUDIT.jsonl"};
+    if (st.st_size > MaxAuditBytes) throw Unsafe{"AUDIT.jsonl is larger than " + QString::number(MaxAuditBytes) + " bytes; investigate it"};
     QByteArray raw(st.st_size, '\0');
     if (st.st_size && ::pread(auditFd, raw.data(), size_t(st.st_size), 0) != st.st_size) throw Unsafe{"cannot read AUDIT.jsonl"};
     QList<QByteArray> lines; int i = 0;
@@ -156,7 +164,7 @@ QSet<QString> manifestHashes(int handoffFd) {
     struct stat st {};
     if (fd.fd < 0 || ::fstat(fd.fd, &st) != 0 || !S_ISREG(st.st_mode)) throw Unsafe{"refusing symlink or non-file: MANIFEST.txt"};
     QSet<QString> out;
-    for (const QByteArray &l : readAll(fd.fd, 64 * 1024 * 1024).split('\n')) { const auto p = l.simplified().split(' '); if (p.size() >= 2) out << QString::fromUtf8(p[1]); }
+    for (const QByteArray &l : readCapped(fd.fd, "MANIFEST.txt").split('\n')) { const auto p = l.simplified().split(' '); if (p.size() >= 2) out << QString::fromUtf8(p[1]); }
     return out;
 }
 using Hit = HandoffCheck::Hit;
@@ -312,7 +320,7 @@ HandoffStore::Chain HandoffStore::verifyChain(const QString &runRoot, bool check
         Fd auditFd(::openat(hand.fd, Audit, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
         if (auditFd.fd < 0 || ::fstat(auditFd.fd, &st) != 0 || !S_ISREG(st.st_mode)) { chain.exitCode = 1; chain.problems << "AUDIT.jsonl missing or a symlink"; return chain; }
         QList<QByteArray> lines;
-        for (const QByteArray &l : readAll(auditFd.fd, std::numeric_limits<qint64>::max()).split('\n')) if (!l.isEmpty()) lines << l;
+        for (const QByteArray &l : readCapped(auditFd.fd, "AUDIT.jsonl").split('\n')) if (!l.isEmpty()) lines << l;
         QString prev = Genesis;
         std::map<QString, Released> released;
         for (int i = 0; check && i < lines.size(); ++i) {
@@ -328,7 +336,7 @@ HandoffStore::Chain HandoffStore::verifyChain(const QString &runRoot, bool check
             Fd body(name.contains('/') || name.isEmpty() ? -1 : ::openat(hand.fd, local(name).constData(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
             if (body.fd < 0 || ::fstat(body.fd, &st) != 0 || !S_ISREG(st.st_mode)) chain.problems << where + "released file " + name + " missing";
             else {
-                const QByteArray content = readAll(body.fd, std::numeric_limits<qint64>::max());
+                const QByteArray content = readCapped(body.fd, name);
                 if (sha256(content) != rec.value("output_sha256").toString()) chain.problems << where + "released file " + name + " was modified";
                 const QString from = rec.value("from").toString();
                 static const QRegularExpression hash64("(?<![\\p{L}\\p{N}_])[0-9a-f]{64}(?![\\p{L}\\p{N}_])", QRegularExpression::CaseInsensitiveOption | QRegularExpression::UseUnicodePropertiesOption); // python's \\b
@@ -351,7 +359,7 @@ HandoffStore::Chain HandoffStore::verifyChain(const QString &runRoot, bool check
             Fd m(::openat(hand.fd, Manifest, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
             if (m.fd < 0 && errno == ELOOP) chain.problems << "MANIFEST.txt is a symlink";
             else if (m.fd >= 0 && ::fstat(m.fd, &st) == 0 && S_ISREG(st.st_mode))
-                for (const QByteArray &l : readAll(m.fd, std::numeric_limits<qint64>::max()).split('\n')) { const auto p = l.simplified().split(' '); if (p.size() >= 2 && !p[0].isEmpty()) manifest[QString::fromUtf8(p[0])] = QString::fromUtf8(p[1]); }
+                for (const QByteArray &l : readCapped(m.fd, "MANIFEST.txt").split('\n')) { const auto p = l.simplified().split(' '); if (p.size() >= 2 && !p[0].isEmpty()) manifest[QString::fromUtf8(p[0])] = QString::fromUtf8(p[1]); }
             for (const auto &[n, r] : released) expected[n] = r.sha256;
             if (manifest != expected) chain.problems << "MANIFEST.txt does not match released records in AUDIT.jsonl";
             if (!chain.problems.isEmpty()) { chain.exitCode = 1; return chain; }
