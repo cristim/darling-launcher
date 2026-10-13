@@ -117,6 +117,14 @@ add("r10-dotless-i-lib", "see l\u0131bsystem_kernel.dylib+0x1c2\n")
 add("long-line-sub-at-5000", "a " * 2500 + "calls sub_1A2B\n", "E4")
 add("long-line-lib-offset-at-9000", "b " * 4500 + "libsystem_kernel.dylib+0x1c2\n", "E4")
 
+# --- case folding of keys and headers (python lower()/re.I vs Qt) ---
+add("r7-key-dotted-capital-i", '{"sym": "_f", "RD\u0130": 1}\n')
+add("r7-key-upper", '{"sym": "_f", "RDI": 1}\n')
+add("r7-key-kelvin", '{"sym": "_f", "x0": 1, "\u212aey": 2}\n')
+# --- NUL / U+FFFD inside a marker: oracle no hit (store rejects R9); launcher E5 catches it ---
+add("e5-nul-in-sub", "see su\x00b_1A2B here\n", "E5")
+add("e5-fffd-in-sub", "see su\ufffdb_1A2B here\n", "E5")
+
 # --- json raw_decode details (parity) ---
 add("json-dup-key-last-wins", '{"a": {"symbol": "_f", "regs": []}, "a": 1}\n')
 add("json-dup-key-trace-last", '{"a": 1, "a": {"symbol": "_f", "regs": []}}\n')

@@ -111,6 +111,11 @@ r6-dotless-small-i.txt	R6	-
 r10-dotless-i-lib.txt	R10,R2	-
 long-line-sub-at-5000.txt	R5	E4
 long-line-lib-offset-at-9000.txt	R10,R2	E4
+r7-key-dotted-capital-i.txt	-	-
+r7-key-upper.txt	R7	-
+r7-key-kelvin.txt	R7	-
+e5-nul-in-sub.txt	-	E5
+e5-fffd-in-sub.txt	-	E5
 json-dup-key-last-wins.txt	-	-
 json-dup-key-trace-last.txt	R7	-
 json-tab-in-string.txt	-	-
