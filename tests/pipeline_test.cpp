@@ -363,6 +363,25 @@ private slots:
         const QString seen = read(fake + "/env");
         QVERIFY2(!seen.contains("GH_TOKEN") && !seen.contains("SSH_AUTH_SOCK") && seen.contains("DARLING_PIPELINE_AGENT="), qPrintable(seen));
     }
+    void stageAgentsRunWithStrictOptions() {
+        const auto claude = MissingSymbolPipeline::stageArguments("claude", "/s");
+        for (const char *a : {"--safe-mode", "--strict-mcp-config", "--no-session-persistence"}) QVERIFY2(claude.contains(a), a);
+        QCOMPARE(claude.at(claude.indexOf("--disallowedTools") + 1), QString("Bash,WebFetch,WebSearch,Task"));
+        QCOMPARE(claude.at(claude.indexOf("--add-dir") + 1), QString("/s"));
+        QVERIFY(MissingSymbolPipeline::stageArguments("codex", "/s").contains("sandbox_workspace_write.network_access=false"));
+        QVERIFY(MissingSymbolPipeline::stageArguments("opencode", "/s").contains("--pure"));
+        for (const char *cli : {"claude", "codex", "opencode"}) QVERIFY(MissingSymbolPipeline::stageArguments(cli, "/s").last().startsWith("Read BRIEF.md"));
+        plan("research 1 argdump\n");
+        QCOMPARE(run({"opencode", "codex", "opencode", "claude", "codex"}).state, State::Done);
+        QVERIFY(read(fake + "/opencode-env").contains("\"bash\":\"deny\""));
+        QVERIFY(!read(fake + "/args").contains("clean-room pipeline")); // the brief is not on the command line
+    }
+    void changedInstructionFileStopsTheRun() {
+        plan("research 1 plant\n");
+        const auto r = run();
+        QCOMPARE(r.state, State::Failed); QVERIFY2(r.message.contains("load automatically changed"), qPrintable(r.message));
+        QVERIFY(!read(fake + "/calls").contains(" spec "));
+    }
     void rejectedOutputIsRevisedThenFails() {
         plan("research 1 revise\n");
         auto r = run(); QCOMPARE(r.state, State::Done);

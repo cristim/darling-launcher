@@ -17,6 +17,15 @@ public:
 private:
     QSet<QString> reconciled; // sha256 of spec->impl releases already reconciled
 };
+// Instruction and config files the agent CLIs load by themselves (ancestor CLAUDE.md/AGENTS.md, user
+// settings). They are hashed when a run starts; a change before a later stage stops the run.
+class AutoLoadedFiles {
+public:
+    static AutoLoadedFiles snapshot(const QString &runRoot);
+    QString changed() const; // first changed path, or empty
+private:
+    QHash<QString, QByteArray> hashes; // path -> sha256, empty when absent
+};
 class MissingSymbolPipeline : public QObject {
     Q_OBJECT
 public:
@@ -38,6 +47,9 @@ public:
     static QStringList defaultAgents(const QStringList &installed);
     // The environment a stage agent of this CLI gets: an allow-list of the user's environment.
     static QProcessEnvironment stageEnvironment(const QProcessEnvironment &from, const QString &cli);
+    // Command line of a stage agent: no user hooks, MCP servers, instruction files or shell where the CLI allows it.
+    static QStringList stageArguments(const QString &cli, const QString &dir);
+    static constexpr const char *OpencodePermissions = R"({"permission":{"bash":"deny","webfetch":"deny","external_directory":"deny"}})";
     MissingSymbolPipeline(PipelineWorkspace workspace, Options options, QObject *parent = nullptr);
     ~MissingSymbolPipeline() override;
     void start();
@@ -75,6 +87,7 @@ private:
     int validationRounds = 0, logFd = -1, runLock = -1;
     bool cancelling = false, timedOut = false;
     ReconcileTracker reconciler;
+    AutoLoadedFiles autoLoaded;
     QStringList submittedRules; // compliance rules found in the output being submitted
     QProcess *process = nullptr;
     QTimer timeout;
