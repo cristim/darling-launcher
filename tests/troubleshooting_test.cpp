@@ -46,7 +46,7 @@ private slots:
         auto *ok = dialog.findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok);
         QVERIFY(!ok->isEnabled()); dialog.findChild<QCheckBox *>("approvePipeline")->setChecked(true); QVERIFY(ok->isEnabled());
         const auto options = dialog.options();
-        QCOMPARE(options.agents, QStringList({"claude", "opencode", "claude", "opencode"})); // providers alternate when several are installed
+        QCOMPARE(options.agents, QStringList({"claude", "opencode", "claude", "opencode", "claude"})); // providers alternate when several are installed
         QCOMPARE(options.symbol, QString("_CFFoo")); QCOMPARE(options.trace, QString("/home/u/.darling/trace.jsonl"));
     }
     void mountOfferTracksAvailability() {

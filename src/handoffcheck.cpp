@@ -106,6 +106,11 @@ const QList<LineRule> LINE_RULES{
     {"R6", "path into Apple system image, install volume or shared cache", rx(R"(/System/(?:Library|Volumes|Cryptexes|Applications)|/Library/Apple\b|/Volumes/[^/\s]+/(?:System|Library|usr|Applications)\b|dyld_shared_cache|\.dyld\b|/usr/lib/system/\S*\.dylib)", true)},
     {"R8", "forbidden trace field as key", rx(R"(["'](?:lr|pc|backtrace|image_offset|return_address)["']\s*:|(?<![\w.])(?:lr|pc)\s*[:=]\s*0x[0-9a-f]+|(?<![\w.])(?:backtrace|image_offset|return_address)\s*[:=]\s*(?:0x[0-9a-f]+|\[|\{|\d))", true)},
 };
+// R10 (ruling F3): an address or offset inside an Apple library image.
+const QString APPLE_LIB = R"((?:\blib[\w+-]*(?:\.[\w.]+)?|\b\w+\.framework\b|\b\w+\.dylib\b|\b(?:AppKit|Foundation|CoreFoundation|CoreGraphics|CoreServices|Security|QuartzCore|IOKit|SystemConfiguration|CFNetwork|CoreText|CoreAudio|AVFoundation|Metal|ImageIO|LaunchServices|ApplicationServices|UIKit|WebKit|Carbon|DiskArbitration|CoreData)\b))";
+const RX LIB_OFFSET = rx(APPLE_LIB + R"([^\n]{0,30}?(?:[+:@]\s*|\boffset\s+|\bat\s+)0x)" + H + "+", true);
+const RX LIB_ONLY = rx(APPLE_LIB, true);
+const RX PC_VALUE = rx(R"(\b(?:pc|lr|rip|return\s+addr(?:ess)?|frame(?:\s+addr(?:ess)?)?)\b[^\n]{0,20}?0x)" + H + "{4,}", true);
 const RX CLASSDUMP_IVAR = rx(R"(;\s*(?://|/\*)\s*(?:\d+\s*=\s*)?[+@]?0x)" + H + "+");
 const RX OBJC_INTERFACE = rx(R"(^\s*@interface\s+\w+)");
 const RX HEX_WORD = rx(R"((?<![\w])(?:0[xX][0-9a-fA-F_']{8,24}|(?:)" + H + "{4}_){1,3}" + H + "{4}|" + H + R"({16}|[0-9]{15,20}|(?=[0-9a-fA-F]*[0-9])(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{8,15})(?![\w]))");
@@ -296,6 +301,11 @@ QList<HandoffCheck::Hit> HandoffCheck::checkText(const QString &input) {
         if (hasInterface && (OBJC_INTERFACE.match(lines[i]).hasMatch() || CLASSDUMP_IVAR.match(lines[i]).hasMatch())) hits << Hit{i + 1, "R3", "class-dump style @interface with ivar offsets"};
     }
     for (int i : corroboratedGhidraLines(lines)) hits << Hit{i + 1, "R5", LINE_RULES[3].description};
+    for (int i = 0; i < lines.size(); ++i) {
+        const auto nearLibrary = [&] { for (int k = qMax(0, i - 1); k <= qMin(int(lines.size()) - 1, i + 1); ++k) if (LIB_ONLY.match(lines[k]).hasMatch()) return true; return false; };
+        if (LIB_OFFSET.match(lines[i]).hasMatch() || (PC_VALUE.match(lines[i]).hasMatch() && nearLibrary()))
+            hits << Hit{i + 1, "R10", "address/offset inside an Apple library image (library+offset, pc/lr/frame value)"};
+    }
     for (int line : traceHits(text)) hits << Hit{line, "R7", line ? "raw trace (T0) JSON object" : "too many JSON candidates to scan"};
 
     QList<int> block, run;
@@ -409,8 +419,40 @@ QList<HandoffCheck::Hit> HandoffCheck::rawTraceObjects(const QString &text) {
     return hits;
 }
 bool HandoffCheck::isComplianceRule(const Hit &hit) {
-    static const QSet<QString> rules{"R1", "R3", "R5"};
+    static const QSet<QString> rules{"R1", "R3", "R5", "R10"};
     return rules.contains(hit.rule) || rules.contains(hit.inner);
+}
+QList<HandoffCheck::Hit> HandoffCheck::reconFormat(const QString &text) {
+    static const QString name = R"([A-Za-z_$][\w$.@]*)";
+    static const RX header = rx(R"(^\s*(?:Agent|Inputs):)", true);
+    static const RX r6 = LINE_RULES[4].pattern;
+    static const RX path = rx(R"(^[\w.+-]+(?:/[\w.+-]+)*\z)");
+    static const QList<QPair<RX, QString>> expected{
+        {rx("^Absent:\\s*(" + name + "(?:\\s*,\\s*" + name + ")*)\\z"), "Absent: <names>"},
+        {rx(R"(^Branch:\s*[\w][\w./-]*\s+Commit:\s*[0-9a-fA-F]{40}\z)"), "Branch: <name>  Commit: <40-hex SHA>"},
+        {rx(R"(^Callers exist:\s*(yes|no)(?:\s*;\s*files:\s*(.+))?\z)"), "Callers exist: yes|no [; files: <paths>]"}};
+    QList<QPair<int, QString>> body;
+    const QStringList lines = text.split('\n');
+    for (int i = 0; i < lines.size(); ++i) if (!pyStrip(lines[i]).isEmpty() && !header.match(lines[i]).hasMatch()) body << qMakePair(i + 1, pyStrip(lines[i]));
+    QList<Hit> out;
+    for (int k = 0; k < expected.size(); ++k) {
+        if (k >= body.size()) { out << Hit{body.isEmpty() ? 0 : body.last().first, "F1", QString("missing line %1: expected '%2'").arg(k + 1).arg(expected[k].second)}; continue; }
+        const auto &[ln, line] = body[k];
+        const auto m = expected[k].first.match(line);
+        if (!m.hasMatch()) { out << Hit{ln, "F1", QString("line %1 does not match '%2'").arg(k + 1).arg(expected[k].second)}; continue; }
+        if (k != 2) continue;
+        const QString files = m.captured(2);
+        if (m.captured(1) == "yes" && files.isEmpty()) out << Hit{ln, "F1", "'Callers exist: yes' needs '; files: <paths>'"};
+        else if (m.captured(1) == "no" && !files.isEmpty()) out << Hit{ln, "F1", "'Callers exist: no' must not list files"};
+        for (const QString &raw : files.isEmpty() ? QStringList() : files.split(',')) {
+            const QString p = pyStrip(raw);
+            if (!path.match(p).hasMatch() || p.startsWith('/') || p.split('/').contains("..") || r6.match(p).hasMatch()) {
+                out << Hit{ln, "F1", "file path must be repo-relative (no leading '/', no '..', no system paths)"}; break;
+            }
+        }
+    }
+    if (body.size() > 3) out << Hit{body[3].first, "F1", "more than 3 non-empty content lines"};
+    return out;
 }
 std::optional<QString> HandoffCheck::parseHeader(const QString &text, const QString &label) {
     const RX header = rx(R"(^\s*(?:[*_-]\s*)?\**)" + label + R"(:\**\s*(.*)$)", true);

@@ -1,0 +1,4 @@
+Agent: a7
+Inputs: 01-x.md
+
+note 24
