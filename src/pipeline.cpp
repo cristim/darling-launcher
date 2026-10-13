@@ -45,9 +45,10 @@ QStringList outputComplianceRules(const QString &path, QStringList *reasons) {
     rules.removeDuplicates(); rules.sort();
     return rules;
 }
+// The process name only: command lines can carry secrets.
 QString command(qint64 pid) {
-    QFile f(QString("/proc/%1/cmdline").arg(pid));
-    return f.open(QIODevice::ReadOnly) ? QString::fromLocal8Bit(f.read(200).replace('\0', ' ')).trimmed() : QString("?");
+    QFile f(QString("/proc/%1/comm").arg(pid));
+    return f.open(QIODevice::ReadOnly) ? QString::fromLocal8Bit(f.read(64)).trimmed() : QString("?");
 }
 // CLI logs in JSON lines escape newlines; scan the decoded strings as well as the raw text.
 QString withJsonStrings(const QByteArray &data) {
@@ -266,10 +267,35 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
         if (hasMarker(pid, agentId)) { ::kill(pid_t(pid), SIGKILL); reasons << QString("process %1 of the agent still used the run folder").arg(pid); }
         else strays << QString("%1 (%2)").arg(pid).arg(command(pid));
     }
+    // An unmarked process may be the agent's (the marker is easy to drop). Everything stays locked so it cannot
+    // reach the other stages; the audit log is locked too, so the report goes to the launcher log.
+    if (!strays.isEmpty()) {
+        QStringList outputReasons;
+        const QStringList rules = outputComplianceRules(ws.stageDir(activeStage) + "/OUTPUT.md", &outputReasons);
+        QString note = ws.runId + " " + activeStage + ": processes still in the run folder: " + strays.join(", ") + "; all folders left locked";
+        if (!rules.isEmpty()) {
+            note += "; REPORT-TO-COMPLIANCE: rule " + rules.join(", rule ");
+            emit statusChanged("REPORT-TO-COMPLIANCE: rule " + rules.join(", rule ") + " (" + activeStage + " stage)");
+            emit complianceReport(activeStage, rules);
+        }
+        LauncherLog::writeChecked("pipeline", note);
+        keepLocked = true;
+        finish(State::Failed, "These processes still use the pipeline folder: " + strays.join(", ") + ". The run folders stay locked; close them and start the pipeline again.");
+        return;
+    }
     bool tampered = false;
     if (const QString error = ws.unlock(&tampered); !error.isEmpty()) {
-        // The stage cannot be inspected, so it is treated as tainted and the run stops.
-        if (record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", "cannot unlock the run folder: " + error}, {"report_to_compliance", true}}))
+        // The other folders cannot be inspected, so the stage counts as tainted and the run stops. Its own
+        // OUTPUT.md is still checked so compliance hits are reported with their rule ids.
+        QStringList ignored;
+        ::chmod(QFile::encodeName(ws.root).constData(), 0100); // traverse only, to reach this stage's own folder
+        const QStringList rules = outputComplianceRules(ws.stageDir(activeStage) + "/OUTPUT.md", &ignored);
+        if (!rules.isEmpty()) {
+            emit statusChanged("REPORT-TO-COMPLIANCE: rule " + rules.join(", rule ") + " (" + activeStage + " stage)");
+            emit complianceReport(activeStage, rules);
+            LauncherLog::writeChecked("pipeline", ws.runId + " " + activeStage + ": REPORT-TO-COMPLIANCE: rule " + rules.join(", rule "));
+        }
+        if (record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", "cannot unlock the run folder: " + error}, {"report_to_compliance", true}, {"compliance_rules", QJsonArray::fromStringList(rules)}}))
             finish(State::Failed, error);
         return;
     }
@@ -290,18 +316,11 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
     const QStringList rules = outputComplianceRules(dir + "/OUTPUT.md", &reasons);
     // On the normal path the store rejects it and submitted() reports it with the REJECT record; on every
     // other path (cancel, timeout, stray, other taint reasons, validation reports) it is reported here.
-    const bool storeWillReport = reasons.isEmpty() && strays.isEmpty() && !cancelling && !timedOut && activeStage != "validate";
+    const bool storeWillReport = reasons.isEmpty() && !cancelling && !timedOut && activeStage != "validate";
     if (!rules.isEmpty() && !storeWillReport) {
         QString report;
         if (!reportCompliance(rules, &report)) return;
         reasons.prepend(report);
-    }
-    // An unmarked process may be the agent's (the marker is easy to drop), so the run never continues past it.
-    if (!strays.isEmpty()) {
-        if (!reasons.isEmpty() && !discard(reasons.join("; "), rules)) return;
-        if (record("STRAY", {{"stage", activeStage}, {"processes", QJsonArray::fromStringList(strays)}}))
-            finish(State::Failed, "These processes still use the pipeline folder: " + strays.join(", ") + ". Close them and start the pipeline again.");
-        return;
     }
     // A stage that saw disallowed material is tainted even when it was cancelled or timed out.
     if (!reasons.isEmpty() && (cancelling || timedOut) && !discard(reasons.join("; "), rules)) return;
@@ -451,7 +470,7 @@ void MissingSymbolPipeline::finish(State state, const QString &message) {
     current = state;
     timeout.stop();
     if (logFd >= 0) { ::close(logFd); logFd = -1; }
-    bool tampered = false; ws.unlock(&tampered); // no-op unless a launch failed after locking
+    if (!keepLocked) { bool tampered = false; ws.unlock(&tampered); } // no-op unless a launch failed after locking
     if (state == State::Failed) HandoffStore::appendEvent(ws.root, "FAILED", {{"stage", activeStage}, {"reason", message}});
     // Closed once the current call chain (which may still move a stage aside) has returned.
     QTimer::singleShot(0, this, [this] { if (const QString error = ws.close(); !error.isEmpty()) emit statusChanged(error); });
