@@ -1,0 +1,11 @@
+push rbp
+note
+mov rbp, rsp
+note
+lea rax, [rbp-8]
+note
+call 0x10
+note
+pop rbp
+note
+ret

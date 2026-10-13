@@ -1,0 +1,3 @@
+Inputs: 09-spec-to-impl.md 15d496fb38e86a0be29c7399f0aa03cac638dfeb2da398083c7ae0f75c90dd3d
+
+note 72

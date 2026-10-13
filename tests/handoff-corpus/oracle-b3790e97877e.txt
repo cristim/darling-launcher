@@ -1,0 +1,3 @@
+ldaxr x0, [x1]
+stlxr w2, x0, [x1]
+fmov d0, d1

@@ -1,0 +1,1 @@
+otool -L output: /usr/lib/libSystem.B.dylib (compatibility version 1.0.0)

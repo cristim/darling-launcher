@@ -1,0 +1,1 @@
+{"symbol": "_foo", "lib": "libx", "regs": [1, 2]}

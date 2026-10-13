@@ -1,0 +1,6 @@
+Agent: recon-1
+Inputs: 02-spec-to-impl.md e02ecec1b9f60233ff43780526b22282d2b1103e4e3d9de00fcdff9a05090a6b
+
+Absent: _A
+Branch: m  Commit: 3ddf2a330123456789abcdef0123456789abcdef
+Callers exist: no

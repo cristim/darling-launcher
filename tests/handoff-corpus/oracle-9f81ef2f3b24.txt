@@ -1,0 +1,5 @@
+# Spec
+
+Requirement 1 (rung 3): _CFFoo returns NULL for an empty key, per the public docs.
+Requirement 2 (OBSERVED, rung 4): word 0x2 seen 3 times at position 1.
+Sources: developer.apple.com CFFoo docs; Libc/gen/foo.c

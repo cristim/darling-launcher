@@ -1,0 +1,5 @@
+Agent: r
+Inputs: 02-spec-to-impl.md 0000000000000000000000000000000000000000000000000000000000000000
+Absent: _FooBar, _BazQux
+Branch: feature/x  Commit: 3ddf2a330123456789abcdef0123456789abcdef
+Callers exist: yes; files: src/a.c, include/b.h

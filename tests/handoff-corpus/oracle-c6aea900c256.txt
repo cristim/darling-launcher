@@ -1,0 +1,3 @@
+> MOV X0, X1
+> ldr x2, [sp, #8]
+> bl _foo

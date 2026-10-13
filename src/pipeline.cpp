@@ -2,6 +2,7 @@
 #include "pipeline.h"
 #include "stagesupervisor.h"
 #include "troubleshooting.h"
+#include "log.h"
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QJsonArray>
@@ -19,7 +20,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 namespace {
-const QHash<QString, QString> Next{{"research", "spec"}, {"spec", "impl"}, {"impl", "validate"}};
+const QHash<QString, QString> Next{{"research", "spec"}, {"spec", "impl"}, {"impl", "validate"}, {"recon", "impl"}};
+bool needsFirewall(const QString &stage) { return stage == "impl" || stage == "validate" || stage == "recon"; }
 QStringList names(const QList<HandoffStore::Release> &releases) { QStringList out; for (const auto &r : releases) out << r.name; return out; }
 // "records=N last_hash=H": what an outside edit of AUDIT.jsonl would change.
 QString chainHead(const QString &root) { return HandoffStore::verifyChain(root, false).summary.section(' ', 0, 1); }
@@ -132,8 +134,12 @@ QString MissingSymbolPipeline::brief(const QString &stage) const {
     if (stage == "research") task += "trace/T0.jsonl is the raw trace (T0) of unresolved imports. Write T1 facts: per symbol its name, framework, call count and position among first calls. "
         "Arguments only as (a) a type or meaning that follows from Apple's open source, vendored headers or public documentation, cited, or (b) 'raw word W observed N times in position k' labelled rung 4 with the guest app and version. "
         "No hypotheses about Apple's internals, never copy trace lines, at most 4 raw words in total.";
-    if (stage == "spec") task += "inputs/ holds the T1 facts. Write a behaviour specification (T2) in terms of public documentation and the guest's observable behaviour. Each requirement cites its rung; a requirement whose only source is a raw-word observation is marked OBSERVED and names a test with an authored, non-Apple fixture.";
-    if (stage == "impl") task += "inputs/ holds only the specification (and validation mismatch reports, if any). Implement from it, public sources and Darling's source. You have no research material and cannot ask for it. In OUTPUT.md list what you implemented, the files and the tests.";
+    if (stage == "spec") task += "inputs/ holds the T1 facts. Write a behaviour specification (T2) in terms of public documentation and the guest's observable behaviour. Each requirement cites its rung; a requirement whose only source is a raw-word observation is marked OBSERVED and names a test with an authored, non-Apple fixture. "
+        "If the implementation must first know whether some names are already absent from Darling's source, add one line `Reconcile: <name>, <name>`.";
+    if (stage == "impl") task += "inputs/ holds only the specification (plus the reconciler's three-line answer and validation mismatch reports, if any). Implement from it, public sources and Darling's source. You have no research material and cannot ask for it. In OUTPUT.md list what you implemented, the files and the tests.";
+    if (stage == "recon") task += "inputs/ holds the specification release whose Reconcile: line names symbols. Establish only whether those symbols are absent from Darling's current working tree and whether callers remain. "
+        "Read only the working-tree files you need and search for callers by name; never run git log, blame or show and never read commit messages. "
+        "OUTPUT.md must be exactly these three lines and nothing else: `Absent: <name>, <name>`, `Branch: <branch>  Commit: <40-hex SHA>`, and `Callers exist: no` or `Callers exist: yes; files: <repo-relative path>, <path>`.";
     if (stage == "validate") task += "inputs/ holds the specification and the implementation report. Compare the guest-visible behaviour with the specification. The first line of OUTPUT.md is `VERDICT: PASS` or `VERDICT: MISMATCH`, followed by mismatches described as behaviours, never as code.";
     return task;
 }
@@ -144,7 +150,7 @@ void MissingSymbolPipeline::launch(const QString &stage) {
     agentId = QString("%1-%2-%3-%4").arg(stage, agentCli).arg(++launches[stage]).arg(QUuid::createUuid().toString(QUuid::Id128).left(8));
     const QString dir = ws.stageDir(stage), executable = QStandardPaths::findExecutable(agentCli);
     if (executable.isEmpty()) { finish(State::Failed, agentCli + " is no longer installed."); return; }
-    if (stage == "impl" || stage == "validate")
+    if (needsFirewall(stage))
         if (const QStringList problems = ws.firewall(stage, names(delivered.value(stage))); !problems.isEmpty()) {
             record("FIREWALL", {{"stage", stage}, {"problems", QJsonArray::fromStringList(problems)}, {"report_to_compliance", true}});
             finish(State::Failed, "The " + stage + " workspace holds material it must never see: " + problems.join("; ")); return;
@@ -200,7 +206,7 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
         if (rel.startsWith("inputs/") || rel.startsWith("trace/") || rel.startsWith(".tmp/")) continue;
         if (const QString problem = scanFile(path); !problem.isEmpty()) reasons << rel + problem;
     }
-    if (activeStage == "impl" || activeStage == "validate") reasons += ws.firewall(activeStage, names(delivered.value(activeStage)));
+    if (needsFirewall(activeStage)) reasons += ws.firewall(activeStage, names(delivered.value(activeStage)));
     // A stage that saw disallowed material is tainted even when it was cancelled or timed out.
     if (!reasons.isEmpty() && (cancelling || timedOut)) {
         if (!record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", reasons.join("; ")}, {"moved_to", activeStage + ".tainted/" + agentId}, {"report_to_compliance", true}})) return;
@@ -242,13 +248,22 @@ void MissingSymbolPipeline::submitted(const HandoffStore::Result &result) {
     if (result.status == HandoffStore::Status::Unsafe) { finish(State::Failed, "Cannot check the " + activeStage + " output: " + result.error); return; }
     if (result.status == HandoffStore::Status::Rejected) {
         QStringList reasons; for (const auto &h : result.reasons) reasons << describe(h);
-        if (result.reportToCompliance) taint("the handoff matched compliance rules: " + reasons.join("; "));
+        if (result.reportToCompliance) {
+            const QString report = "REPORT-TO-COMPLIANCE: rule " + result.complianceRules.join(", rule ");
+            LauncherLog::write("pipeline", ws.runId + " " + activeStage + ": " + report);
+            emit complianceReport(activeStage, result.complianceRules);
+            taint(report + " (" + reasons.join("; ") + ")", result.complianceRules);
+        }
         else revise(reasons);
         return;
     }
     QString error;
     for (const auto &r : HandoffStore::releases(ws.root, &error)) if (r.name == result.released) { handOff(r); return; }
     finish(State::Failed, "The released handoff is missing from the audit log. " + error);
+}
+QString MissingSymbolPipeline::releasedText(const HandoffStore::Release &release) const {
+    QFile f(ws.stageDir(release.to) + "/inputs/" + release.name);
+    return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.read(HandoffStore::MaxInput)) : QString();
 }
 QString MissingSymbolPipeline::deliver(const HandoffStore::Release &release, const QString &stage, bool asInput) {
     if (const QString error = ws.deliver(release, stage); !error.isEmpty()) return error;
@@ -259,6 +274,14 @@ void MissingSymbolPipeline::handOff(const HandoffStore::Release &release) {
     const QString next = release.to;
     QString error = deliver(release, next, true);
     if (error.isEmpty()) { delivered[next] << release; inputs[next] << release; }
+    // A specification may ask the reconciler whether names are already absent from Darling's tree; recon sees
+    // only that release and the working tree, and its answer goes to impl only.
+    QString stage = next;
+    if (error.isEmpty() && release.from == "spec" && release.to == "impl" && !reconciled && HandoffCheck::parseHeader(releasedText(release), "Reconcile")) {
+        reconciled = true; stage = "recon";
+        error = deliver(release, "recon", true);
+        if (error.isEmpty()) { delivered["recon"] << release; inputs["recon"] << release; }
+    }
     // Validation also needs the specification, which was released to impl: delivered, not cited in Inputs.
     if (error.isEmpty() && next == "validate") {
         QString listError; HandoffStore::Release spec;
@@ -270,8 +293,8 @@ void MissingSymbolPipeline::handOff(const HandoffStore::Release &release) {
     }
     if (current != State::Running) return;
     if (!error.isEmpty()) { finish(State::Failed, "Cannot deliver the handoff: " + error); return; }
-    revisions[next] = 0;
-    launch(next);
+    revisions[stage] = 0;
+    launch(stage);
 }
 void MissingSymbolPipeline::revise(const QStringList &reasons) {
     if (++revisions[activeStage] > MaxRevisions) {
@@ -282,9 +305,9 @@ void MissingSymbolPipeline::revise(const QStringList &reasons) {
     if (!f.open(QIODevice::WriteOnly) || f.write((reasons.join('\n') + '\n').toUtf8()) < 0 || !f.commit()) { finish(State::Failed, "Cannot write REJECTED.txt."); return; }
     if (record("REVISE", {{"stage", activeStage}, {"agent", agentId}, {"reasons", QJsonArray::fromStringList(reasons)}})) launch(activeStage);
 }
-void MissingSymbolPipeline::taint(const QString &reason) {
+void MissingSymbolPipeline::taint(const QString &reason, const QStringList &complianceRules) {
     const QString stage = activeStage;
-    if (!record("TAINT", {{"stage", stage}, {"agent", agentId}, {"reason", reason}, {"moved_to", stage + ".tainted/" + agentId}, {"report_to_compliance", true}})) return;
+    if (!record("TAINT", {{"stage", stage}, {"agent", agentId}, {"reason", reason}, {"moved_to", stage + ".tainted/" + agentId}, {"report_to_compliance", true}, {"compliance_rules", QJsonArray::fromStringList(complianceRules)}})) return;
     if (const QString error = ws.taint(stage, agentId); !error.isEmpty()) { finish(State::Failed, error); return; }
     emit statusChanged("The " + stage + " agent was tainted (" + reason + "). Its work is discarded; a fresh agent takes over.");
     if (++replacements[stage] > MaxReplacements) {

@@ -1,0 +1,1 @@
+Foo.framework, libSystem.B.dylib, /usr/lib/libSystem.B.dylib, ~/prefix/Library

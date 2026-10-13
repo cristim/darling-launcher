@@ -1,0 +1,1 @@
+NSWindow, objc_msgSend are public symbols; AppKit exports NSWindow.

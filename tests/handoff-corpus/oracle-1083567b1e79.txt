@@ -1,0 +1,5 @@
+@interface Foo : NSObject
+{
+    int _a;  // 8 = 0x8
+}
+@end
