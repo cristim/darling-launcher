@@ -242,8 +242,8 @@ private slots:
             watchReports(p, &reported);
             viewer.setWorkingDirectory(p.workspace().stageDir("research")); viewer.start("sleep", {"60"}); viewer.waitForStarted();
         });
-        QCOMPARE(r.state, State::Failed); QCOMPARE(reported, QStringList{"research:R10"}); QVERIFY(taintedWith(r.ws, "research", "R10"));
-        QVERIFY(verdicts(r.ws).contains("STRAY"));
+        QCOMPARE(r.state, State::Failed); QCOMPARE(reported, QStringList{"research:R10"});
+        QVERIFY(read(LauncherLog::path()).contains("REPORT-TO-COMPLIANCE: rule R10"));
         viewer.kill(); viewer.waitForFinished();
     }
     void storeFailureAfterAComplianceHitIsReported() {
@@ -295,6 +295,18 @@ private slots:
         const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 3);
         QCOMPARE(r.state, State::TimedOut); QVERIFY(verdicts(r.ws).contains("TAINT"));
         QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1);
+    }
+    // The run folder is made unusable mid-stage: the launcher sees the lock tampering and still reports the hit.
+    void lockTamperingStillReportsComplianceHits() {
+        plan("research 1 r10slow\n"); QStringList reported;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) {
+            watchReports(p, &reported);
+            // once the agent has written its output (it then sleeps 2 s), make the run folder unusable
+            connect(&p, &MissingSymbolPipeline::statusChanged, &p, [&p](const QString &m) {
+                if (m.contains("working on the research stage")) QTimer::singleShot(700, &p, [&p] { ::chmod(p.workspace().root.toLocal8Bit().constData(), 0); });
+            });
+        });
+        QCOMPARE(reported, QStringList{"research:R10"}); QVERIFY(taintedWith(r.ws, "research", "R10"));
     }
     void unlockFailureStopsTheRun() {
         plan("research 1 slow\n");
@@ -439,9 +451,11 @@ private slots:
         const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&viewer](MissingSymbolPipeline &p) {
             viewer.setWorkingDirectory(p.workspace().stageDir("research")); viewer.start("sleep", {"60"}); viewer.waitForStarted();
         });
-        QCOMPARE(r.state, State::Failed); QVERIFY2(r.message.contains(QString::number(viewer.processId()) + " (") && r.message.contains("sleep 60)"), qPrintable(r.message));
+        QCOMPARE(r.state, State::Failed); QVERIFY2(r.message.contains(QString::number(viewer.processId()) + " (sleep)"), qPrintable(r.message));
         QCOMPARE(viewer.state(), QProcess::Running);
-        QVERIFY(verdicts(r.ws).contains("STRAY")); QVERIFY(!QFileInfo::exists(r.ws.root + "/research.tainted"));
+        // folders stay locked while the process lives, and only its name is recorded
+        struct stat st {}; ::stat(r.ws.stageDir("spec").toLocal8Bit().constData(), &st); QCOMPARE(unsigned(st.st_mode & 07777), 0u);
+        QVERIFY(read(LauncherLog::path()).contains("processes still in the run folder")); QVERIFY(!read(LauncherLog::path()).contains("sleep 60"));
         viewer.kill(); viewer.waitForFinished();
     }
     void timeoutStopsTheAgent() {

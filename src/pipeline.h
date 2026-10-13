@@ -85,7 +85,7 @@ private:
     QHash<QString, int> launches, revisions, replacements;
     QHash<QString, QList<HandoffStore::Release>> delivered, inputs; // per stage: all deliveries / those named in Inputs
     int validationRounds = 0, logFd = -1, runLock = -1;
-    bool cancelling = false, timedOut = false;
+    bool cancelling = false, timedOut = false, keepLocked = false;
     ReconcileTracker reconciler;
     AutoLoadedFiles autoLoaded;
     QStringList submittedRules; // compliance rules found in the output being submitted
