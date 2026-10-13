@@ -114,7 +114,8 @@ MissingSymbolPipeline::~MissingSymbolPipeline() {
 }
 bool MissingSymbolPipeline::record(const QString &verdict, QJsonObject fields) {
     if (!anchor.isEmpty() && chainHead(ws.root) != anchor) { finish(State::Failed, "The audit log changed outside the launcher; the run is stopped."); return false; }
-    if (const QString error = HandoffStore::appendEvent(ws.root, verdict, fields); !error.isEmpty()) { finish(State::Failed, "Cannot write the audit log: " + error); return false; }
+    const auto append = opts.appendEvent ? opts.appendEvent : HandoffStore::appendEvent;
+    if (const QString error = append(ws.root, verdict, fields); !error.isEmpty()) { finish(State::Failed, "Cannot write the audit log: " + error); return false; }
     anchor = chainHead(ws.root);
     return true;
 }
@@ -233,7 +234,11 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
     // On the normal path the store rejects it and submitted() reports it with the REJECT record; on every
     // other path (cancel, timeout, stray, other taint reasons, validation reports) it is reported here.
     const bool storeWillReport = reasons.isEmpty() && strays.isEmpty() && !cancelling && !timedOut && activeStage != "validate";
-    if (!rules.isEmpty() && !storeWillReport) reasons.prepend(reportCompliance(rules));
+    if (!rules.isEmpty() && !storeWillReport) {
+        QString report;
+        if (!reportCompliance(rules, &report)) return;
+        reasons.prepend(report);
+    }
     // An unmarked process may be the agent's (the marker is easy to drop), so the run never continues past it.
     if (!strays.isEmpty()) {
         if (!reasons.isEmpty() && !discard(reasons.join("; "), rules)) return;
@@ -279,23 +284,34 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
     }));
 }
 bool MissingSymbolPipeline::discard(const QString &reason, const QStringList &complianceRules) {
-    if (!record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", reason}, {"moved_to", activeStage + ".tainted/" + agentId}, {"report_to_compliance", true}, {"compliance_rules", QJsonArray::fromStringList(complianceRules)}})) return false;
-    if (const QString error = ws.taint(activeStage, agentId); !error.isEmpty()) { finish(State::Failed, error); return false; }
+    const bool recorded = record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", reason}, {"moved_to", activeStage + ".tainted/" + agentId}, {"report_to_compliance", true}, {"compliance_rules", QJsonArray::fromStringList(complianceRules)}});
+    // Moved aside even when the record failed, so nothing of this stage can be handed on.
+    const QString error = ws.taint(activeStage, agentId);
+    if (!recorded) return false;
+    if (!error.isEmpty()) { finish(State::Failed, error); return false; }
     return true;
 }
-QString MissingSymbolPipeline::reportCompliance(const QStringList &rules) {
-    const QString report = "REPORT-TO-COMPLIANCE: rule " + rules.join(", rule ");
-    LauncherLog::write("pipeline", ws.runId + " " + activeStage + ": " + report);
-    emit statusChanged(report + " (" + activeStage + " stage)");
+bool MissingSymbolPipeline::reportCompliance(const QStringList &rules, QString *report) {
+    *report = "REPORT-TO-COMPLIANCE: rule " + rules.join(", rule ");
+    // The signal and status cannot fail; they go out first so the user always sees the report.
+    emit statusChanged(*report + " (" + activeStage + " stage)");
     emit complianceReport(activeStage, rules);
-    return report;
+    const auto log = opts.complianceLog ? opts.complianceLog : [](const QString &source, const QString &text) { return LauncherLog::writeChecked(source, text); };
+    const bool logged = log("pipeline", ws.runId + " " + activeStage + ": " + *report);
+    const bool audited = logged && record("COMPLIANCE_REPORT", {{"stage", activeStage}, {"agent", agentId}, {"compliance_rules", QJsonArray::fromStringList(rules)}, {"report_to_compliance", true}});
+    if (logged && audited) return true;
+    // The report could not be recorded: stop fail-closed, with the stage moved aside and nothing released.
+    ws.taint(activeStage, agentId);
+    finish(State::Failed, *report + ", but it could not be " + (logged ? "added to the audit log" : "written to the launcher log") + "; the stage was discarded and the run stopped.");
+    return false;
 }
 void MissingSymbolPipeline::submitted(const HandoffStore::Result &result) {
     anchor = chainHead(ws.root);
     if (current != State::Running) return;
     QStringList reasons; for (const auto &h : result.reasons) reasons << describe(h);
     // A compliance hit is reported before anything else can end the run: cancel, store failure, taint limit.
-    const QString report = result.reportToCompliance ? reportCompliance(result.complianceRules) : QString();
+    QString report;
+    if (result.reportToCompliance && !reportCompliance(result.complianceRules, &report)) return;
     if (result.status == HandoffStore::Status::Unsafe) { finish(State::Failed, "Cannot check the " + activeStage + " output: " + result.error); return; }
     if (!report.isEmpty() && cancelling && !discard(report, result.complianceRules)) return;
     if (cancelling) { if (record("CANCEL", {{"stage", activeStage}})) finish(State::Cancelled, "Cancelled."); return; }
