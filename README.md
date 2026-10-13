@@ -186,7 +186,8 @@ This does not install over the system runtime or change other checkouts.
 
 **Settings → Mount macOS source… → Mount all detected volumes read-only** scans
 APFS/HFS partitions detected by `lsblk`. It takes only partitions on a disk with a
-hardware bus; loop devices and anything else are skipped and must be selected
+hardware bus; whole-disk devices (APFS directly on a disk without a partition
+table), loop devices and anything else are skipped and must be selected
 individually (the partition picker marks them "loop/virtual device", so check that
 you are not choosing a disk image by accident). For APFS it uses `apfsutil` metadata to
 obtain actual volume indices, then mounts each unencrypted volume with APFS FUSE.
@@ -224,9 +225,11 @@ under `/run/darling-launcher/<uid>/` until reboot (the helper reuses them when
 empty).
 APFS FUSE runs with `default_permissions`, so the kernel enforces the `uid=`/`gid=`
 ownership. Not yet verified: that `apfs-fuse` accepts `--`, `fsname=` and
-`default_permissions` in its options. If a build rejects them the mount fails
-rather than running with weaker options; run the mount once on a machine with
-`apfs-fuse` to confirm. The helper needs `lsblk` with the `SUBSYSTEMS` column
+`default_permissions` in its options. A build that rejects them makes the
+`apfs-fuse` command fail, and the helper then unmounts anything that appeared. The
+helper does not read the mount options back to confirm `default_permissions` is
+active (it checks device, target and the read-only flags only), so run the mount
+once on a machine with `apfs-fuse` and check `findmnt -o OPTIONS`. The helper needs `lsblk` with the `SUBSYSTEMS` column
 (util-linux 2.33 or newer); with an older `lsblk` every mode, including
 `--device`, fails closed. Errors name the failing step, not file paths or tool output.
 Progress and discovered application sources are emitted as JSON lines. Individual

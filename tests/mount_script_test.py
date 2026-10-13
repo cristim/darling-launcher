@@ -205,7 +205,8 @@ class MountScriptTest(unittest.TestCase):
                  {"path": "/dev/loop8", "type": "loop", "fstype": None, "subsystems": "block", "mountpoints": [],
                   "children": [{"path": "/dev/loop8p1", "type": "part", "fstype": "hfsplus", "subsystems": "block", "mountpoints": []}]},
                  {"path": "/dev/sdz", "type": "disk", "fstype": "apfs", "subsystems": "block:scsi:usb:pci", "mountpoints": []},
-                 {"path": "/dev/sdy1", "fstype": "apfs", "mountpoints": []}]
+                 {"path": "/dev/sdy1", "fstype": "apfs", "mountpoints": []},
+                 {"path": "/dev/sdx1", "type": "part", "fstype": "apfs", "subsystems": None, "mountpoints": []}]
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory)
             fixture.extra_devices = unselected
@@ -213,7 +214,7 @@ class MountScriptTest(unittest.TestCase):
             touched = [c for c in fixture.calls if any(d["path"] in a for d in unselected for a in c[1:])]
             self.assertEqual(touched, [])
             skipped = {e["device"] for e in fixture.events if e["event"] == "skip" and "explicitly" in e["reason"]}
-            self.assertEqual(skipped, {"/dev/loop7", "/dev/loop8p1", "/dev/sdz", "/dev/sdy1"})
+            self.assertEqual(skipped, {"/dev/loop7", "/dev/loop8p1", "/dev/sdz", "/dev/sdy1", "/dev/sdx1"})
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory)
             fixture.extra_devices = unselected
