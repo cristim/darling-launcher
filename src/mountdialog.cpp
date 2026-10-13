@@ -92,7 +92,7 @@ MountDialog::MountDialog(QWidget *parent, std::function<QList<SourceMount>()> pr
         if (!error.isEmpty()) { output->append(error); return; }
         for (int i = 0; i < detected.size(); ++i) {
             const auto &part = detected[i];
-            partitions->addItem(part.device + " — " + part.filesystem + " " + part.label + (part.mounted ? " (" + QString::number(part.mountPoints.size()) + " mounts)" : ""), i);
+            partitions->addItem(part.device + " — " + part.filesystem + " " + part.label + (part.physical ? "" : " (loop/virtual device)") + (part.mounted ? " (" + QString::number(part.mountPoints.size()) + " mounts)" : ""), i);
             if (part.device == previousDevice) partitions->setCurrentIndex(i + 1);
         }
         updateExistingSources();
@@ -129,7 +129,7 @@ void MountDialog::discover() {
     if (discovery.state() != QProcess::NotRunning) return;
     QString tool = QStandardPaths::findExecutable("lsblk");
     if (tool.isEmpty()) { output->append("lsblk is unavailable."); return; }
-    discovery.start(tool, {"--json", "--output", "PATH,FSTYPE,LABEL,MOUNTPOINTS"});
+    discovery.start(tool, {"--json", "--output", "PATH,TYPE,FSTYPE,SUBSYSTEMS,LABEL,MOUNTPOINTS"});
 }
 void MountDialog::mountSelected() {
     int selected = partitions->currentData().toInt();

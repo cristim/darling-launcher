@@ -19,7 +19,8 @@ void collect(const QJsonArray &devices, QList<MacPartition> *result) {
             QStringList points;
             for (const auto &point : item.value("mountpoints").toArray())
                 if (!point.toString().isEmpty()) points << point.toString();
-            result->append({item.value("path").toString(), fs, item.value("label").toString(), !points.isEmpty(), points});
+            const bool physical = item.value("type").toString() == "part" && item.value("subsystems").toString().contains(':');
+            result->append({item.value("path").toString(), fs, item.value("label").toString(), !points.isEmpty(), points, physical});
         }
         collect(item.value("children").toArray(), result);
     }
