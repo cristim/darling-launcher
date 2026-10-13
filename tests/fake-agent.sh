@@ -34,6 +34,11 @@ case $mode in
   envdump) env | cut -d= -f1,1 | sort > "$F/env"; env | grep '^DARLING_PIPELINE_AGENT=' >> "$F/env"; out ;;
   argdump) printf '%s\n' "$@" > "$F/args"; printf '%s' "$OPENCODE_CONFIG_CONTENT" > "$F/opencode-env"; out ;;
   plant) echo 'planted' > "$(dirname "$(dirname "$(dirname "$PWD")")")/AGENTS.md"; out ;;
+  hidden) out; mkdir -p .tmp hide; echo 'calls sub_1A2B' > .tmp/note.txt ;;
+  lockedsub) out; mkdir -p hide; cp OUTPUT.md hide/copy.md; chmod 000 hide ;;
+  linkbrief) printf 'Loaded from /System/Library/Foo\n' > OUTPUT.md; rm -f BRIEF.md; ln -s "$F/victim" BRIEF.md; ln -s "$F/victim" REJECTED.txt ;;
+  crash) out; exit 4 ;;
+  stdin) if read line; then echo got > "$F/stdin"; else echo eof > "$F/stdin"; fi; out ;;
   badrecon) printf 'The function is absent and nobody calls it.\n' > OUTPUT.md ;;
   taint) printf 'Notes: the function calls sub_1A2B first.\n' > OUTPUT.md ;;
   revise) printf 'Loaded from /System/Library/Frameworks/Foo.framework (attempt %s)\n' "$n" > OUTPUT.md ;;

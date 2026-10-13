@@ -88,6 +88,8 @@ private:
     QHash<QString, int> launches, revisions, replacements;
     QHash<QString, QList<HandoffStore::Release>> delivered, inputs; // per stage: all deliveries / those named in Inputs
     int validationRounds = 0, logFd = -1, runLock = -1;
+    qint64 logBytes = 0;
+    static constexpr qint64 MaxAgentLog = 64 * 1024 * 1024;
     bool cancelling = false, timedOut = false, keepLocked = false;
     ReconcileTracker reconciler;
     AutoLoadedFiles autoLoaded;

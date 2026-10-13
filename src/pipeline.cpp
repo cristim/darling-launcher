@@ -33,11 +33,18 @@ bool hasMarker(qint64 pid, const QString &agentId) {
     return env.open(QIODevice::ReadOnly) && env.readAll().split('\0').contains(QByteArray(Marker) + '=' + agentId.toUtf8());
 }
 // Compliance rule ids hit by a stage's OUTPUT.md; an output too large to check is a taint reason.
+// Opens an agent-written file for reading: no symlink, never blocks on a FIFO swapped in, regular files only.
+bool openRegular(QFile &f, const QString &path) {
+    const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    struct stat st {};
+    if (fd < 0) return false;
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) { ::close(fd); return false; }
+    return f.open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle);
+}
 QStringList outputComplianceRules(const QString &path, QStringList *reasons) {
-    QFile f(path);
-    // Symlinks, FIFOs and other special files are tainted by the caller; never open them (a FIFO would block).
-    const QFileInfo info(path);
-    if (info.isSymLink() || !info.isFile() || !f.open(QIODevice::ReadOnly)) return {};
+    QFile f;
+    // Symlinks, FIFOs and other special files are tainted by the caller.
+    if (!openRegular(f, path)) return {};
     const QByteArray data = f.read(HandoffStore::MaxInput + 1);
     if (data.size() > HandoffStore::MaxInput) { *reasons << "OUTPUT.md is too large to check"; return {}; }
     QStringList rules;
@@ -46,6 +53,19 @@ QStringList outputComplianceRules(const QString &path, QStringList *reasons) {
     return rules;
 }
 // The process name only: command lines can carry secrets.
+// Replaces <dir>/<name> with a new regular file, created O_EXCL|O_NOFOLLOW through the folder's fd: a link an
+// agent left there is removed, never written through.
+bool writeNewFile(const QString &dir, const char *name, const QByteArray &data) {
+    const int dirFd = ::open(QFile::encodeName(dir).constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dirFd < 0) return false;
+    ::unlinkat(dirFd, name, 0);
+    const int fd = ::openat(dirFd, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    ::close(dirFd);
+    if (fd < 0) return false;
+    const bool ok = ::write(fd, data.constData(), size_t(data.size())) == data.size();
+    ::close(fd);
+    return ok;
+}
 QString command(qint64 pid) {
     QFile f(QString("/proc/%1/comm").arg(pid));
     return f.open(QIODevice::ReadOnly) ? QString::fromLocal8Bit(f.read(64)).trimmed() : QString("?");
@@ -67,8 +87,8 @@ QString withJsonStrings(const QByteArray &data) {
 }
 // Exposure markers in a file of any size, read in chunks cut at line ends. Returns a reason or empty.
 QString scanFile(const QString &path) {
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly)) return " cannot be read for checking";
+    QFile f;
+    if (!openRegular(f, path)) return " cannot be read for checking";
     auto exposed = [](const QByteArray &part) { return !HandoffCheck::exposureMarkers(withJsonStrings(part)).isEmpty(); };
     QByteArray buffer;
     while (!f.atEnd()) {
@@ -235,9 +255,13 @@ void MissingSymbolPipeline::launch(const QString &stage) {
             record("FIREWALL", {{"stage", stage}, {"problems", QJsonArray::fromStringList(problems)}, {"report_to_compliance", true}});
             finish(State::Failed, "The " + stage + " workspace holds material it must never see: " + problems.join("; ")); return;
         }
-    QSaveFile briefFile(dir + "/BRIEF.md");
-    if (!briefFile.open(QIODevice::WriteOnly) || briefFile.write(brief(stage).toUtf8()) < 0 || !briefFile.commit()) { finish(State::Failed, "Cannot write the " + stage + " brief."); return; }
-    QDir().mkpath(dir + "/.tmp");
+    if (!writeNewFile(dir, "BRIEF.md", brief(stage).toUtf8())) { finish(State::Failed, "Cannot write the " + stage + " brief."); return; }
+    if (::mkdir(QFile::encodeName(dir + "/.tmp").constData(), 0700) != 0 && errno != EEXIST) { finish(State::Failed, "Cannot create the " + stage + " temporary folder."); return; }
+    struct stat tmpSt {};
+    if (::lstat(QFile::encodeName(dir + "/.tmp").constData(), &tmpSt) != 0 || !S_ISDIR(tmpSt.st_mode)) { finish(State::Failed, "The " + stage + " temporary folder is not a folder."); return; }
+    // G7: a previous OUTPUT.md is moved aside, so a crashing agent cannot resubmit stale or partial output.
+    if (QFileInfo::exists(dir + "/OUTPUT.md") || QFileInfo(dir + "/OUTPUT.md").isSymLink())
+        ::rename(QFile::encodeName(dir + "/OUTPUT.md").constData(), QFile::encodeName(dir + "/.previous-OUTPUT-" + QString::number(launches[stage] - 1) + ".md").constData());
     // Checked while the audit log is still readable, before the other folders are locked.
     if (const QString changed = autoLoaded.changed(); !changed.isEmpty()) {
         // An instruction or config file the CLIs load on their own changed during the run: it may carry another stage's material.
@@ -257,7 +281,15 @@ void MissingSymbolPipeline::launch(const QString &stage) {
     timedOut = false;
     process = new QProcess(this);
     process->setWorkingDirectory(dir); process->setProcessChannelMode(QProcess::MergedChannels); process->setProcessEnvironment(env);
-    connect(process, &QProcess::readyReadStandardOutput, this, [this] { const QByteArray b = process->readAllStandardOutput(); if (logFd >= 0 && ::write(logFd, b.constData(), size_t(b.size())) < 0) {} });
+    logBytes = 0;
+    connect(process, &QProcess::readyReadStandardOutput, this, [this] {
+        const QByteArray b = process->readAllStandardOutput();
+        if (logFd < 0 || logBytes > MaxAgentLog) return;
+        logBytes += b.size();
+        if (::write(logFd, b.constData(), size_t(b.size())) < 0) {}
+        if (logBytes > MaxAgentLog) { const QByteArray note = "\n[launcher] AGENT.log limit reached; later output is not kept\n"; if (::write(logFd, note.constData(), size_t(note.size())) < 0) {} }
+    });
+    process->setStandardInputFile(QProcess::nullDevice());
     connect(process, &QProcess::finished, this, &MissingSymbolPipeline::stageExited);
     connect(process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) stageExited(127, QProcess::CrashExit); });
     process->start(opts.supervisor, QStringList{StageSupervisor::Flag, executable} + args);
@@ -314,9 +346,11 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
     for (QDirIterator it(dir, QDir::Files | QDir::Hidden | QDir::NoSymLinks, QDirIterator::Subdirectories); it.hasNext();) {
         const QString path = it.next(), rel = path.mid(dir.size() + 1);
         // OUTPUT.md gets the full check with rule-level compliance reporting below.
-        if (rel.startsWith("inputs/") || rel.startsWith("trace/") || rel.startsWith(".tmp/") || rel == "OUTPUT.md") continue;
+        if (rel.startsWith("inputs/") || rel.startsWith("trace/") || rel == "OUTPUT.md") continue;
         if (const QString problem = scanFile(path); !problem.isEmpty()) reasons << rel + problem;
     }
+    for (QDirIterator it(dir, QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDirIterator::Subdirectories); it.hasNext();)
+        if (const QString sub = it.next(); !QFileInfo(sub).isReadable() || !QFileInfo(sub).isExecutable()) reasons << sub.mid(dir.size() + 1) + " is a folder the launcher cannot check";
     if (needsFirewall(activeStage)) reasons += ws.firewall(activeStage, names(delivered.value(activeStage)));
     // OUTPUT.md is checked here on every path (cancel, timeout, stray, bad verdict), not only when submitted.
     struct stat outSt {};
@@ -339,6 +373,7 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
     const QString output = dir + "/OUTPUT.md";
     struct stat st {};
     if (::lstat(QFile::encodeName(output).constData(), &st) != 0) { revise({QString("no OUTPUT.md was written (agent exit status %1)").arg(code)}); return; }
+    if (code != 0) { revise({QString("the agent ended with status %1; its OUTPUT.md may be partial").arg(code)}); return; }
     QString to = Next.value(activeStage);
     if (activeStage == "validate") {
         QFile f(output); f.open(QIODevice::ReadOnly);
@@ -455,8 +490,7 @@ void MissingSymbolPipeline::revise(const QStringList &reasons) {
         finish(State::Failed, "The " + activeStage + " output was rejected " + QString::number(MaxRevisions + 1) + " times: " + reasons.join("; "));
         return;
     }
-    QSaveFile f(ws.stageDir(activeStage) + "/REJECTED.txt");
-    if (!f.open(QIODevice::WriteOnly) || f.write((reasons.join('\n') + '\n').toUtf8()) < 0 || !f.commit()) { finish(State::Failed, "Cannot write REJECTED.txt."); return; }
+    if (!writeNewFile(ws.stageDir(activeStage), "REJECTED.txt", (reasons.join('\n') + '\n').toUtf8())) { finish(State::Failed, "Cannot write REJECTED.txt."); return; }
     if (record("REVISE", {{"stage", activeStage}, {"agent", agentId}, {"reasons", QJsonArray::fromStringList(reasons)}})) launch(activeStage);
 }
 void MissingSymbolPipeline::taint(const QString &reason, const QStringList &complianceRules) {

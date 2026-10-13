@@ -410,6 +410,30 @@ private slots:
         MissingSymbolPipeline p(ws, o); QSignalSpy done(&p, &MissingSymbolPipeline::finished); p.start();
         QCOMPARE(p.state(), State::Failed); QVERIFY(!QFileInfo::exists(fake + "/calls"));
     }
+    void hiddenAndUnreadableStageContentCounts_data() { QTest::addColumn<QString>("mode"); QTest::newRow(".tmp marker") << "hidden"; QTest::newRow("chmod 000 subfolder") << "lockedsub"; }
+    void hiddenAndUnreadableStageContentCounts() {
+        QFETCH(QString, mode);
+        if (mode == "lockedsub" && ::geteuid() == 0) QSKIP("root reads mode 000 folders");
+        plan("spec 1 " + mode + "\n");
+        const auto r = run(); QCOMPARE(r.state, State::Done);
+        QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1);
+    }
+    void launcherNeverWritesThroughALinkTheAgentLeft() {
+        QFile victim(fake + "/victim"); QVERIFY(victim.open(QIODevice::WriteOnly)); victim.write("keep"); victim.close();
+        plan("spec 1 linkbrief\n"); // rejected (R6), so the launcher writes REJECTED.txt and a new BRIEF.md in that folder
+        QCOMPARE(run().state, State::Done);
+        QCOMPARE(read(fake + "/victim"), QString("keep"));
+    }
+    void crashedAgentOutputIsNotSubmitted() {
+        plan("spec 1 crash\n");
+        const auto r = run(); QCOMPARE(r.state, State::Done);
+        QVERIFY(verdicts(r.ws).contains("REVISE")); QVERIFY(read(fake + "/calls").contains("spec 2"));
+        QVERIFY(QFileInfo::exists(r.ws.stageDir("spec") + "/.previous-OUTPUT-1.md"));
+    }
+    void agentStdinIsClosed() {
+        plan("research 1 stdin\n");
+        QCOMPARE(run().state, State::Done); QCOMPARE(read(fake + "/stdin").trimmed(), QString("eof"));
+    }
     void rejectedOutputIsRevisedThenFails() {
         plan("research 1 revise\n");
         auto r = run(); QCOMPARE(r.state, State::Done);
