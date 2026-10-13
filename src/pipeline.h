@@ -30,6 +30,8 @@ public:
         int stageTimeoutSeconds = 30 * 60;
         // Tests inject store failures and exceptions here; empty means HandoffStore::submit.
         std::function<HandoffStore::Result(const QString &, const QString &, const QString &, const QString &, const QString &, const QStringList &)> submit;
+        std::function<QString(const QString &, const QString &, QJsonObject)> appendEvent;  // default HandoffStore::appendEvent
+        std::function<bool(const QString &, const QString &)> complianceLog;               // default LauncherLog::writeChecked
     };
     static constexpr int MaxReplacements = 2, MaxRevisions = 2, MaxValidationRounds = 2, StopGraceSeconds = 10;
     // Default: rotate through the installed CLIs so neighbouring stages use different providers.
@@ -53,7 +55,8 @@ private:
     void handOff(const HandoffStore::Release &release);
     void revise(const QStringList &reasons);
     void taint(const QString &reason, const QStringList &complianceRules = {});
-    QString reportCompliance(const QStringList &rules); // log line, status, signal; returns the log text
+    // Audit record, log line, status and signal, before any other state change; false = run aborted (stage moved aside).
+    bool reportCompliance(const QStringList &rules, QString *report);
     bool discard(const QString &reason, const QStringList &complianceRules); // TAINT record + move aside; false if the run ended
     QString releasedText(const HandoffStore::Release &release) const;
     void finish(State state, const QString &message);
