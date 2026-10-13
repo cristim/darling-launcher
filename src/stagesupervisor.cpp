@@ -60,6 +60,11 @@ int sweep(int rounds) {
 int StageSupervisor::run(int argc, char **argv) {
     if (argc < 3) { fprintf(stderr, "usage: %s %s <agent> [args...]\n", argv[0], Flag); return 2; }
     if (prctl(PR_SET_CHILD_SUBREAPER, 1) != 0) { perror("stage-supervisor: PR_SET_CHILD_SUBREAPER"); return 2; }
+    // Stop with the launcher: its stage timeout and checks die with it.
+    if (prctl(PR_SET_PDEATHSIG, SIGTERM) != 0) { perror("stage-supervisor: PR_SET_PDEATHSIG"); return 2; }
+    if (const char *parent = getenv(ParentEnv); !parent || strtol(parent, nullptr, 10) != long(getppid())) {
+        fprintf(stderr, "stage-supervisor: the launcher that started this stage is gone\n"); return 2;
+    }
     struct sigaction sa {}; sa.sa_handler = onStop; sigemptyset(&sa.sa_mask);
     sigaction(SIGTERM, &sa, nullptr); sigaction(SIGINT, &sa, nullptr); sigaction(SIGHUP, &sa, nullptr);
     sa.sa_handler = onAlarm; sigaction(SIGALRM, &sa, nullptr);

@@ -243,7 +243,7 @@ void MissingSymbolPipeline::launch(const QString &stage) {
     if (const QString error = ws.lockFor(stage); !error.isEmpty()) { finish(State::Failed, error); return; }
     const QStringList args = stageArguments(agentCli, dir);
     QProcessEnvironment env = MissingSymbolPipeline::stageEnvironment(QProcessEnvironment::systemEnvironment(), agentCli);
-    env.insert("TMPDIR", dir + "/.tmp"); env.insert(Marker, agentId);
+    env.insert("TMPDIR", dir + "/.tmp"); env.insert(Marker, agentId); env.insert(StageSupervisor::ParentEnv, QString::number(::getpid()));
     if (agentCli == "opencode") env.insert("OPENCODE_CONFIG_CONTENT", OpencodePermissions);
     timedOut = false;
     process = new QProcess(this);
