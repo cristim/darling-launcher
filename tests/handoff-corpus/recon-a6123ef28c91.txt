@@ -1,0 +1,5 @@
+Agent: r
+Inputs: free text
+Absent: _FooBar, _BazQux
+Branch: feature/x  Commit: 3ddf2a330123456789abcdef0123456789abcdef
+Callers exist: yes; files: src/a.c, include/b.h

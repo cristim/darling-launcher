@@ -13,7 +13,7 @@ public:
     enum class State { Idle, Running, Done, Failed, Cancelled, TimedOut };
     Q_ENUM(State)
     struct Options {
-        QStringList agents;            // CLI per stage (research, spec, impl, validate)
+        QStringList agents;            // CLI per stage, in HandoffStore::Stages order (recon last)
         QString trace;                 // T0 trace written by the tracer
         QString symbol, library;       // shown to the agents as the task
         QString supervisor;            // executable understanding --stage-supervisor
@@ -32,13 +32,16 @@ public:
 signals:
     void statusChanged(const QString &message);
     void finished(MissingSymbolPipeline::State state, const QString &message);
+    // A handoff matched R1/R3/R5/R10: coord-compliance must be told (the stage is also tainted).
+    void complianceReport(const QString &stage, const QStringList &rules);
 private:
     void launch(const QString &stage);
     void stageExited(int code, QProcess::ExitStatus status);
     void submitted(const HandoffStore::Result &result);
     void handOff(const HandoffStore::Release &release);
     void revise(const QStringList &reasons);
-    void taint(const QString &reason);
+    void taint(const QString &reason, const QStringList &complianceRules = {});
+    QString releasedText(const HandoffStore::Release &release) const;
     void finish(State state, const QString &message);
     bool record(const QString &verdict, QJsonObject fields);
     QString deliver(const HandoffStore::Release &release, const QString &stage, bool asInput);
@@ -51,7 +54,7 @@ private:
     QHash<QString, int> launches, revisions, replacements;
     QHash<QString, QList<HandoffStore::Release>> delivered, inputs; // per stage: all deliveries / those named in Inputs
     int validationRounds = 0, logFd = -1, runLock = -1;
-    bool cancelling = false, timedOut = false;
+    bool cancelling = false, timedOut = false, reconciled = false;
     QProcess *process = nullptr;
     QTimer timeout;
     QFutureWatcher<HandoffStore::Result> watcher;

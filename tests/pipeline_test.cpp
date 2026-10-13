@@ -4,6 +4,8 @@
 //   "<stage> <launch|*> <mode>"
 #include "pipeline.h"
 #include "stagesupervisor.h"
+#include "log.h"
+#include <QJsonArray>
 #include <QApplication>
 #include <QDir>
 #include <QFile>
@@ -20,50 +22,7 @@
 #include <unistd.h>
 using State = MissingSymbolPipeline::State;
 namespace {
-const char *FakeAgent = R"SH(#!/bin/sh
-F=@FAKE@
-stage=$(basename "$PWD")
-n=$(cat "$F/count-$stage" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$F/count-$stage"
-echo "$(basename "$0") $stage $n" >> "$F/calls"
-mode=$(awk -v s="$stage" -v n="$n" '$1==s && ($2==n || $2=="*") {print $3; exit}' "$F/plan")
-[ -n "$mode" ] || mode=ok
-out() {
-  case $stage in
-    research) printf 'Facts: _CFFoo called 3 times, first at position 1 (attempt %s).\nSources: nm -u of the fixture app\n' "$n" ;;
-    spec) printf 'Requirement 1 (rung 3): _CFFoo returns NULL for an empty key (attempt %s).\nSources: public CFFoo documentation\n' "$n" ;;
-    impl) printf 'Implemented _CFFoo from the specification with a fixture test (attempt %s).\nSources: specification\n' "$n" ;;
-    validate) printf 'VERDICT: PASS\nThe guest behaviour matches the specification (attempt %s).\n' "$n" ;;
-  esac > OUTPUT.md
-}
-case $mode in
-  ok) out ;;
-  taint) printf 'Notes: the function calls sub_1A2B first.\n' > OUTPUT.md ;;
-  revise) printf 'Loaded from /System/Library/Frameworks/Foo.framework (attempt %s)\n' "$n" > OUTPUT.md ;;
-  selftaint) out; echo 'I opened a disassembly listing by accident.' > TAINTED.md ;;
-  logtaint) out; echo 'Contents of (__TEXT,__text) section' ;;
-  mismatch) printf 'VERDICT: MISMATCH\nThe guest sees an error for an empty key (attempt %s).\n' "$n" > OUTPUT.md ;;
-  silent) exit 3 ;;
-  symlink) ln -s ../research/trace/T0.jsonl OUTPUT.md ;;
-  fifo) mkfifo OUTPUT.md ;;
-  hardlink) ln "$F/outside.md" OUTPUT.md ;;
-  chmod) chmod 700 ../research 2>/dev/null; ls ../research > /dev/null 2>&1; chmod 000 ../research 2>/dev/null; out ;;
-  sleep) sleep 600 ;;
-  chmod-then-sleep) chmod 700 ../research 2>/dev/null; chmod 000 ../research 2>/dev/null; sleep 600 ;;
-  stubborn) trap '' TERM; sleep 600 ;;
-  slow) sleep 2; out ;;
-  biglog) head -c 9000000 /dev/zero | tr '\0' 'a'; echo; echo '{"msg": "x\\nContents of (__TEXT,__text) section"}'; out ;;
-  bigclean) head -c 9000000 /dev/zero | tr '\0' 'a'; echo; out ;;
-  escape) F="$F" setsid sh -c 'echo $$ > "$F/bgpid"; cd /; exec sleep 600' > /dev/null 2>&1 < /dev/null & sleep 1; out ;;
-  checkbg) if kill -0 "$(cat "$F/bgpid")" 2>/dev/null; then echo alive > "$F/bg-state"; else echo dead > "$F/bg-state"; fi; out ;;
-  probe)
-    for p in ../research ../research/trace/T0.jsonl ../handoff ../handoff/01-research-to-spec.md ../spec ../spec/OUTPUT.md ..; do
-      if ls "$p" > /dev/null 2>&1 || cat "$p" > /dev/null 2>&1; then echo "READ $p"; else echo "DENIED $p"; fi
-    done > "$F/probe-$(basename "$0")"
-    cp -r ../research "$F/stolen-$(basename "$0")" 2> /dev/null && echo COPIED >> "$F/probe-$(basename "$0")"
-    find . -type f | sort > "$F/listing-$(basename "$0")"
-    out ;;
-esac
-)SH";
+const char *FakeAgentScript = TEST_SOURCE_DIR "/tests/fake-agent.sh"; // shell script; @FAKE@ is replaced per test
 }
 class PipelineTest : public QObject {
     Q_OBJECT
@@ -78,7 +37,7 @@ class PipelineTest : public QObject {
     }
     QStringList verdicts(const PipelineWorkspace &ws) const { QStringList v; for (const auto &r : audit(ws)) v << r.value("verdict").toString(); return v; }
     struct Run { State state; QString message; PipelineWorkspace ws; };
-    Run run(const QStringList &agents = {"claude", "codex", "opencode", "claude"}, int timeoutSeconds = 60, std::function<void(MissingSymbolPipeline &)> during = {}) {
+    Run run(const QStringList &agents = {"claude", "codex", "opencode", "claude", "codex"}, int timeoutSeconds = 60, std::function<void(MissingSymbolPipeline &)> during = {}) {
         QString error; const auto ws = PipelineWorkspace::create(base, &error);
         MissingSymbolPipeline::Options o; o.agents = agents; o.trace = fake + "/trace.jsonl"; o.symbol = "_CFFoo"; o.library = "CoreFoundation"; o.stageTimeoutSeconds = timeoutSeconds;
         MissingSymbolPipeline p(ws, o);
@@ -90,14 +49,16 @@ class PipelineTest : public QObject {
         qInfo().noquote() << "pipeline finished:" << message;
         return {p.state(), message, p.workspace()};
     }
+    QTemporaryDir home;
 private slots:
-    void initTestCase() { qRegisterMetaType<MissingSymbolPipeline::State>(); }
+    void initTestCase() { qRegisterMetaType<MissingSymbolPipeline::State>(); QVERIFY(home.isValid()); qputenv("HOME", home.path().toUtf8()); }
     void init() {
         temp = new QTemporaryDir; QVERIFY(temp->isValid());
         fake = temp->path() + "/fake"; bin = temp->path() + "/bin"; base = temp->path() + "/missing-symbol";
         QDir().mkpath(fake); QDir().mkpath(bin);
         for (const QString &name : {"claude", "codex", "opencode"}) {
-            QFile f(bin + '/' + name); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(QByteArray(FakeAgent).replace("@FAKE@", fake.toUtf8())); f.close();
+            QFile script(FakeAgentScript); QVERIFY(script.open(QIODevice::ReadOnly));
+            QFile f(bin + '/' + name); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(script.readAll().replace("@FAKE@", fake.toUtf8())); f.close();
             QVERIFY(f.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         }
         QFile trace(fake + "/trace.jsonl"); QVERIFY(trace.open(QIODevice::WriteOnly)); trace.write("{\"symbol\": \"_CFFoo\", \"image\": \"CoreFoundation\", \"regs\": [\"0x0\"]}\n");
@@ -127,7 +88,7 @@ private slots:
     void implementationNeverSeesResearchMaterial() {
         QFETCH(QString, cli);
         plan("impl 1 probe\n");
-        const auto r = run({"claude", "codex", cli, "claude"});
+        const auto r = run({"claude", "codex", cli, "claude", "codex"});
         const QString listing = read(fake + "/listing-" + cli);
         QVERIFY2(listing.contains("./inputs/02-spec-to-impl.md") && !listing.contains("research-to-spec") && !listing.contains("T0"), qPrintable(listing));
         if (::geteuid() != 0) {
@@ -163,6 +124,43 @@ private slots:
         const auto r = run(); QCOMPARE(r.state, State::Done);
         QVERIFY(!QFileInfo::exists(r.ws.root + "/research.tainted"));
         QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1); // marker in a JSON string after 9 MB
+    }
+    void reconcilerAnswersImplementationOnly() {
+        plan("spec 1 reconcile\n");
+        const auto r = run(); QCOMPARE(r.state, State::Done);
+        QCOMPARE(read(fake + "/calls"), QString("claude research 1\ncodex spec 1\ncodex recon 1\nopencode impl 1\nclaude validate 1\n"));
+        QVERIFY(QFileInfo::exists(r.ws.stageDir("recon") + "/inputs/02-spec-to-impl.md"));
+        QCOMPARE(QDir(r.ws.stageDir("recon") + "/inputs").entryList(QDir::Files), QStringList{"02-spec-to-impl.md"}); // nothing from research
+        QVERIFY(QFileInfo::exists(r.ws.stageDir("impl") + "/inputs/03-recon-to-impl.md"));
+        QVERIFY(!QFileInfo::exists(r.ws.stageDir("validate") + "/inputs/03-recon-to-impl.md")); // never reused beyond impl
+        bool flagged = false;
+        for (const auto &rec : audit(r.ws)) if (rec.value("from") == "recon") flagged = rec.value("stage_tainted_by_reading").toBool() && rec.value("reuse") == "never";
+        QVERIFY(flagged);
+        QVERIFY(HandoffStore::verifyChain(r.ws.root).summary.endsWith("recon_releases=1"));
+        const QString python = QStandardPaths::findExecutable("python3");
+        if (python.isEmpty()) QSKIP("python3 not found: the python oracle did NOT verify the chain with a recon release");
+        QCOMPARE(QProcess::execute(python, {TEST_SOURCE_DIR "/tests/handoff-oracle/check_handoff.py", "--verify-chain", "--run-root", r.ws.root}), 0);
+    }
+    void badReconAnswerIsRevised() {
+        plan("spec 1 reconcile\nrecon 1 badrecon\n");
+        const auto r = run(); QCOMPARE(r.state, State::Done);
+        QVERIFY(read(r.ws.stageDir("recon") + "/REJECTED.txt").contains("[F1]"));
+    }
+    void complianceHitIsReportedNotDropped() {
+        plan("spec 1 r10\n");
+        QString root; QStringList reported; QString status;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) {
+            connect(&p, &MissingSymbolPipeline::complianceReport, &p, [&](const QString &stage, const QStringList &rules) { reported << stage + ':' + rules.join(','); });
+            connect(&p, &MissingSymbolPipeline::statusChanged, &p, [&](const QString &m) { if (m.contains("REPORT-TO-COMPLIANCE")) status = m; });
+        });
+        QCOMPARE(r.state, State::Done);
+        QCOMPARE(reported, QStringList{"spec:R10"});
+        QVERIFY2(status.contains("REPORT-TO-COMPLIANCE: rule R10"), qPrintable(status));
+        const auto recs = audit(r.ws);
+        QVERIFY(std::any_of(recs.begin(), recs.end(), [](const QJsonObject &o) { return o.value("verdict") == "REJECT" && o.value("report_to_compliance").toBool() && o.value("rules").toArray().contains("R10"); }));
+        QVERIFY(std::any_of(recs.begin(), recs.end(), [](const QJsonObject &o) { return o.value("verdict") == "TAINT" && o.value("compliance_rules").toArray().contains("R10"); }));
+        QVERIFY(HandoffStore::verifyChain(r.ws.root).summary.contains("compliance_reports=2"));
+        QVERIFY(read(LauncherLog::path()).contains("REPORT-TO-COMPLIANCE: rule R10"));
     }
     void rejectedOutputIsRevisedThenFails() {
         plan("research 1 revise\n");
@@ -203,7 +201,7 @@ private slots:
     }
     void cancelStopsTheAgent() {
         plan("research 1 sleep\n");
-        const auto r = run({"claude", "codex", "opencode", "claude"}, 60, [](MissingSymbolPipeline &p) { QTimer::singleShot(1500, &p, &MissingSymbolPipeline::cancel); });
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [](MissingSymbolPipeline &p) { QTimer::singleShot(1500, &p, &MissingSymbolPipeline::cancel); });
         QCOMPARE(r.state, State::Cancelled); QCOMPARE(verdicts(r.ws).last(), QString("CANCEL"));
         QCOMPARE(PipelineWorkspace::processesUsing(r.ws.root), QList<qint64>());
         QVERIFY(QFileInfo(r.ws.root).permissions().testFlag(QFile::ReadOwner)); // unlocked
@@ -211,14 +209,14 @@ private slots:
     void cancelStopsAnAgentThatIgnoresSigterm() {
         plan("research 1 stubborn\n");
         QElapsedTimer timer; timer.start();
-        const auto r = run({"claude", "codex", "opencode", "claude"}, 60, [](MissingSymbolPipeline &p) { QTimer::singleShot(1000, &p, &MissingSymbolPipeline::cancel); });
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [](MissingSymbolPipeline &p) { QTimer::singleShot(1000, &p, &MissingSymbolPipeline::cancel); });
         QCOMPARE(r.state, State::Cancelled); QVERIFY(timer.elapsed() < MissingSymbolPipeline::StopGraceSeconds * 1000);
         QCOMPARE(PipelineWorkspace::processesUsing(r.ws.root), QList<qint64>());
     }
     void unmarkedProcessInTheRunFolderStopsTheRunWithoutBeingKilled() {
         plan("research 1 slow\n");
         QProcess viewer;
-        const auto r = run({"claude", "codex", "opencode", "claude"}, 60, [&viewer](MissingSymbolPipeline &p) {
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&viewer](MissingSymbolPipeline &p) {
             viewer.setWorkingDirectory(p.workspace().stageDir("research")); viewer.start("sleep", {"60"}); viewer.waitForStarted();
         });
         QCOMPARE(r.state, State::Failed); QVERIFY2(r.message.contains(QString::number(viewer.processId()) + " (") && r.message.contains("sleep 60)"), qPrintable(r.message));
@@ -228,7 +226,7 @@ private slots:
     }
     void timeoutStopsTheAgent() {
         plan("spec 1 chmod-then-sleep\n");
-        const auto r = run({"claude", "codex", "opencode", "claude"}, 2);
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 2);
         QCOMPARE(r.state, State::TimedOut); QCOMPARE(verdicts(r.ws).last(), QString("TIMEOUT"));
         if (::geteuid() != 0) { QVERIFY(verdicts(r.ws).contains("TAINT")); QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1); } // tampering is not hidden by timing out
         QCOMPARE(PipelineWorkspace::processesUsing(r.ws.root), QList<qint64>());
@@ -239,7 +237,7 @@ private slots:
     }
     void editedAuditLogStopsTheRun() {
         plan("spec 1 sleep\n");
-        const auto r = run({"claude", "codex", "opencode", "claude"}, 3, [](MissingSymbolPipeline &p) {
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 3, [](MissingSymbolPipeline &p) {
             QTimer::singleShot(1000, &p, [&p] {
                 const QString root = p.workspace().root; ::chmod(root.toLocal8Bit().constData(), 0700); ::chmod((root + "/handoff").toLocal8Bit().constData(), 0700);
                 QFile a(root + "/handoff/AUDIT.jsonl"); a.open(QIODevice::Append); a.write("{\"verdict\": \"FORGED\"}\n"); a.close();

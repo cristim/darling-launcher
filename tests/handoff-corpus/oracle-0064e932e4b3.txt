@@ -1,0 +1,1 @@
+our build: main at 0x401000 and pc 0x401234 in our own test binary

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test helper: print the reference oracle's check_text() hits for every *.txt file in a directory as
+"""Test helper: print the reference oracle's check_text() hits (plus recon_format() for recon-* files) for every *.txt file in a directory as
 JSON {file: [[line, rule, description], ...]}. Used only by launcher-handoff-tests when python3 exists."""
 import json
 import os
@@ -13,5 +13,9 @@ out = {}
 for name in sorted(os.listdir(corpus)):
     if name.endswith(".txt"):
         with open(os.path.join(corpus, name), encoding="utf-8", newline="") as f:
-            out[name] = [list(h) for h in check_handoff.check_text(f.read(), "research", "spec")]
+            text = f.read()
+        hits = check_handoff.check_text(text, "research", "spec")
+        if "recon-" in name:
+            hits = sorted(hits + check_handoff.recon_format(text))
+        out[name] = [list(h) for h in hits]
 json.dump(out, sys.stdout)

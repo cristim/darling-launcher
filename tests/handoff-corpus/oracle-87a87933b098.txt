@@ -1,0 +1,4 @@
+clean spec
+Sources: docs
+
+note 1

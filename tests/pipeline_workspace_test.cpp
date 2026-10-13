@@ -96,7 +96,7 @@ private slots:
         QCOMPARE(ws.taint("spec", "spec-claude-1-abcd"), QString());
         QVERIFY(QFileInfo::exists(ws.root + "/spec.tainted/spec-claude-1-abcd/OUTPUT.md")); QVERIFY(QDir(ws.stageDir("spec")).isEmpty());
         HandoffStore::appendEvent(ws.root, "TAINT", {{"report_to_compliance", true}});
-        QVERIFY(HandoffStore::verifyChain(ws.root).summary.endsWith("tainted_stages=1 compliance_reports=1"));
+        QVERIFY(HandoffStore::verifyChain(ws.root).summary.endsWith("tainted_stages=1 compliance_reports=1 recon_releases=0"));
     }
     void findsProcessesInTheRunFolder() {
         const auto ws = make(); QProcess p; p.setWorkingDirectory(ws.stageDir("impl")); p.start("sleep", {"30"}); QVERIFY(p.waitForStarted());
