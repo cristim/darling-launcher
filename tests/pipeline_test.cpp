@@ -48,6 +48,8 @@ class PipelineTest : public QObject {
         if (during) during(p);
         if (done.isEmpty()) done.wait(120000);
         const QString message = done.isEmpty() ? QString("no finish") : done[0][1].toString();
+        QCoreApplication::processEvents(); QCoreApplication::processEvents();
+        ::chmod(p.workspace().root.toLocal8Bit().constData(), 0700); // runs end closed (000); the test inspects it like a user would
         qInfo().noquote() << "pipeline finished:" << message;
         return {p.state(), message, p.workspace()};
     }
@@ -329,6 +331,18 @@ private slots:
             });
         });
         QCOMPARE(r.state, State::Done); QVERIFY(running); QVERIFY(stillThere);
+    }
+    // Finished runs are closed and the base folder cannot be listed, so a later run's agent cannot reach them.
+    void laterRunsCannotReadEarlierRuns() {
+        const auto first = run();
+        QCOMPARE(first.state, State::Done);
+        QFile prev(fake + "/prev-root"); QVERIFY(prev.open(QIODevice::WriteOnly)); prev.write(first.ws.root.toUtf8()); prev.close();
+        ::chmod(first.ws.root.toLocal8Bit().constData(), 0); // as finish() left it
+        QFile::remove(fake + "/count-impl"); plan("impl 1 crossrun\n");
+        const auto second = run();
+        QCOMPARE(second.state, State::Done);
+        if (::geteuid() == 0) QSKIP("root ignores modes");
+        QCOMPARE(read(fake + "/crossrun").trimmed(), QString("DENIED list\nDENIED read"));
     }
     void rejectedOutputIsRevisedThenFails() {
         plan("research 1 revise\n");

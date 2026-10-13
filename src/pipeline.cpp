@@ -399,6 +399,8 @@ void MissingSymbolPipeline::finish(State state, const QString &message) {
     if (logFd >= 0) { ::close(logFd); logFd = -1; }
     bool tampered = false; ws.unlock(&tampered); // no-op unless a launch failed after locking
     if (state == State::Failed) HandoffStore::appendEvent(ws.root, "FAILED", {{"stage", activeStage}, {"reason", message}});
-    emit statusChanged(message);
+    // Closed once the current call chain (which may still move a stage aside) has returned.
+    QTimer::singleShot(0, this, [this] { if (const QString error = ws.close(); !error.isEmpty()) emit statusChanged(error); });
+    emit statusChanged(message + " The run folder is closed (mode 000) when the run ends: chmod 700 " + ws.root + " to inspect it.");
     emit finished(state, message);
 }
