@@ -213,47 +213,57 @@ struct JsonScan {
         if (at() == 'e' || at() == 'E') { const qsizetype e = i++; if (at() == '+' || at() == '-') ++i; if (digits()) fraction = true; else i = e; }
         return fraction || intDigits <= 4300; // Python refuses int() of more than 4300 digits
     }
-    bool value(int depth, bool &trace) {
-        trace = false;
-        if (depth > 1000) return false; // Python raises RecursionError somewhere near here; both count a failure
-        const QChar c = at();
-        if (c == '{') {
-            ++i; ws(); QHash<QString, bool> children; QSet<QString> keys;
-            if (at() == '}') { ++i; return true; }
-            for (;;) {
-                QString key; bool nested = false;
-                if (!string(&key)) return false;
-                keys.insert(key.toLower()); ws();
-                if (at() != ':') return false;
-                ++i; ws();
-                if (!value(depth + 1, nested)) return false;
-                children.insert(key, nested); ws();
-                if (at() == '}') { ++i; break; }
-                if (at() != ',') return false;
-                ++i; ws();
-            }
-            for (bool nested : children) trace = trace || nested;
-            static const QSet<QString> symbolKeys{"symbol", "sym", "name"}, strongArgs{"regs", "arg_regs", "fp_regs", "words"};
-            if (keys.intersects(symbolKeys)) {
-                trace = trace || keys.intersects(strongArgs) || (keys.contains("args") && (keys.contains("symbol") || keys.contains("sym")));
-                for (const QString &k : keys) trace = trace || TRACE_REG_KEY.match(k).hasMatch();
-            }
-            return true;
+    // One value, with an explicit stack instead of recursion: python's json parses any depth, so must this.
+    struct Frame { bool object; QSet<QString> keys; QHash<QString, bool> children; QString pendingKey; bool trace = false; };
+    static bool looksLikeTrace(const Frame &f) {
+        bool trace = false;
+        for (bool nested : f.children) trace = trace || nested;
+        static const QSet<QString> symbolKeys{"symbol", "sym", "name"}, strongArgs{"regs", "arg_regs", "fp_regs", "words"};
+        if (f.keys.intersects(symbolKeys)) {
+            trace = trace || f.keys.intersects(strongArgs) || (f.keys.contains("args") && (f.keys.contains("symbol") || f.keys.contains("sym")));
+            for (const QString &k : f.keys) trace = trace || TRACE_REG_KEY.match(k).hasMatch();
         }
-        if (c == '[') {
+        return trace;
+    }
+    bool key(Frame &f) {
+        QString k;
+        if (!string(&k)) return false;
+        f.keys.insert(k.toLower()); f.pendingKey = k; ws();
+        if (at() != ':') return false;
+        ++i; ws();
+        return true;
+    }
+    bool value(bool &trace) {
+        QList<Frame> stack;
+        bool last = false, haveValue = false; // haveValue: a value just ended and belongs to the top frame
+        auto close = [&] { const Frame f = stack.takeLast(); last = f.object ? looksLikeTrace(f) : f.trace; haveValue = true; };
+        for (;;) {
+            if (!haveValue) {
+                const QChar c = at();
+                if (c == '{') {
+                    ++i; ws(); stack.append(Frame{true, {}, {}, {}, false});
+                    if (at() == '}') { ++i; close(); } else if (!key(stack.last())) return false;
+                    continue;
+                }
+                if (c == '[') {
+                    ++i; ws(); stack.append(Frame{false, {}, {}, {}, false});
+                    if (at() == ']') { ++i; close(); }
+                    continue;
+                }
+                if (c == '"' ? !string(nullptr) : !(lit("true") || lit("false") || lit("null") || lit("NaN") || number())) return false;
+                last = false; haveValue = true;
+                continue;
+            }
+            if (stack.isEmpty()) { trace = last; return true; }
+            Frame &f = stack.last();
+            if (f.object) f.children.insert(f.pendingKey, last); else f.trace = f.trace || last;
+            haveValue = false; ws();
+            const QChar end = f.object ? '}' : ']';
+            if (at() == end) { ++i; close(); continue; }
+            if (at() != ',') return false;
             ++i; ws();
-            if (at() == ']') { ++i; return true; }
-            for (;;) {
-                bool nested = false;
-                if (!value(depth + 1, nested)) return false;
-                trace = trace || nested; ws();
-                if (at() == ']') { ++i; return true; }
-                if (at() != ',') return false;
-                ++i; ws();
-            }
+            if (f.object && !key(f)) return false;
         }
-        if (c == '"') return string(nullptr);
-        return lit("true") || lit("false") || lit("null") || lit("NaN") || number();
     }
 };
 QList<int> traceHits(const QString &text) {
@@ -261,7 +271,7 @@ QList<int> traceHits(const QString &text) {
     qsizetype i = text.indexOf('{'), counted = 0;
     while (i != -1) {
         JsonScan scan{text, i}; bool trace = false;
-        if (!scan.value(0, trace)) {
+        if (!scan.value(trace)) {
             if (++fails > HandoffCheck::MaxJsonFailures) return hits << 0;
             i = text.indexOf('{', i + 1); continue;
         }
