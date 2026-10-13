@@ -74,7 +74,7 @@ private slots:
             QFile f(bin + '/' + name); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(script.readAll().replace("@FAKE@", fake.toUtf8())); f.close();
             QVERIFY(f.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         }
-        QFile trace(fake + "/trace.jsonl"); QVERIFY(trace.open(QIODevice::WriteOnly)); trace.write("{\"symbol\": \"_CFFoo\", \"image\": \"CoreFoundation\", \"regs\": [\"0x0\"]}\n");
+        QFile trace(fake + "/trace.jsonl"); QVERIFY(trace.open(QIODevice::WriteOnly)); trace.write("{\"symbol\": \"_CFFoo\", \"library\": \"CoreFoundation\", \"regs\": [\"0x0\"]}\n");
         QFile outside(fake + "/outside.md"); QVERIFY(outside.open(QIODevice::WriteOnly)); outside.write("outside\n");
         plan("");
         oldPath = qEnvironmentVariable("PATH"); qputenv("PATH", (bin + ":/usr/bin:/bin").toUtf8());
