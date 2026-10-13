@@ -160,6 +160,12 @@ add("json-int-4300-digits", '{"symbol": "_f", "regs": [' + "1" * 4300 + ']}\n', 
 add("json-rescan-after-failure", '{bad {"symbol": "_f", "regs": []}\n')
 add("json-continue-after-success", '{"ok": {"x": 1}} {"symbol": "_f", "regs": []}\n')
 add("json-nested-200", "[" * 200 + '{"symbol": "_f", "regs": []}' + "]" * 200 + "\n")
+# QA G1: python's json parses any depth; a trace object with deep padding must still hit R7
+for depth in (1001, 5000, 20000):
+    long = "E4" if depth * 2 > 4096 else ""
+    add(f"json-padded-{depth}", '{"symbol": "_CFFoo", "regs": ["0x1"], "j": ' + "[" * depth + "]" * depth + "}\n", long)
+    add(f"json-wrapped-{depth}", "[" * depth + '{"symbol": "_f", "regs": []}' + "]" * depth + "\n", long)
+add("json-padded-multiline-1001", '{"symbol": "_CFFoo",\n"regs": ["0x1"],\n"j": ' + "[\n" * 1001 + "]\n" * 1001 + "}\n")
 add("json-nan-infinity", '{"symbol": "_f", "regs": [NaN, -Infinity, 1.5e10, -0.0]}\n')
 add("json-trailing-comma", '{"symbol": "_f", "regs": [1,]}\n')
 add("json-leading-zero", '{"symbol": "_f", "regs": [01]}\n')
