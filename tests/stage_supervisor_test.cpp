@@ -17,6 +17,7 @@ class StageSupervisorTest : public QObject {
     }
     static QProcess *supervise(const QString &script, QObject *parent) {
         auto *p = new QProcess(parent); p->setProcessChannelMode(QProcess::MergedChannels);
+        auto env = QProcessEnvironment::systemEnvironment(); env.insert(StageSupervisor::ParentEnv, QString::number(QCoreApplication::applicationPid())); p->setProcessEnvironment(env);
         p->start(QCoreApplication::applicationFilePath(), {StageSupervisor::Flag, "/bin/sh", "-c", script});
         return p;
     }
@@ -32,6 +33,21 @@ private slots:
         QVERIFY(p->waitForFinished(15000)); QCOMPARE(p->exitCode(), 0);
         QVERIFY(QFile::exists(pid)); QVERIFY(!alive(pid));
         QVERIFY(p->readAll().contains("stopped 1 process(es)"));
+    }
+    // The launcher dies: the supervisor gets SIGTERM and takes the agent with it.
+    void agentStopsWhenTheLauncherDies() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); const QString pid = dir.path() + "/pid";
+        const QString self = QCoreApplication::applicationFilePath();
+        // a short-lived "launcher" shell starts the supervisor and exits
+        QProcess launcher; launcher.start("/bin/sh", {"-c", QString("%1=$$ \"%2\" %3 /bin/sh -c 'echo $$ > %4; exec sleep 600' & sleep 1").arg(StageSupervisor::ParentEnv, self, StageSupervisor::Flag, pid)});
+        QVERIFY(launcher.waitForFinished(10000));
+        QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(pid), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!alive(pid), 10000);
+    }
+    void refusesToStartWithoutItsLauncher() {
+        QProcess p; auto env = QProcessEnvironment::systemEnvironment(); env.insert(StageSupervisor::ParentEnv, "1"); p.setProcessEnvironment(env);
+        p.start(QCoreApplication::applicationFilePath(), {StageSupervisor::Flag, "/bin/true"});
+        QVERIFY(p.waitForFinished(5000)); QCOMPARE(p.exitCode(), 2);
     }
     void sigtermStopsAnAgentThatIgnoresIt() {
         QTemporaryDir dir; QVERIFY(dir.isValid()); const QString pid = dir.path() + "/pid";

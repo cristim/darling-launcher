@@ -113,6 +113,14 @@ private slots:
         p.kill(); p.waitForFinished();
         QVERIFY(!PipelineWorkspace::processesUsing(ws.root).contains(p.processId()));
     }
+    void recoveryLeavesARunLockedWhileSomethingUsesIt() {
+        PipelineWorkspace ws = make(); QCOMPARE(ws.lockFor("impl"), QString());
+        QProcess agent; agent.setWorkingDirectory(ws.stageDir("impl")); agent.start("sleep", {"30"}); QVERIFY(agent.waitForStarted());
+        QCOMPARE(PipelineWorkspace::recover(base), QStringList());
+        QCOMPARE(mode(ws.root), 0100u); QCOMPARE(mode(ws.stageDir("research")), 0u);
+        agent.kill(); agent.waitForFinished();
+        QCOMPARE(PipelineWorkspace::recover(base), QStringList{ws.root});
+    }
     void recoversRunsLeftLocked() {
         PipelineWorkspace ws = make(); QCOMPARE(ws.lockFor("spec"), QString());
         PipelineWorkspace live = make(); QCOMPARE(live.lockFor("spec"), QString());

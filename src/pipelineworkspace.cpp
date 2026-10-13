@@ -278,6 +278,8 @@ QStringList PipelineWorkspace::recover(const QString &base) {
         const int lock = probe.holdRunLock(); // held by a live run, possibly in another launcher process
         if (lock < 0) continue;
         PipelineWorkspace ws; ws.root = run.filePath();
+        // A stage agent of a crashed launcher may still be running: leave that run locked.
+        if (!processesUsing(ws.root).isEmpty()) { ::close(lock); continue; }
         const int rootFd = openPath(ws.root);
         if (rootFd < 0) continue;
         ::fchmodat(rootFd, ".", 0700, 0);
