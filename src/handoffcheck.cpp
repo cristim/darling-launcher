@@ -425,6 +425,9 @@ QList<HandoffCheck::Hit> HandoffCheck::checkTextStrict(const QString &input) {
     const QString text = normalize(input);
     if (const QString folded = foldLookalikes(text); folded != text) addNew("E1", "text with look-alike letters folded to Latin", checkText(folded), 0);
     if (const QString decoded = decodeEscapes(text); decoded != text) addNew("E3", "text with escapes decoded", checkText(decoded), 0);
+    // NUL and undecodable bytes (U+FFFD after decoding) are rejected as R9 by the store, but must not split a
+    // compliance marker into a mere revise.
+    if (QString cleaned = text; cleaned.remove(QChar(0)).remove(QChar(0xfffd)) != text) addNew("E5", "text with NUL or undecodable bytes removed", checkText(cleaned), 0);
     for (const auto &[line, decoded] : base64Texts(text)) addNew("E2", "base64-decoded blob", checkText(decoded), line);
     // PCRE reports a hit-limit error as "no match"; very long lines would otherwise pass unchecked.
     const QStringList lines = text.split('\n');
@@ -497,8 +500,8 @@ QList<HandoffCheck::Hit> HandoffCheck::reconFormat(const QString &text) {
 std::optional<QString> HandoffCheck::parseHeader(const QString &text, const QString &label) {
     const RX header = rx(R"(^\s*(?:[*_-]\s*)?\**)" + label + R"(:\**\s*(.*)$)", true);
     for (const QString &line : text.split('\n')) {
-        const auto m = header.match(line);
-        if (m.hasMatch()) return pyStrip(m.captured(1));
+        const auto m = header.match(caselessView(line)); // same length as line, so offsets apply to it
+        if (m.hasMatch()) return pyStrip(line.mid(m.capturedStart(1), m.capturedLength(1)));
     }
     return std::nullopt;
 }
