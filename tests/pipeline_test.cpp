@@ -40,6 +40,7 @@ class PipelineTest : public QObject {
     struct Run { State state; QString message; PipelineWorkspace ws; };
     Run run(const QStringList &agents = {"claude", "codex", "opencode", "claude", "codex"}, int timeoutSeconds = 60, std::function<void(MissingSymbolPipeline &)> during = {}, std::function<void(MissingSymbolPipeline::Options &)> configure = {}) {
         QString error; const auto ws = PipelineWorkspace::create(base, &error);
+        if (prepare) { prepare(ws); prepare = {}; }
         MissingSymbolPipeline::Options o; o.agents = agents; o.trace = fake + "/trace.jsonl"; o.symbol = "_CFFoo"; o.library = "CoreFoundation"; o.stageTimeoutSeconds = timeoutSeconds; if (configure) configure(o);
         MissingSymbolPipeline p(ws, o);
         QSignalSpy done(&p, &MissingSymbolPipeline::finished);
@@ -51,6 +52,7 @@ class PipelineTest : public QObject {
         return {p.state(), message, p.workspace()};
     }
     QTemporaryDir home;
+    std::function<void(const PipelineWorkspace &)> prepare; // runs once on the next run's fresh workspace
     void watchReports(MissingSymbolPipeline &p, QStringList *reported) {
         connect(&p, &MissingSymbolPipeline::complianceReport, &p, [reported](const QString &stage, const QStringList &rules) { *reported << stage + ':' + rules.join(','); });
     }
@@ -252,6 +254,9 @@ private slots:
         };
         const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) { watchReports(p, &reported); }, [&](MissingSymbolPipeline::Options &o) { o.submit = failing; });
         QCOMPARE(r.state, State::Failed); QVERIFY(r.message.contains("injected store failure")); QCOMPARE(reported, QStringList{"spec:R10"});
+        // D2-1: the stage is moved aside and counted
+        QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1);
+        QVERIFY(HandoffStore::verifyChain(r.ws.root).summary.contains("tainted_stages=1 ")); QVERIFY(taintedWith(r.ws, "spec", "R10"));
         QVERIFY(read(LauncherLog::path()).contains("REPORT-TO-COMPLIANCE: rule R10"));
     }
     void exceptionInTheCheckFailsTheRun() {
@@ -262,6 +267,32 @@ private slots:
         const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, {}, [&](MissingSymbolPipeline::Options &o) { o.submit = throwing; });
         QCOMPARE(r.state, State::Failed); QVERIFY(r.message.contains("internal error: injected"));
         QVERIFY(!QFileInfo::exists(r.ws.root + "/handoff/02-spec-to-impl.md")); QVERIFY(!read(fake + "/calls").contains(" impl "));
+    }
+    // D2-2: an exception in the check keeps the rule ids found before submitting.
+    void exceptionAfterAComplianceHitKeepsTheRuleIds() {
+        plan("spec 1 r10\n"); QStringList reported;
+        const auto throwing = [](const QString &root, const QString &from, const QString &to, const QString &file, const QString &agent, const QStringList &in) -> HandoffStore::Result {
+            if (from == "spec") throw std::runtime_error("injected");
+            return HandoffStore::submit(root, from, to, file, agent, in);
+        };
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) { watchReports(p, &reported); }, [&](MissingSymbolPipeline::Options &o) { o.submit = throwing; });
+        QCOMPARE(r.state, State::Failed); QCOMPARE(reported, QStringList{"spec:R10"}); QVERIFY(taintedWith(r.ws, "spec", "R10"));
+        QVERIFY(verdicts(r.ws).contains("COMPLIANCE_REPORT"));
+    }
+    // D2-3: when the stage cannot be moved aside, the message says so (and nothing is released).
+    void reportingFailureSaysWhenTheMoveFailed() {
+        plan("spec 1 r10\n");
+        prepare = [](const PipelineWorkspace &ws) { QFile block(ws.root + "/spec.tainted"); QVERIFY(block.open(QIODevice::WriteOnly)); }; // a file where the taint dir must go
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, {}, [](MissingSymbolPipeline::Options &o) { o.complianceLog = [](const QString &, const QString &) { return false; }; });
+        QCOMPARE(r.state, State::Failed); QVERIFY2(r.message.contains("could NOT be moved aside"), qPrintable(r.message));
+        QVERIFY(!QFileInfo::exists(r.ws.root + "/handoff/02-spec-to-impl.md")); QVERIFY(!read(fake + "/calls").contains(" impl "));
+    }
+    // D2-4: a FIFO OUTPUT.md taints even when the stage times out.
+    void specialOutputTaintsOnTimeout() {
+        plan("spec 1 fifosleep\n");
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 3);
+        QCOMPARE(r.state, State::TimedOut); QVERIFY(verdicts(r.ws).contains("TAINT"));
+        QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1);
     }
     void unlockFailureStopsTheRun() {
         plan("research 1 slow\n");
