@@ -21,7 +21,7 @@ public:
     static QList<qint64> processesUsing(const QString &dir);
     static constexpr unsigned BaseMode = 0300; // create and traverse, never list
     // Mode 000 once the run has finished.
-    QString close() const;
+    QString close(QString *closedPath = nullptr) const;
     QString root, runId;
     bool valid() const { return !root.isEmpty(); }
     QString stageDir(const QString &stage) const { return root + '/' + stage; }

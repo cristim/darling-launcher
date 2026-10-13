@@ -57,6 +57,7 @@ public:
     State state() const { return current; }
     QString stage() const { return activeStage; }
     const PipelineWorkspace &workspace() const { return ws; }
+    QString closedRoot; // where the run folder went when the run ended
 signals:
     void statusChanged(const QString &message);
     void finished(MissingSymbolPipeline::State state, const QString &message);
