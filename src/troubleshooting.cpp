@@ -303,19 +303,22 @@ void LaunchChoicesDialog::setSourceAvailability(bool mounted, bool possible) {
     mount->setVisible(!mounted && possible);
 }
 QString PipelineConsentDialog::isolationStatement(const QString &trace) {
-    return "How the stages are separated: research, specification, implementation and validation each get their own folder (mode 700) under " + PipelineWorkspace::defaultBase() + ". "
-        "While one stage's agent runs, the other folders are locked (mode 000) and the run folder cannot be listed. A fresh agent process starts for every stage. "
-        "Only files the launcher copied after its text check cross between stages: implementation receives the specification (and validation mismatch reports) only, never the trace or the research facts. "
-        "If the specification asks for it, an optional reconciler reads Darling's source and sends implementation a fixed three-line answer. "
-        "Every step is recorded in a hash-chained audit log.\n\n"
-        "This is not a sandbox. Not approved for Apple stock apps until a per-stage sandbox exists. Every stage runs as your user account, so an agent that ignores its instructions can read any other file your account can read. "
-        "If it unlocks another stage's folder, the launcher normally notices and discards that stage's work, but this is detection, not prevention. "
-        "Between stages, while the launcher checks and copies files, the folders are not locked. "
-        "Claude is pointed at the stage folder (--add-dir) and keeps no session history (--no-session-persistence), but its file tools are not confined by the operating system; "
-        "Codex and OpenCode can read outside the folder and keep their own session history in your home folder, outside the launcher's control. "
-        "The launcher stops the processes an agent leaves behind that it can find; an agent can still start processes it cannot see, for example through systemd or a terminal multiplexer. "
-        "The trace itself stays where the tracer wrote it: " + trace + "\n\n"
-        "Starting sends each stage's inputs to the agent service chosen for that stage.";
+    return "What is sent: a copy of the trace (names of unresolved imports and raw argument words recorded from your app, read from " + trace + ") "
+        "goes to the research agent's service and may be kept in that tool's history. Later stages never receive it. Each later stage receives only "
+        "the files the launcher copied to it after a text check: implementation gets the specification (and validation mismatch reports), never the trace or the research facts. "
+        "If the specification asks for it, an optional reconciler reads Darling's source and sends implementation a fixed three-line answer.\n\n"
+        "What stays on this computer: the run folder under " + PipelineWorkspace::defaultBase() + " keeps the trace copy, every agent's output log and an audit log until you delete it. "
+        "When a run ends its folder is renamed and closed (mode 000). The audit log is hash-chained: it shows accidental damage and edits made during a run, "
+        "but not a consistent rewrite by a program running as you; the chain head is saved read-only outside the run folder, which a program running as you could also replace.\n\n"
+        "How the stages are separated: each stage has its own folder (mode 700); while an agent runs, the other folders and other runs are locked or unlistable, "
+        "a fresh agent process starts for every stage, and agents get only a short list of environment variables (no tokens for other services, no SSH or desktop-bus sockets).\n\n"
+        "This is not a sandbox. Not approved for Apple stock apps until a per-stage sandbox exists. Every stage runs as your user account, so the separation is not enforced against "
+        "an agent that ignores its instructions: it can read any file your account can read and undo folder locks, and the launcher notices only some of that (detection, not prevention). "
+        "A per-stage sandbox (namespaces or a separate account) is the planned follow-up. Between stages, while the launcher checks and copies files, the folders are not locked. "
+        "Claude runs without your hooks, MCP servers and CLAUDE.md files and without shell or web tools, but its file tools are not confined by the operating system. "
+        "Codex can read anywhere and write in its folder and temporary folders, with network access off. OpenCode is asked to deny shell, web and outside-folder access, "
+        "which the launcher cannot verify. Codex and OpenCode keep their session history in your home folder. "
+        "The launcher stops the processes an agent leaves behind that it can find; an agent can still start processes it cannot see, for example through systemd or a terminal multiplexer.";
 }
 PipelineConsentDialog::PipelineConsentDialog(const QString &tracePath, const QString &symbolName, const QString &libraryName, QWidget *parent) : QDialog(parent), trace(tracePath), symbol(symbolName), library(libraryName) {
     setObjectName("pipelineConsentDialog"); setWindowTitle("Clean-room pipeline for " + symbol);
@@ -415,13 +418,13 @@ TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWi
         connect(pipeline, &MissingSymbolPipeline::statusChanged, this, [this](const QString &message) { status->setText(message); });
         if (auto *main = qobject_cast<QMainWindow *>(window)) connect(pipeline, &MissingSymbolPipeline::statusChanged, main, [main](const QString &message) { main->statusBar()->showMessage(message); });
         connect(pipeline, &MissingSymbolPipeline::complianceReport, window, [window, root = workspace.root](const QString &stage, const QStringList &rules) {
-            auto *box = new QMessageBox(QMessageBox::Warning, "Report to compliance", "The " + stage + " stage produced text matching rule " + rules.join(", ") + " (possible exposure to Apple machine code). Its work was discarded and a fresh agent took over.\n\nReport this run to coord-compliance: " + root, QMessageBox::Ok, window);
-            box->setAttribute(Qt::WA_DeleteOnClose); box->open();
+            auto *box = new QMessageBox(QMessageBox::Warning, "Report to compliance", "The " + stage + " stage produced text matching rule " + rules.join(", ") + " (possible exposure to Apple machine code). The status line says what happened to the stage and the run.\n\nReport this run to coord-compliance: " + root, QMessageBox::Ok, window);
+            box->setTextFormat(Qt::PlainText); box->setAttribute(Qt::WA_DeleteOnClose); box->open();
         });
         connect(pipeline, &MissingSymbolPipeline::finished, pipeline, &QObject::deleteLater);
         pipeline->start();
     });
-    status = new QLabel; status->setObjectName("troubleshootingStatus"); status->setWordWrap(true); layout->addWidget(status);
+    status = new QLabel; status->setObjectName("troubleshootingStatus"); status->setWordWrap(true); status->setTextFormat(Qt::PlainText); layout->addWidget(status);
     connect(start, &QPushButton::clicked, this, [=] {
         if (!consent->isChecked()) return;
         QString directory = QDir::cleanPath(workspace->text());
