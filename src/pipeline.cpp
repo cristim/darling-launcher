@@ -32,6 +32,19 @@ bool hasMarker(qint64 pid, const QString &agentId) {
     QFile env(QString("/proc/%1/environ").arg(pid));
     return env.open(QIODevice::ReadOnly) && env.readAll().split('\0').contains(QByteArray(Marker) + '=' + agentId.toUtf8());
 }
+// Compliance rule ids hit by a stage's OUTPUT.md; an output too large to check is a taint reason.
+QStringList outputComplianceRules(const QString &path, QStringList *reasons) {
+    QFile f(path);
+    // Symlinks, FIFOs and other special files are tainted by the caller; never open them (a FIFO would block).
+    const QFileInfo info(path);
+    if (info.isSymLink() || !info.isFile() || !f.open(QIODevice::ReadOnly)) return {};
+    const QByteArray data = f.read(HandoffStore::MaxInput + 1);
+    if (data.size() > HandoffStore::MaxInput) { *reasons << "OUTPUT.md is too large to check"; return {}; }
+    QStringList rules;
+    for (const auto &h : HandoffCheck::checkTextStrict(QString::fromUtf8(data))) if (HandoffCheck::isComplianceRule(h)) rules << (h.inner.isEmpty() ? h.rule : h.inner);
+    rules.removeDuplicates(); rules.sort();
+    return rules;
+}
 QString command(qint64 pid) {
     QFile f(QString("/proc/%1/cmdline").arg(pid));
     return f.open(QIODevice::ReadOnly) ? QString::fromLocal8Bit(f.read(200).replace('\0', ' ')).trimmed() : QString("?");
@@ -199,11 +212,10 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
         else strays << QString("%1 (%2)").arg(pid).arg(command(pid));
     }
     bool tampered = false;
-    if (const QString error = ws.unlock(&tampered); !error.isEmpty()) { finish(State::Failed, error); return; }
-    // An unmarked process may be the agent's (the marker is easy to drop), so the run never continues past it.
-    if (!strays.isEmpty()) {
-        if (record("STRAY", {{"stage", activeStage}, {"processes", QJsonArray::fromStringList(strays)}}))
-            finish(State::Failed, "These processes still use the pipeline folder: " + strays.join(", ") + ". Close them and start the pipeline again.");
+    if (const QString error = ws.unlock(&tampered); !error.isEmpty()) {
+        // The stage cannot be inspected, so it is treated as tainted and the run stops.
+        if (record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", "cannot unlock the run folder: " + error}, {"report_to_compliance", true}}))
+            finish(State::Failed, error);
         return;
     }
     if (tampered) reasons << "a folder locked during the stage was changed";
@@ -216,14 +228,24 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
         if (const QString problem = scanFile(path); !problem.isEmpty()) reasons << rel + problem;
     }
     if (needsFirewall(activeStage)) reasons += ws.firewall(activeStage, names(delivered.value(activeStage)));
-    // A stage that saw disallowed material is tainted even when it was cancelled or timed out.
-    if (!reasons.isEmpty() && (cancelling || timedOut)) {
-        if (!record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", reasons.join("; ")}, {"moved_to", activeStage + ".tainted/" + agentId}, {"report_to_compliance", true}})) return;
-        if (const QString error = ws.taint(activeStage, agentId); !error.isEmpty()) { finish(State::Failed, error); return; }
+    // OUTPUT.md is checked here on every path (cancel, timeout, stray, bad verdict), not only when submitted.
+    const QStringList rules = outputComplianceRules(dir + "/OUTPUT.md", &reasons);
+    // On the normal path the store rejects it and submitted() reports it with the REJECT record; on every
+    // other path (cancel, timeout, stray, other taint reasons, validation reports) it is reported here.
+    const bool storeWillReport = reasons.isEmpty() && strays.isEmpty() && !cancelling && !timedOut && activeStage != "validate";
+    if (!rules.isEmpty() && !storeWillReport) reasons.prepend(reportCompliance(rules));
+    // An unmarked process may be the agent's (the marker is easy to drop), so the run never continues past it.
+    if (!strays.isEmpty()) {
+        if (!reasons.isEmpty() && !discard(reasons.join("; "), rules)) return;
+        if (record("STRAY", {{"stage", activeStage}, {"processes", QJsonArray::fromStringList(strays)}}))
+            finish(State::Failed, "These processes still use the pipeline folder: " + strays.join(", ") + ". Close them and start the pipeline again.");
+        return;
     }
+    // A stage that saw disallowed material is tainted even when it was cancelled or timed out.
+    if (!reasons.isEmpty() && (cancelling || timedOut) && !discard(reasons.join("; "), rules)) return;
     if (cancelling) { if (record("CANCEL", {{"stage", activeStage}, {"agent", agentId}})) finish(State::Cancelled, "Cancelled."); return; }
     if (timedOut) { if (record("TIMEOUT", {{"stage", activeStage}, {"agent", agentId}})) finish(State::TimedOut, "The " + activeStage + " stage timed out."); return; }
-    if (!reasons.isEmpty()) { taint(reasons.join("; ")); return; }
+    if (!reasons.isEmpty()) { taint(reasons.join("; "), rules); return; }
     const QString output = dir + "/OUTPUT.md";
     struct stat st {};
     if (::lstat(QFile::encodeName(output).constData(), &st) != 0) { revise({QString("no OUTPUT.md was written (agent exit status %1)").arg(code)}); return; }
@@ -233,10 +255,8 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
         QFile f(output); f.open(QIODevice::ReadOnly);
         const QString body = QString::fromUtf8(f.read(HandoffStore::MaxInput)), verdict = body.section('\n', 0, 0).trimmed();
         if (verdict == "VERDICT: PASS") {
-            QStringList problems, rules;
-            for (const auto &h : HandoffCheck::checkTextStrict(body)) { problems << describe(h); if (HandoffCheck::isComplianceRule(h)) rules << (h.inner.isEmpty() ? h.rule : h.inner); }
-            rules.removeDuplicates(); rules.sort();
-            if (!rules.isEmpty()) { taint(reportCompliance(rules) + " (" + problems.join("; ") + ")", rules); return; }
+            QStringList problems;
+            for (const auto &h : HandoffCheck::checkTextStrict(body)) problems << describe(h);
             if (!problems.isEmpty()) { revise(problems); return; }
             const auto chain = HandoffStore::verifyChain(ws.root);
             if (chain.exitCode != 0) { finish(State::Failed, "The audit chain does not verify: " + chain.problems.join("; ")); return; }
@@ -250,7 +270,18 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
     }
     if (!anchor.isEmpty() && chainHead(ws.root) != anchor) { finish(State::Failed, "The audit log changed outside the launcher; the run is stopped."); return; }
     emit statusChanged("Checking the " + activeStage + " output before it is handed on…");
-    watcher.setFuture(QtConcurrent::run(HandoffStore::submit, ws.root, activeStage, to, output, agentId, names(inputs.value(activeStage))));
+    const auto submit = opts.submit ? opts.submit : HandoffStore::submit;
+    // Any exception in the check is a failed check, never a pass.
+    watcher.setFuture(QtConcurrent::run([submit, root = ws.root, from = activeStage, to, output, agent = agentId, cited = names(inputs.value(activeStage))] {
+        try { return submit(root, from, to, output, agent, cited); }
+        catch (const std::exception &e) { HandoffStore::Result r; r.error = QString("internal error: ") + e.what(); return r; }
+        catch (...) { HandoffStore::Result r; r.error = "internal error"; return r; }
+    }));
+}
+bool MissingSymbolPipeline::discard(const QString &reason, const QStringList &complianceRules) {
+    if (!record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", reason}, {"moved_to", activeStage + ".tainted/" + agentId}, {"report_to_compliance", true}, {"compliance_rules", QJsonArray::fromStringList(complianceRules)}})) return false;
+    if (const QString error = ws.taint(activeStage, agentId); !error.isEmpty()) { finish(State::Failed, error); return false; }
+    return true;
 }
 QString MissingSymbolPipeline::reportCompliance(const QStringList &rules) {
     const QString report = "REPORT-TO-COMPLIANCE: rule " + rules.join(", rule ");
@@ -266,10 +297,7 @@ void MissingSymbolPipeline::submitted(const HandoffStore::Result &result) {
     // A compliance hit is reported before anything else can end the run: cancel, store failure, taint limit.
     const QString report = result.reportToCompliance ? reportCompliance(result.complianceRules) : QString();
     if (result.status == HandoffStore::Status::Unsafe) { finish(State::Failed, "Cannot check the " + activeStage + " output: " + result.error); return; }
-    if (!report.isEmpty() && cancelling) {
-        if (!record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", report}, {"moved_to", activeStage + ".tainted/" + agentId}, {"report_to_compliance", true}, {"compliance_rules", QJsonArray::fromStringList(result.complianceRules)}})) return;
-        if (const QString error = ws.taint(activeStage, agentId); !error.isEmpty()) { finish(State::Failed, error); return; }
-    }
+    if (!report.isEmpty() && cancelling && !discard(report, result.complianceRules)) return;
     if (cancelling) { if (record("CANCEL", {{"stage", activeStage}})) finish(State::Cancelled, "Cancelled."); return; }
     if (result.status == HandoffStore::Status::Rejected) {
         if (!report.isEmpty()) taint(report + " (" + reasons.join("; ") + ")", result.complianceRules);
@@ -326,8 +354,7 @@ void MissingSymbolPipeline::revise(const QStringList &reasons) {
 }
 void MissingSymbolPipeline::taint(const QString &reason, const QStringList &complianceRules) {
     const QString stage = activeStage;
-    if (!record("TAINT", {{"stage", stage}, {"agent", agentId}, {"reason", reason}, {"moved_to", stage + ".tainted/" + agentId}, {"report_to_compliance", true}, {"compliance_rules", QJsonArray::fromStringList(complianceRules)}})) return;
-    if (const QString error = ws.taint(stage, agentId); !error.isEmpty()) { finish(State::Failed, error); return; }
+    if (!discard(reason, complianceRules)) return;
     emit statusChanged("The " + stage + " agent was tainted (" + reason + "). Its work is discarded; a fresh agent takes over.");
     if (++replacements[stage] > MaxReplacements) {
         finish(State::Failed, "Too many tainted " + stage + " agents; the last reason: " + reason);

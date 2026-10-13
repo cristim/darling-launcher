@@ -17,6 +17,7 @@
 #include <QStandardPaths>
 #include <QtTest>
 #include <cstring>
+#include <stdexcept>
 #include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -37,9 +38,9 @@ class PipelineTest : public QObject {
     }
     QStringList verdicts(const PipelineWorkspace &ws) const { QStringList v; for (const auto &r : audit(ws)) v << r.value("verdict").toString(); return v; }
     struct Run { State state; QString message; PipelineWorkspace ws; };
-    Run run(const QStringList &agents = {"claude", "codex", "opencode", "claude", "codex"}, int timeoutSeconds = 60, std::function<void(MissingSymbolPipeline &)> during = {}) {
+    Run run(const QStringList &agents = {"claude", "codex", "opencode", "claude", "codex"}, int timeoutSeconds = 60, std::function<void(MissingSymbolPipeline &)> during = {}, decltype(MissingSymbolPipeline::Options::submit) submit = {}) {
         QString error; const auto ws = PipelineWorkspace::create(base, &error);
-        MissingSymbolPipeline::Options o; o.agents = agents; o.trace = fake + "/trace.jsonl"; o.symbol = "_CFFoo"; o.library = "CoreFoundation"; o.stageTimeoutSeconds = timeoutSeconds;
+        MissingSymbolPipeline::Options o; o.agents = agents; o.trace = fake + "/trace.jsonl"; o.symbol = "_CFFoo"; o.library = "CoreFoundation"; o.stageTimeoutSeconds = timeoutSeconds; o.submit = submit;
         MissingSymbolPipeline p(ws, o);
         QSignalSpy done(&p, &MissingSymbolPipeline::finished);
         p.start();
@@ -50,6 +51,13 @@ class PipelineTest : public QObject {
         return {p.state(), message, p.workspace()};
     }
     QTemporaryDir home;
+    void watchReports(MissingSymbolPipeline &p, QStringList *reported) {
+        connect(&p, &MissingSymbolPipeline::complianceReport, &p, [reported](const QString &stage, const QStringList &rules) { *reported << stage + ':' + rules.join(','); });
+    }
+    bool taintedWith(const PipelineWorkspace &ws, const QString &stage, const QString &rule) const {
+        const auto recs = audit(ws);
+        return std::any_of(recs.begin(), recs.end(), [&](const QJsonObject &o) { return o.value("verdict") == "TAINT" && o.value("stage") == stage && o.value("compliance_rules").toArray().contains(rule); });
+    }
 private slots:
     void initTestCase() { qRegisterMetaType<MissingSymbolPipeline::State>(); QVERIFY(home.isValid()); qputenv("HOME", home.path().toUtf8()); }
     void init() {
@@ -202,6 +210,65 @@ private slots:
         QCOMPARE(r.state, State::Done); QCOMPARE(reported, QStringList{"validate:R5"});
         const auto recs = audit(r.ws);
         QVERIFY(std::any_of(recs.begin(), recs.end(), [](const QJsonObject &o) { return o.value("verdict") == "TAINT" && o.value("stage") == "validate" && o.value("compliance_rules").toArray().contains("R5"); }));
+    }
+    // Fail-closed paths: a compliance hit in OUTPUT.md is reported and the stage tainted on every way a stage can end.
+    void complianceHitReportedWhenTheStageTimesOut() {
+        plan("spec 1 r10sleep\n"); QStringList reported;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 3, [&](MissingSymbolPipeline &p) { watchReports(p, &reported); });
+        QCOMPARE(r.state, State::TimedOut); QCOMPARE(reported, QStringList{"spec:R10"}); QVERIFY(taintedWith(r.ws, "spec", "R10"));
+        QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1);
+    }
+    void complianceHitReportedWhenTheStageIsCancelled() {
+        plan("spec 1 r10sleep\n"); QStringList reported;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) {
+            watchReports(p, &reported);
+            connect(&p, &MissingSymbolPipeline::statusChanged, &p, [&p](const QString &m) { if (m.contains("working on the spec stage")) QTimer::singleShot(1500, &p, &MissingSymbolPipeline::cancel); });
+        });
+        QCOMPARE(r.state, State::Cancelled); QCOMPARE(reported, QStringList{"spec:R10"}); QVERIFY(taintedWith(r.ws, "spec", "R10"));
+    }
+    void complianceHitReportedWithABadValidationVerdict() {
+        plan("validate 1 badverdicthit\n"); QStringList reported;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) { watchReports(p, &reported); });
+        QCOMPARE(r.state, State::Done); QCOMPARE(reported, QStringList{"validate:R5"}); QVERIFY(taintedWith(r.ws, "validate", "R5"));
+    }
+    void complianceHitReportedWhenAStrayProcessStopsTheRun() {
+        plan("research 1 r10slow\n"); QStringList reported; QProcess viewer;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) {
+            watchReports(p, &reported);
+            viewer.setWorkingDirectory(p.workspace().stageDir("research")); viewer.start("sleep", {"60"}); viewer.waitForStarted();
+        });
+        QCOMPARE(r.state, State::Failed); QCOMPARE(reported, QStringList{"research:R10"}); QVERIFY(taintedWith(r.ws, "research", "R10"));
+        QVERIFY(verdicts(r.ws).contains("STRAY"));
+        viewer.kill(); viewer.waitForFinished();
+    }
+    void storeFailureAfterAComplianceHitIsReported() {
+        plan("spec 1 r10\n"); QStringList reported;
+        const auto failing = [](const QString &root, const QString &from, const QString &to, const QString &file, const QString &agent, const QStringList &in) {
+            auto r = HandoffStore::submit(root, from, to, file, agent, in);
+            if (from != "spec") return r;
+            HandoffStore::Result unsafe; unsafe.error = "injected store failure"; unsafe.reasons = r.reasons; unsafe.reportToCompliance = r.reportToCompliance; unsafe.complianceRules = r.complianceRules;
+            return unsafe;
+        };
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) { watchReports(p, &reported); }, failing);
+        QCOMPARE(r.state, State::Failed); QVERIFY(r.message.contains("injected store failure")); QCOMPARE(reported, QStringList{"spec:R10"});
+        QVERIFY(read(LauncherLog::path()).contains("REPORT-TO-COMPLIANCE: rule R10"));
+    }
+    void exceptionInTheCheckFailsTheRun() {
+        const auto throwing = [](const QString &root, const QString &from, const QString &to, const QString &file, const QString &agent, const QStringList &in) -> HandoffStore::Result {
+            if (from == "spec") throw std::runtime_error("injected");
+            return HandoffStore::submit(root, from, to, file, agent, in);
+        };
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, {}, throwing);
+        QCOMPARE(r.state, State::Failed); QVERIFY(r.message.contains("internal error: injected"));
+        QVERIFY(!QFileInfo::exists(r.ws.root + "/handoff/02-spec-to-impl.md")); QVERIFY(!read(fake + "/calls").contains(" impl "));
+    }
+    void unlockFailureStopsTheRun() {
+        plan("research 1 slow\n");
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [](MissingSymbolPipeline &p) {
+            QTimer::singleShot(800, &p, [&p] { ::chmod(p.workspace().root.toLocal8Bit().constData(), 0); });
+        });
+        ::chmod(r.ws.root.toLocal8Bit().constData(), 0700);
+        QCOMPARE(r.state, State::Failed); QVERIFY(!read(fake + "/calls").contains(" spec "));
     }
     void rejectedOutputIsRevisedThenFails() {
         plan("research 1 revise\n");

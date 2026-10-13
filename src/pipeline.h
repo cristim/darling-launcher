@@ -2,6 +2,7 @@
 #pragma once
 #include "pipelineworkspace.h"
 #include <QFutureWatcher>
+#include <functional>
 #include <QObject>
 #include <QSet>
 #include <QProcess>
@@ -27,6 +28,8 @@ public:
         QString symbol, library;       // shown to the agents as the task
         QString supervisor;            // executable understanding --stage-supervisor
         int stageTimeoutSeconds = 30 * 60;
+        // Tests inject store failures and exceptions here; empty means HandoffStore::submit.
+        std::function<HandoffStore::Result(const QString &, const QString &, const QString &, const QString &, const QString &, const QStringList &)> submit;
     };
     static constexpr int MaxReplacements = 2, MaxRevisions = 2, MaxValidationRounds = 2, StopGraceSeconds = 10;
     // Default: rotate through the installed CLIs so neighbouring stages use different providers.
@@ -51,6 +54,7 @@ private:
     void revise(const QStringList &reasons);
     void taint(const QString &reason, const QStringList &complianceRules = {});
     QString reportCompliance(const QStringList &rules); // log line, status, signal; returns the log text
+    bool discard(const QString &reason, const QStringList &complianceRules); // TAINT record + move aside; false if the run ended
     QString releasedText(const HandoffStore::Release &release) const;
     void finish(State state, const QString &message);
     bool record(const QString &verdict, QJsonObject fields);
