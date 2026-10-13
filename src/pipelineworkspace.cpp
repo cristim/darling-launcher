@@ -114,9 +114,13 @@ QByteArray readPath(const QString &path, qint64 limit) {
     return data;
 }
 }
-QString PipelineWorkspace::close() const {
-    // A finished run is closed (mode 000) so later runs' agents cannot read it; chmod 700 it to inspect.
-    return ::chmod(local(root).constData(), 0) == 0 ? QString() : "cannot close " + root + ": " + sysError();
+QString PipelineWorkspace::close(QString *closedPath) const {
+    // A finished run is renamed to a random name in the unlistable base and set to mode 000, so a path an agent
+    // saw earlier (its brief, the launcher log) no longer leads to it. Same-uid agents can still chmod a path they know.
+    const QString target = root + ".closed-" + QUuid::createUuid().toString(QUuid::Id128);
+    if (::rename(local(root).constData(), local(target).constData()) != 0) return "cannot close " + root + ": " + sysError();
+    if (closedPath) *closedPath = target;
+    return ::chmod(local(target).constData(), 0) == 0 ? QString() : "cannot close " + target + ": " + sysError();
 }
 QString PipelineWorkspace::defaultBase() { return LauncherDiscovery::dataRoot() + "/missing-symbol"; }
 PipelineWorkspace PipelineWorkspace::create(const QString &base, QString *error) {
