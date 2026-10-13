@@ -230,6 +230,9 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
     }
     if (needsFirewall(activeStage)) reasons += ws.firewall(activeStage, names(delivered.value(activeStage)));
     // OUTPUT.md is checked here on every path (cancel, timeout, stray, bad verdict), not only when submitted.
+    struct stat outSt {};
+    if (::lstat(QFile::encodeName(dir + "/OUTPUT.md").constData(), &outSt) == 0 && (!S_ISREG(outSt.st_mode) || outSt.st_nlink != 1))
+        reasons << "OUTPUT.md is a symlink, hard link or special file";
     const QStringList rules = outputComplianceRules(dir + "/OUTPUT.md", &reasons);
     // On the normal path the store rejects it and submitted() reports it with the REJECT record; on every
     // other path (cancel, timeout, stray, other taint reasons, validation reports) it is reported here.
@@ -254,7 +257,6 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
     const QString output = dir + "/OUTPUT.md";
     struct stat st {};
     if (::lstat(QFile::encodeName(output).constData(), &st) != 0) { revise({QString("no OUTPUT.md was written (agent exit status %1)").arg(code)}); return; }
-    if (!S_ISREG(st.st_mode) || st.st_nlink != 1) { taint("OUTPUT.md is a symlink, hard link or special file"); return; }
     QString to = Next.value(activeStage);
     if (activeStage == "validate") {
         QFile f(output); f.open(QIODevice::ReadOnly);
@@ -275,6 +277,7 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
     }
     if (!anchor.isEmpty() && chainHead(ws.root) != anchor) { finish(State::Failed, "The audit log changed outside the launcher; the run is stopped."); return; }
     emit statusChanged("Checking the " + activeStage + " output before it is handed on…");
+    submittedRules = rules;
     const auto submit = opts.submit ? opts.submit : HandoffStore::submit;
     // Any exception in the check is a failed check, never a pass.
     watcher.setFuture(QtConcurrent::run([submit, root = ws.root, from = activeStage, to, output, agent = agentId, cited = names(inputs.value(activeStage))] {
@@ -301,8 +304,9 @@ bool MissingSymbolPipeline::reportCompliance(const QStringList &rules, QString *
     const bool audited = logged && record("COMPLIANCE_REPORT", {{"stage", activeStage}, {"agent", agentId}, {"compliance_rules", QJsonArray::fromStringList(rules)}, {"report_to_compliance", true}});
     if (logged && audited) return true;
     // The report could not be recorded: stop fail-closed, with the stage moved aside and nothing released.
-    ws.taint(activeStage, agentId);
-    finish(State::Failed, *report + ", but it could not be " + (logged ? "added to the audit log" : "written to the launcher log") + "; the stage was discarded and the run stopped.");
+    const QString moveError = ws.taint(activeStage, agentId);
+    finish(State::Failed, *report + ", but it could not be " + (logged ? "added to the audit log" : "written to the launcher log") + "; "
+        + (moveError.isEmpty() ? "the stage was moved to " + activeStage + ".tainted/" + agentId : "the stage could NOT be moved aside (" + moveError + "); nothing was released") + " and the run stopped.");
     return false;
 }
 void MissingSymbolPipeline::submitted(const HandoffStore::Result &result) {
@@ -310,13 +314,18 @@ void MissingSymbolPipeline::submitted(const HandoffStore::Result &result) {
     if (current != State::Running) return;
     QStringList reasons; for (const auto &h : result.reasons) reasons << describe(h);
     // A compliance hit is reported before anything else can end the run: cancel, store failure, taint limit.
+    // If the check itself failed (store error, exception), the hits found before submitting still count.
+    const QStringList rules = result.reportToCompliance ? result.complianceRules : result.status == HandoffStore::Status::Unsafe ? submittedRules : QStringList();
     QString report;
-    if (result.reportToCompliance && !reportCompliance(result.complianceRules, &report)) return;
-    if (result.status == HandoffStore::Status::Unsafe) { finish(State::Failed, "Cannot check the " + activeStage + " output: " + result.error); return; }
-    if (!report.isEmpty() && cancelling && !discard(report, result.complianceRules)) return;
+    if (!rules.isEmpty() && !reportCompliance(rules, &report)) return;
+    if (result.status == HandoffStore::Status::Unsafe) {
+        if (!report.isEmpty() && !discard(report, rules)) return;
+        finish(State::Failed, "Cannot check the " + activeStage + " output: " + result.error); return;
+    }
+    if (!report.isEmpty() && cancelling && !discard(report, rules)) return;
     if (cancelling) { if (record("CANCEL", {{"stage", activeStage}})) finish(State::Cancelled, "Cancelled."); return; }
     if (result.status == HandoffStore::Status::Rejected) {
-        if (!report.isEmpty()) taint(report + " (" + reasons.join("; ") + ")", result.complianceRules);
+        if (!report.isEmpty()) taint(report + " (" + reasons.join("; ") + ")", rules);
         else revise(reasons);
         return;
     }

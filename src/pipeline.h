@@ -73,6 +73,7 @@ private:
     int validationRounds = 0, logFd = -1, runLock = -1;
     bool cancelling = false, timedOut = false;
     ReconcileTracker reconciler;
+    QStringList submittedRules; // compliance rules found in the output being submitted
     QProcess *process = nullptr;
     QTimer timeout;
     QFutureWatcher<HandoffStore::Result> watcher;
