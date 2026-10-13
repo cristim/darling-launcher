@@ -253,6 +253,12 @@ private slots:
         auto r = submit("spec", "impl", "x\n"); QCOMPARE(r.status, Status::Unsafe); QVERIFY(r.error.contains("larger than"));
         const auto chain = HandoffStore::verifyChain(root); QCOMPARE(chain.exitCode, 2); QVERIFY(chain.problems.join(' ').contains("larger than"));
     }
+    // QA G2: a header after U+001C is a header for the oracle too, so the C++ store must check it (P2 here).
+    void unitSeparatorHeadersAreChecked() {
+        QCOMPARE(submit("research", "spec", "facts\n").status, Status::Released);
+        const auto r = submit("spec", "impl", "\x1cInputs: 07-research-to-spec.md " + QByteArray(64, 'a') + "\n");
+        QCOMPARE(r.status, Status::Rejected); QVERIFY(rules(r).contains("P2"));
+    }
     void r10IsReportedToCompliance() {
         const auto r = submit("spec", "impl", "see libsystem_kernel.dylib+0x1c2\n");
         QCOMPARE(r.status, Status::Rejected); QVERIFY(r.reportToCompliance); QCOMPARE(r.complianceRules, QStringList{"R10"});
