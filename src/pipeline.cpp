@@ -471,7 +471,13 @@ void MissingSymbolPipeline::finish(State state, const QString &message) {
     timeout.stop();
     if (logFd >= 0) { ::close(logFd); logFd = -1; }
     if (!keepLocked) { bool tampered = false; ws.unlock(&tampered); } // no-op unless a launch failed after locking
-    if (state == State::Failed) HandoffStore::appendEvent(ws.root, "FAILED", {{"stage", activeStage}, {"reason", message}});
+    if (state == State::Failed && !keepLocked) HandoffStore::appendEvent(ws.root, "FAILED", {{"stage", activeStage}, {"reason", message}});
+    // The chain head at the end of the run, read-only, so a later rewrite of the log shows against it.
+    if (!keepLocked) {
+        const QByteArray head = (HandoffStore::verifyChain(ws.root, false).summary + '\n').toUtf8();
+        const int fd = ::open(QFile::encodeName(ws.root + "/AUDIT-HEAD.txt").constData(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0400);
+        if (fd >= 0) { if (::write(fd, head.constData(), size_t(head.size())) < 0) {} ::close(fd); }
+    }
     // Closed once the current call chain (which may still move a stage aside) has returned.
     QTimer::singleShot(0, this, [this] {
         QString closed;

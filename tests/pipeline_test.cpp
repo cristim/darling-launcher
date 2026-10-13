@@ -87,6 +87,8 @@ private slots:
         QCOMPARE(releases, QStringList({"01-research-to-spec.md", "02-spec-to-impl.md", "03-impl-to-validate.md"}));
         QCOMPARE(verdicts(r.ws).first(), QString("START")); QCOMPARE(verdicts(r.ws).last(), QString("DONE"));
         QCOMPARE(HandoffStore::verifyChain(r.ws.root).exitCode, 0);
+        QCOMPARE(read(r.ws.root + "/AUDIT-HEAD.txt").trimmed(), HandoffStore::verifyChain(r.ws.root, false).summary); // chain head saved read-only
+        QCOMPARE(QFileInfo(r.ws.root + "/AUDIT-HEAD.txt").permissions() & (QFile::WriteOwner | QFile::ReadGroup | QFile::ReadOther), QFileDevice::Permissions());
         QCOMPARE(read(fake + "/calls"), QString("claude research 1\ncodex spec 1\nopencode impl 1\nclaude validate 1\n"));
         QVERIFY(QFileInfo::exists(r.ws.stageDir("validate") + "/inputs/02-spec-to-impl.md")); // spec delivered, not cited
         for (const auto &rec : audit(r.ws)) if (rec.value("verdict") == "RELEASE" && rec.value("from") == "validate") QFAIL("validate released nothing");
