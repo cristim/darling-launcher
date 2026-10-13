@@ -31,6 +31,15 @@ private slots:
         for (const QString &d : HandoffStore::Stages + QStringList{"handoff"}) QCOMPARE(mode(ws.root + '/' + d), 0700u);
         QVERIFY(make().root != ws.root);
     }
+    void baseIsUnlistableAndFinishedRunsClose() {
+        auto ws = make();
+        QCOMPARE(mode(base), 0300u);
+        QCOMPARE(ws.close(), QString()); QCOMPARE(mode(ws.root), 0u);
+        QCOMPARE(PipelineWorkspace::recover(base), QStringList()); QCOMPARE(mode(ws.root), 0u); QCOMPARE(mode(base), 0300u); // closed runs stay closed
+        auto live = make(); QCOMPARE(live.lockFor("impl"), QString());
+        ::chmod(base.toLocal8Bit().constData(), 0700); // an agent makes the base listable
+        bool tampered = false; QCOMPARE(live.unlock(&tampered), QString()); QVERIFY(tampered); QCOMPARE(mode(base), 0300u);
+    }
     void lockShowsOnlyTheActiveStage() {
         auto ws = make(); QDir().mkdir(ws.root + "/spec.tainted");
         QCOMPARE(ws.lockFor("impl"), QString());
