@@ -187,7 +187,8 @@ This does not install over the system runtime or change other checkouts.
 **Settings → Mount macOS source… → Mount all detected volumes read-only** scans
 APFS/HFS partitions detected by `lsblk`. It takes only partitions on a disk with a
 hardware bus; loop devices and anything else are skipped and must be selected
-individually. For APFS it uses `apfsutil` metadata to
+individually (the partition picker marks them "loop/virtual device", so check that
+you are not choosing a disk image by accident). For APFS it uses `apfsutil` metadata to
 obtain actual volume indices, then mounts each unencrypted volume with APFS FUSE.
 It does not guess indices or unlock FileVault. The complete batch uses one `pkexec` authorization request and
 `ro,nodev,nosuid,noexec`; cancelling or denying authorization stops the batch.
@@ -217,9 +218,17 @@ unmounted (lazily when busy). `/run/darling-launcher/<uid>` is root-owned, mode
 0750, with a POSIX ACL that lets only your uid in, so other users cannot reach the
 mounted contents. Where `/run` has no ACL support it falls back to
 `root:<your primary group>` and the helper warns that members of a shared primary
-group can reach the mounts.
+group can reach the mounts: on such a system treat every member of your primary
+group as able to read mounted volumes. The empty per-volume directories are left
+under `/run/darling-launcher/<uid>/` until reboot (the helper reuses them when
+empty).
 APFS FUSE runs with `default_permissions`, so the kernel enforces the `uid=`/`gid=`
-ownership. Errors name the failing step, not file paths or tool output.
+ownership. Not yet verified: that `apfs-fuse` accepts `--`, `fsname=` and
+`default_permissions` in its options. If a build rejects them the mount fails
+rather than running with weaker options; run the mount once on a machine with
+`apfs-fuse` to confirm. The helper needs `lsblk` with the `SUBSYSTEMS` column
+(util-linux 2.33 or newer); with an older `lsblk` every mode, including
+`--device`, fails closed. Errors name the failing step, not file paths or tool output.
 Progress and discovered application sources are emitted as JSON lines. Individual
 driver failures are reported and the remaining detected volumes are attempted;
 there is no authorization retry or alternate privilege mechanism.
