@@ -96,6 +96,8 @@ private slots:
         QCOMPARE(HandoffCheck::parseSources("x\nsource: d\n"), QStringList({"d"}));
         QCOMPARE(HandoffCheck::parseSources("none\n"), QStringList());
         QCOMPARE(HandoffCheck::parseHeader(QString::fromUtf8("\u0130nputs: x\n"), "Inputs").value(), QString("x")); // python re.I folds U+0130
+        QCOMPARE(HandoffCheck::parseHeader(QString("\x1cInputs:\x1f" "01-research-to-spec.md\n"), "Inputs").value(), QString("01-research-to-spec.md")); // python \s covers U+001C..U+001F
+        QCOMPARE(HandoffCheck::reconFormat(QString("Absent:\x1c_A\nBranch: m\x1d" "Commit: ") + QString(40, 'a') + "\nCallers exist:\x1eno\n").size(), 0);
         QCOMPARE(HandoffCheck::parseHeader(QString::fromUtf8("\u0130nputs: \u0130x\n"), "Inputs").value(), QString::fromUtf8("\u0130x")); // value keeps its text
     }
     void matchedTextNeverInDescriptions() {
