@@ -125,6 +125,9 @@ add("r7-key-kelvin", '{"sym": "_f", "x0": 1, "\u212aey": 2}\n')
 add("e5-nul-in-sub", "see su\x00b_1A2B here\n", "E5")
 add("e5-fffd-in-sub", "see su\ufffdb_1A2B here\n", "E5")
 
+# --- QA G2: U+001C..U+001F in headers and recon lines (python \s) ---
+add("recon-unit-separators", "Agent: r\n\x1cInputs: 02-spec-to-impl.md " + "a" * 64 + "\nAbsent:\x1c_A\nBranch: m\x1dCommit: " + "b" * 40 + "\nCallers exist:\x1eno\n")
+
 # --- json raw_decode details (parity) ---
 add("json-dup-key-last-wins", '{"a": {"symbol": "_f", "regs": []}, "a": 1}\n')
 add("json-dup-key-trace-last", '{"a": 1, "a": {"symbol": "_f", "regs": []}}\n')

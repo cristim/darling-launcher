@@ -116,6 +116,7 @@ r7-key-upper.txt	R7	-
 r7-key-kelvin.txt	R7	-
 e5-nul-in-sub.txt	-	E5
 e5-fffd-in-sub.txt	-	E5
+recon-unit-separators.txt	-	-
 json-dup-key-last-wins.txt	-	-
 json-dup-key-trace-last.txt	R7	-
 json-tab-in-string.txt	-	-

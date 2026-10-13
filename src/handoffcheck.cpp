@@ -233,6 +233,12 @@ QString caselessView(const QString &line) {
     for (QChar &c : out) { if (c.unicode() == 0x130) c = 'I'; else if (c.unicode() == 0x131) c = 'i'; }
     return out;
 }
+// Python's \s also matches U+001C..U+001F; PCRE's does not. Same length, so positions hold.
+QString pythonSpaces(const QString &line) {
+    QString out = line;
+    for (QChar &c : out) if (c.unicode() >= 0x1c && c.unicode() <= 0x1f) c = ' ';
+    return out;
+}
 // A long line as overlapping pieces short enough to match reliably; the overlap exceeds any marker.
 QStringList windows(const QString &line) {
     constexpr int Overlap = 512;
@@ -412,7 +418,7 @@ QList<HandoffCheck::Hit> HandoffCheck::reconFormat(const QString &text) {
         {rx(R"(^Callers exist:\s*(yes|no)(?:\s*;\s*files:\s*(.+))?\z)"), "Callers exist: yes|no [; files: <paths>]"}};
     QList<QPair<int, QString>> body;
     const QStringList lines = text.split('\n');
-    for (int i = 0; i < lines.size(); ++i) if (!pyStrip(lines[i]).isEmpty() && !header.match(lines[i]).hasMatch()) body << qMakePair(i + 1, pyStrip(lines[i]));
+    for (int i = 0; i < lines.size(); ++i) if (!pyStrip(lines[i]).isEmpty() && !header.match(pythonSpaces(lines[i])).hasMatch()) body << qMakePair(i + 1, pyStrip(pythonSpaces(lines[i])));
     QList<Hit> out;
     for (int k = 0; k < expected.size(); ++k) {
         if (k >= body.size()) { out << Hit{body.isEmpty() ? 0 : body.last().first, "F1", QString("missing line %1: expected '%2'").arg(k + 1).arg(expected[k].second)}; continue; }
@@ -436,7 +442,7 @@ QList<HandoffCheck::Hit> HandoffCheck::reconFormat(const QString &text) {
 std::optional<QString> HandoffCheck::parseHeader(const QString &text, const QString &label) {
     const RX header = rx(R"(^\s*(?:[*_-]\s*)?\**)" + label + R"(:\**\s*(.*)$)", true);
     for (const QString &line : text.split('\n')) {
-        const auto m = header.match(caselessView(line)); // same length as line, so offsets apply to it
+        const auto m = header.match(pythonSpaces(caselessView(line))); // same length as line, so offsets apply to it
         if (m.hasMatch()) return pyStrip(line.mid(m.capturedStart(1), m.capturedLength(1)));
     }
     return std::nullopt;
