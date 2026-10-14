@@ -688,6 +688,7 @@ private slots:
     }
     void closeDuringLaunch() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        LauncherTroubleshooting::saveRecoveryChoices({false, false, false, true, {}});
         QString prefix = temporary.path() + "/prefix"; QVERIFY(QDir().mkpath(prefix));
         QString fakePath = temporary.path() + "/fake-darling";
         QFile fake(fakePath); QVERIFY(fake.open(QIODevice::WriteOnly)); fake.write("#!/bin/sh\nexec /usr/bin/sleep 5\n"); fake.close();
