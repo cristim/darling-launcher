@@ -6,7 +6,7 @@ Licensed under the GNU General Public License, version 3 or any later version (`
 
 ## Build and run
 
-Requires CMake, a C++17 compiler, Qt 6 Core/Widgets/Concurrent/Test, Qt image format plugins (ICNS), and `libplist-2.0`.
+Requires CMake, a C++17 compiler, Qt 6 Core/Widgets/Concurrent/Network/Test, Qt image format plugins (ICNS), and `libplist-2.0`.
 
 ```sh
 cmake -S . -B build -G Ninja
