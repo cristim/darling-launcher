@@ -45,8 +45,9 @@ private slots:
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path();
         auto run = [&](const QStringList &args) { QProcess p; p.setWorkingDirectory(root); p.start(args.first(), args.mid(1)); QVERIFY2(p.waitForFinished(30000) && p.exitCode() == 0, qPrintable(p.readAllStandardError())); };
         auto digest = [](const QString &path) { QFile f(path); f.open(QIODevice::ReadOnly); return QString(QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex()); };
-        QVERIFY(QDir().mkpath(root + "/good/usr/local/bin")); QVERIFY(QDir().mkpath(root + "/evil"));
+        QVERIFY(QDir().mkpath(root + "/good/usr/local/bin")); QVERIFY(QDir().mkpath(root + "/good/usr/local/libexec/darling/private/etc")); QVERIFY(QDir().mkpath(root + "/evil"));
         { QFile f(root + "/good/usr/local/bin/darling"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
+        QVERIFY(QFile::setPermissions(root + "/good/usr/local/bin/darling", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         QVERIFY(QFile::link("/usr/lib/libz.so", root + "/good/usr/local/libz"));
         run({"tar", "--zstd", "-cf", "good.tar.zst", "-C", "good", "usr"});
         QVERIFY(QFile::link("/etc", root + "/evil/dir")); { QFile f(root + "/evil/payload"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
@@ -69,6 +70,14 @@ private slots:
         QVERIFY2(installArchive(good, QString(64, '0'), runtimes, tag, ghOk, repo).contains("SHA-256 mismatch"), "digest");
         QVERIFY(installArchive(good, digest(good), runtimes, tag, ghBad, repo).contains("attestation verification failed"));
         QVERIFY(installArchive(good, digest(good), runtimes, tag, {}, repo).contains("gh is required"));
+        QVERIFY(QFile::setPermissions(root + "/good/usr/local/bin/darling", QFile::ReadOwner | QFile::WriteOwner));
+        run({"tar", "--zstd", "-cf", "nonexec.tar.zst", "-C", "good", "usr"});
+        const QString nonexec = root + "/nonexec.tar.zst";
+        QVERIFY(installArchive(nonexec, digest(nonexec), runtimes, "v2026.10.09-bbbbbbb", ghOk, repo).contains("executable regular"));
+        QVERIFY(QFile::setPermissions(root + "/good/usr/local/bin/darling", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        run({"tar", "--zstd", "-cf", "nomarker.tar.zst", "-C", "good", "usr/local/bin"});
+        const QString nomarker = root + "/nomarker.tar.zst";
+        QVERIFY(installArchive(nomarker, digest(nomarker), runtimes, "v2026.10.09-ccccccc", ghOk, repo).contains("runtime marker"));
         QVERIFY(!QFileInfo::exists(runtimes + "/" + tag));
         QVERIFY(!QFileInfo::exists(runtimes + "/" + tag));
         for (const char *name : {"through", "escape"}) { const QString archive = root + "/" + name + ".tar.zst"; const QString error = installArchive(archive, digest(archive), runtimes, tag, ghOk, repo); QVERIFY2(!error.isEmpty() && (error.contains("symlink") || error.contains("escapes")), name); QVERIFY(!QFileInfo::exists(runtimes + "/" + tag)); }
@@ -77,6 +86,12 @@ private slots:
         QVERIFY(QFile(root + "/gh-args").open(QIODevice::ReadOnly)); { QFile args(root + "/gh-args"); args.open(QIODevice::ReadOnly); QVERIFY(args.readAll().contains("--signer-workflow VibeDarling/darling/.github/workflows/release-binaries.yml")); }
         QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/libz").isSymLink());
         QVERIFY(installArchive(good, digest(good), runtimes, tag, ghOk, repo).contains("already exists"));
+        const QByteArray originalPath = qgetenv("PATH"); auto restore = qScopeGuard([=] { qputenv("PATH", originalPath); });
+        script("tar", "case \"$*\" in *-tvf*) printf '%s\\n' '-rwx------ u/g 1 2026-10-09 14:32 usr/local/bin/darling';; *) exec /usr/bin/sleep 30;; esac");
+        qputenv("PATH", root.toUtf8() + ':' + originalPath);
+        QElapsedTimer elapsed; elapsed.start();
+        QVERIFY(!installArchive(good, digest(good), runtimes, "v2026.10.09-ddddddd", ghOk, repo, [&] { return elapsed.elapsed() > 250; }).isEmpty());
+        QVERIFY(elapsed.elapsed() < 5000); QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-ddddddd"));
     }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;

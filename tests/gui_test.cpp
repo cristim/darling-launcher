@@ -576,7 +576,7 @@ private slots:
         QTRY_VERIFY(dialog->findChild<QTextEdit *>("mountOutput")->toPlainText().contains("No macOS partitions detected"));
         QVERIFY(window.findChild<QDialog *>("settingsDialog")->isVisible());
     }
-    void firstRunStartsSetupAutomaticallyAndQueuesDroppedApps() {
+    void explicitSourceBuildQueuesDroppedApps() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings settings("cristim", "darling-launcher"); settings.clear();
         qputenv("HOME", (temporary.path() + "/managed home").toUtf8()); const QString data = temporary.path() + "/managed home/.darling-launcher";
         const QString volume = temporary.path() + "/volume", app = volume + "/Applications/Fixture.app";
@@ -586,9 +586,9 @@ private slots:
         QFile git(temporary.path() + "/git"); QVERIFY(git.open(QIODevice::WriteOnly)); git.write("#!/bin/sh\nif [ \"$1\" = clone ]; then /usr/bin/sleep 0.5; /usr/bin/mkdir -p \"$5\"; exit 0; fi\nexit 1\n"); git.close(); QVERIFY(git.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         const auto path = qgetenv("PATH"); auto restore = qScopeGuard([=] { qputenv("PATH", path); }); qputenv("PATH", temporary.path().toUtf8() + ':' + path);
         Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py", false, [] { return QList<SourceMount>{}; }); window.show(); window.findChild<QLineEdit *>("darlingField")->clear(); window.findChild<QLineEdit *>("runtimeRootField")->clear(); window.findChild<QLineEdit *>("volumeField")->setText(volume);
-        window.offerRuntimeSetup();
-        auto *banner = window.findChild<QWidget *>("setupBanner"); QVERIFY(banner && banner->isVisible()); QVERIFY(window.findChild<QLabel *>("setupStatus")->text().contains("hide this window"));
-        auto *builder = window.findChild<PrefixDialog *>(); QVERIFY(builder); QVERIFY(builder->isBusy()); QVERIFY(!builder->isVisible());
+        window.findChild<QPushButton *>("Create prefix")->click();
+        auto *banner = window.findChild<QWidget *>("setupBanner"); QVERIFY(banner);
+        auto *builder = window.findChild<PrefixDialog *>(); QVERIFY(builder); builder->startAutomatically(); QVERIFY(builder->isBusy()); builder->hide();
         QCOMPARE(builder->findChild<QLabel *>("prefixBuilderSource")->text(), data + "/sources/vibedarling");
         const QString workspace = builder->findChild<QLabel *>("prefixBuilderWorkspace")->text(); QVERIFY(workspace.startsWith(data + "/workspaces/"));
         auto *apps = window.findChild<ImportedBrowser *>("importedApps");

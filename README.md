@@ -6,7 +6,7 @@ Licensed under the GNU General Public License, version 3 or any later version (`
 
 ## Build and run
 
-Requires CMake, a C++17 compiler, Qt 6 Core/Widgets/Concurrent/Test, Qt image format plugins (ICNS), and `libplist-2.0`.
+Requires CMake, a C++17 compiler, Qt 6 Core/Widgets/Concurrent/Network/Test, Qt image format plugins (ICNS), and `libplist-2.0`.
 
 ```sh
 cmake -S . -B build -G Ninja
@@ -27,8 +27,15 @@ The source browser reads bundle display names, `CFBundleIconFile` resources and 
 
 The launcher includes a versioned GPL snapshot of `all-vibedarling-pr-prefix.py`.
 No Darling installation or external builder path is required. On startup without a
-usable runtime, **Set up Darling** offers to build and install a private runtime or
-select an existing one. Everything the launcher creates lives in `~/.darling-launcher`
+usable runtime, setup checks stable VibeDarling runtime releases. GitHub CLI verifies
+the manifest, checksums, and archive against the hosted master release workflow.
+Downloads check architecture, glibc, wrapped host libraries, disk space, size and
+SHA-256 before installation. A successful private prefix initialization selects its
+non-setuid launcher and install root together. Cancel stops download/validation;
+cancelling prefix initialization requests prefix-scoped shutdown. Failed attempts
+remain private for inspection. If no compatible release exists, **Build from source…**
+opens the existing build workflow explicitly. **I already have Darling…** selects an
+existing checkout. Everything the launcher creates lives in `~/.darling-launcher`
 (sources, workspaces, runtime images, prefixes, mount points and AI workspaces); this
 location is fixed and not configurable.
 

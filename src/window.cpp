@@ -6,6 +6,7 @@
 #include "appbrowser.h"
 #include "prefixdialog.h"
 #include "discovery.h"
+#include "runtimedownload.h"
 #include "troubleshooting.h"
 #include <QApplication>
 #include <QCloseEvent>
@@ -48,7 +49,7 @@
 #include <QVBoxLayout>
 #include <QtConcurrent>
 
-Window::Window(const QString &builderScript, bool mountAll, std::function<QList<SourceMount>()> provider) : mountProvider(std::move(provider)) {
+Window::Window(const QString &builderScript, bool mountAll, std::function<QList<SourceMount>()> provider, QUrl api) : mountProvider(std::move(provider)), runtimeApi(std::move(api)) {
     prefixBuilderScript = builderScript;
     setWindowTitle("Darling Launcher — host application");
     resize(1050, 720);
@@ -198,7 +199,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     auto *stopButton = add("Stop selected prefix processes", [this] { runCommand("Stop prefix", {"shutdown"}); });
     auto *verifyButton = add("Verify prefix", [this] { runPrefixMaintenance(false); });
     auto *repairButton = add("Repair prefix", [this] { runPrefixMaintenance(true); });
-    auto *darlingButton = add("Darling runtime…", [this] { openRuntimeBuilder(true); });
+    auto *darlingButton = add("Darling runtime…", [this] { openRuntimeDownload(); });
     verifyButton->setIcon(style()->standardIcon(QStyle::SP_DialogApplyButton)); repairButton->setIcon(style()->standardIcon(QStyle::SP_BrowserReload)); darlingButton->setIcon(style()->standardIcon(QStyle::SP_ComputerIcon));
     troubleshoot = add("Troubleshoot failed app…", [this] { openTroubleshooting(); });
     add("Install Brewfile", [this] {
@@ -218,7 +219,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     auto *bannerLayout = new QHBoxLayout(setupBanner); bannerLayout->setContentsMargins(0, 0, 0, 0);
     setupStatus = new QLabel; setupStatus->setObjectName("setupStatus"); setupStatus->setWordWrap(true); bannerLayout->addWidget(setupStatus, 1);
     auto *showProgress = new QPushButton("Show progress"); showProgress->setObjectName("setupShowProgress"); bannerLayout->addWidget(showProgress);
-    connect(showProgress, &QPushButton::clicked, this, [this] { openRuntimeBuilder(); });
+    connect(showProgress, &QPushButton::clicked, this, [this] { if (prefixDialog && prefixDialog->isBusy()) openRuntimeBuilder(); else openRuntimeDownload(); });
     auto *hideWindow = new QPushButton("Hide until ready"); hideWindow->setObjectName("setupHide"); bannerLayout->addWidget(hideWindow);
     connect(hideWindow, &QPushButton::clicked, this, [this] { hide(); });
     auto *haveDarling = new QPushButton("I already have Darling…"); haveDarling->setObjectName("setupSelectRuntime"); bannerLayout->addWidget(haveDarling);
@@ -377,10 +378,92 @@ void Window::offerRuntimeSetup() {
     if (prefixDialog && prefixDialog->isBusy()) { setupBanner->show(); return; }
     const QString source = QFileInfo(volume->text()).canonicalFilePath(), path = LauncherDiscovery::dataRoot();
     if (!source.isEmpty() && (path == source || path.startsWith(source + '/'))) { setupStatus->setText("The launcher folder " + path + " is inside the mounted macOS source; Darling was not set up."); setupBanner->show(); return; }
-    setupStatus->setText("Darling is still being prepared (clone, build and prefix setup) and this takes a while. Please wait: you can hide this window and a notification will bring it back when everything is ready. Apps you drop meanwhile stay grayed out and import automatically.");
+    setupStatus->setText("Checking for a verified prebuilt Darling runtime. Apps you drop meanwhile wait for setup. If no compatible runtime is available, choose Build from source.");
     setupBanner->show();
-    LauncherLog::write("app", "no usable Darling runtime; starting automatic setup");
-    openRuntimeBuilder(true, true);
+    LauncherLog::write("app", "no usable Darling runtime; checking prebuilt releases");
+    openRuntimeDownload();
+}
+void Window::openRuntimeDownload() {
+    if (runtimeDialog) { runtimeDialog->show(); runtimeDialog->raise(); return; }
+    if ((prefixDialog && prefixDialog->isBusy()) || runtimeInitializing) return;
+    auto *dialog = new QDialog(this); runtimeDialog = dialog;
+    dialog->setObjectName("runtimeDownloadDialog"); dialog->setWindowTitle("Set up Darling runtime"); dialog->resize(560, 240);
+    auto *layout = new QVBoxLayout(dialog);
+    auto *status = new QLabel("Checking for a compatible verified runtime…"); status->setObjectName("runtimeDownloadStatus"); status->setWordWrap(true); layout->addWidget(status);
+    auto *bar = new QProgressBar; bar->setObjectName("runtimeDownloadProgress"); layout->addWidget(bar);
+    auto *retry = new QPushButton("Download runtime"); retry->setObjectName("runtimeDownloadRetry"); layout->addWidget(retry);
+    auto *source = new QPushButton("Build from source…"); source->setObjectName("runtimeBuildSource"); layout->addWidget(source);
+    auto *cancel = new QPushButton("Cancel"); cancel->setObjectName("runtimeDownloadCancel"); layout->addWidget(cancel);
+    auto *download = new RuntimeDownload(dialog, runtimeApi); runtimeDownload = download;
+    connect(download, &RuntimeDownload::progress, dialog, [status, bar](const QString &phase, qint64 received, qint64 total) {
+        status->setText(phase + (total > 0 ? QString(" (%1 / %2 MiB)").arg(received / 1048576).arg(total / 1048576) : QString()));
+        bar->setRange(0, total > 0 ? 1000 : 0); if (total > 0) bar->setValue(qMin<qint64>(1000, received * 1000 / total));
+    });
+    auto verifiedRuntime = std::make_shared<QString>();
+    auto installed = std::make_shared<std::function<void(const QString &, const QString &)>>();
+    auto start = [=] {
+        if (!verifiedRuntime->isEmpty()) { (*installed)(*verifiedRuntime, {}); return; }
+        retry->setEnabled(false); source->setEnabled(false); bar->setRange(0, 0); download->start(LauncherDiscovery::dataRoot());
+    };
+    connect(retry, &QPushButton::clicked, dialog, start);
+    connect(cancel, &QPushButton::clicked, dialog, [=] { if (runtimeInitializing && cancelRuntimeInitialization) cancelRuntimeInitialization(); else if (download->isRunning()) { download->cancel(); status->setText("Cancelling…"); } else dialog->close(); });
+    connect(dialog, &QDialog::rejected, download, &RuntimeDownload::cancel);
+    connect(dialog, &QDialog::rejected, this, [this] { if (runtimeInitializing && cancelRuntimeInitialization) cancelRuntimeInitialization(); });
+    connect(source, &QPushButton::clicked, this, [this, dialog] { dialog->hide(); openRuntimeBuilder(true); });
+    *installed = [=](const QString &runtime, const QString &error) {
+        retry->setEnabled(true); source->setEnabled(true); bar->setRange(0, 1); bar->setValue(runtime.isEmpty() ? 0 : 1);
+        if (!error.isEmpty()) { status->setText(error + " Download attempts are retained under " + LauncherDiscovery::dataRoot() + "/downloads."); setupStatus->setText(error); setupBanner->show(); return; }
+        *verifiedRuntime = runtime; retry->setText("Retry prefix initialization");
+        const QString launcher = runtime + "/bin/darling";
+        QString freshPrefix = LauncherDiscovery::dataRoot() + "/prefixes/prebuilt";
+        for (int suffix = 2; QFileInfo::exists(freshPrefix); ++suffix) freshPrefix = LauncherDiscovery::dataRoot() + "/prefixes/prebuilt-" + QString::number(suffix);
+        if (!QDir().mkpath(freshPrefix)) { status->setText("Runtime installed, but cannot create a private prefix."); return; }
+        runtimeInitializing = true; status->setText("Initializing the private prefix…"); retry->setEnabled(false); source->setEnabled(false);
+        dialog->setProperty("runtimeInitializationPending", true);
+        auto *initialize = new QProcess;
+        auto environment = QProcessEnvironment::systemEnvironment();
+        for (const auto &key : environment.keys()) if (key.startsWith("DYLD_")) environment.remove(key);
+        environment.insert("DPREFIX", freshPrefix); environment.insert("DARLING_INSTALL_PREFIX", runtime); initialize->setProcessEnvironment(environment);
+        auto cancelled = std::make_shared<bool>(false);
+        auto *deadline = new QTimer(initialize); deadline->setSingleShot(true); deadline->setInterval(60000);
+        cancelRuntimeInitialization = [=] {
+            if (*cancelled) return;
+            *cancelled = true; runtimeInitializing = false;
+            status->setText("Prefix initialization cancelled. Requesting shutdown; the private prefix is retained for inspection."); source->setEnabled(true);
+            auto *shutdown = new QProcess;
+            shutdown->setProcessEnvironment(environment);
+            connect(shutdown, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) {
+                const QString message = code == 0 && exit == QProcess::NormalExit ? "Prefix initialization cancelled; shutdown completed." : "Prefix shutdown failed. Run the selected private launcher with shutdown for the retained prefix: " + freshPrefix;
+                status->setText(message); LauncherLog::write("runtime-setup", message);
+            });
+            connect(shutdown, &QProcess::errorOccurred, this, [=](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) { const QString message = "Cannot start prefix shutdown. Shut down the retained private prefix manually: " + freshPrefix; status->setText(message); LauncherLog::write("runtime-setup", message); } });
+            QPointer<QProcess> pendingShutdown(shutdown);
+            QTimer::singleShot(5000, this, [=] { if (pendingShutdown && pendingShutdown->state() != QProcess::NotRunning) { const QString message = "Prefix shutdown timed out. The retained private prefix needs manual shutdown: " + freshPrefix; status->setText(message); LauncherLog::write("runtime-setup", message); } });
+            connect(shutdown, &QProcess::finished, shutdown, &QObject::deleteLater);
+            connect(shutdown, &QProcess::errorOccurred, shutdown, [shutdown](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) shutdown->deleteLater(); });
+            shutdown->start(launcher, {"shutdown"});
+        };
+        connect(deadline, &QTimer::timeout, this, [this] { if (cancelRuntimeInitialization) cancelRuntimeInitialization(); });
+        auto finished = [=](bool success) {
+            deadline->stop();
+            dialog->setProperty("runtimeInitializationPending", false);
+            if (*cancelled) return;
+            runtimeInitializing = false; retry->setEnabled(true); source->setEnabled(true);
+            if (!success) { status->setText("The runtime could not initialize a prefix on this host. Build from source or inspect the diagnostic log."); return; }
+            darling->setText(launcher); runtimeRoot->setText(runtime); prefix->setText(freshPrefix);
+            QSettings settings("cristim", "darling-launcher"); settings.setValue("prefix", freshPrefix); settings.setValue("darling", launcher); settings.setValue("runtimeRoot", runtime);
+            setupBanner->hide(); dialog->hide(); load(); importQueued(); notifyDesktop("Darling is ready", "The verified runtime and private prefix are ready.");
+        };
+        connect(initialize, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) { finished(code == 0 && exit == QProcess::NormalExit); });
+        connect(initialize, &QProcess::errorOccurred, this, [=](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) finished(false); });
+        connect(initialize, &QProcess::finished, initialize, &QObject::deleteLater);
+        connect(initialize, &QProcess::errorOccurred, initialize, [initialize](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) initialize->deleteLater(); });
+        initialize->start(launcher, {"shell", "/usr/bin/true"}); deadline->start();
+        connect(initialize, &QProcess::readyReadStandardOutput, this, [initialize] { LauncherLog::write("runtime-setup", QString::fromLocal8Bit(initialize->readAllStandardOutput())); });
+        connect(initialize, &QProcess::readyReadStandardError, this, [initialize] { LauncherLog::write("runtime-setup", QString::fromLocal8Bit(initialize->readAllStandardError())); });
+    };
+    connect(download, &RuntimeDownload::completed, this, [installed](const QString &runtime, const QString &error) { (*installed)(runtime, error); });
+    dialog->show(); start();
 }
 void Window::offerExistingDarling() {
     if (prefixDialog && prefixDialog->isBusy()) { statusBar()->showMessage("Darling is being set up in the background; wait for it to finish first."); return; }
@@ -426,11 +509,12 @@ void Window::notifyDesktop(const QString &title, const QString &body) {
     if (!tool.isEmpty() && QGuiApplication::platformName() != "offscreen") QProcess::startDetached(tool, {"--app-name", "Darling Launcher", title, body});
 }
 void Window::importQueued() {
-    if (queuedImports.isEmpty() || (prefixDialog && prefixDialog->isBusy())) return;
+    if (queuedImports.isEmpty() || runtimeInitializing || (runtimeDownload && runtimeDownload->isRunning()) || (prefixDialog && prefixDialog->isBusy())) return;
     const QStringList names = queuedImports; queuedImports.clear();
     QTimer::singleShot(0, this, [this, names] { importBundles(names); });
 }
 Window::~Window() {
+    if (runtimeInitializing && cancelRuntimeInitialization) cancelRuntimeInitialization();
     for (auto *process : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) process->disconnect(this);
 }
 
@@ -540,7 +624,7 @@ void Window::importDependency(const QString &key, const QString &source, const Q
 }
 void Window::importBundles(const QStringList &names) {
     if (names.isEmpty()) return;
-    if (prefixDialog && prefixDialog->isBusy()) {
+    if (runtimeInitializing || (runtimeDownload && runtimeDownload->isRunning()) || (prefixDialog && prefixDialog->isBusy())) {
         for (const QString &name : names) if (!queuedImports.contains(name)) queuedImports << name;
         showQueuedImports();
         statusBar()->showMessage(QString::number(queuedImports.size()) + " app(s) waiting; they import when Darling is ready.");
@@ -830,6 +914,8 @@ void Window::openTroubleshooting() {
 }
 
 void Window::closeEvent(QCloseEvent *event) {
+    if (runtimeDownload && runtimeDownload->isRunning()) { runtimeDownload->cancel(); statusBar()->showMessage("Cancelling the runtime download. Close again when cancellation finishes."); event->ignore(); return; }
+    if (runtimeInitializing && cancelRuntimeInitialization) { cancelRuntimeInitialization(); event->ignore(); return; }
     if (prefixDialog && prefixDialog->isBusy()) { statusBar()->showMessage("Darling is cloning or building; the launcher continues in the background."); hide(); event->ignore(); return; }
     for (auto *dialog : findChildren<QDialog *>("issueApprovalDialog"))
         for (auto *process : dialog->findChildren<QProcess *>()) if (process->state() != QProcess::NotRunning) { statusBar()->showMessage("Wait for the approved issue submission to finish before closing."); event->ignore(); return; }

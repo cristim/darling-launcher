@@ -3,6 +3,7 @@
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
+#include <functional>
 namespace LauncherReleases {
 // The CI release contract: tag vYYYY.MM.DD-<sha7>[-rN], manifest.json with artifacts keyed by `uname -m`.
 struct Artifact { QString file, url, sha256, installRoot, launcher; qint64 size = 0, unpackedSize = 0; };
@@ -18,12 +19,13 @@ QString hostArchitecture();
 // disagrees with the release or the API digest, and install_root/launcher other than the fixed values are errors.
 Selection select(const QJsonObject &release, const QJsonObject &manifest, const QString &arch, bool allowPrerelease);
 // Runs `gh attestation verify`, pinned to repo's release-binaries.yml workflow. Empty string = verified.
-QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo);
+using Cancelled = std::function<bool()>;
+QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo, const Cancelled &cancelled = {});
 // Verifies the digest and attestation, vets the member list (relative paths only, no device or
 // hard-link members, nothing written through a symlink, a regular usr/local/bin/darling), then extracts
 // into <runtimesRoot>/<tag>. Absolute symlink targets are allowed because the runtime image uses them.
 // Returns an empty string on success, otherwise the reason.
-QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo);
+QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, const Cancelled &cancelled = {});
 // Takes `tar --zstd --quoting-style=escape -tv` lines; returns why the archive is unsafe, or "".
 QString vetMembers(const QStringList &verboseListing);
 }
