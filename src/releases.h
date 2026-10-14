@@ -3,7 +3,10 @@
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
+#include <functional>
 namespace LauncherReleases {
+using Cancelled = std::function<bool()>;
+constexpr const char *repository = "VibeDarling/darling";
 // The CI release contract: tag vYYYY.MM.DD-<sha7>[-rN], manifest.json with artifacts keyed by `uname -m`.
 struct Artifact { QString file, url, sha256, installRoot, launcher; qint64 size = 0, unpackedSize = 0; };
 struct Selection { QString tag; Artifact artifact; QString error; bool valid() const { return error.isEmpty(); } };
@@ -28,7 +31,7 @@ constexpr const char *signerWorkflow = "VibeDarling/darling/.github/workflows/re
 constexpr const char *signerSourceRef = "refs/heads/master";
 // Runs `gh attestation verify <archive> --repo <repo> --signer-workflow <signerWorkflow> --source-ref <signerSourceRef>
 // --deny-self-hosted-runners`. Empty string = verified.
-QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo);
+QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo, Cancelled cancelled = {});
 // Removes .archive-* copies left by a killed install when no other install holds .archive.lock, then copies the
 // archive into a private 0700 folder under runtimesRoot, then verifies the digest and attestation of
 // that copy and vets the member list (relative paths under usr/local only, no device or
@@ -40,7 +43,7 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 // Returns an empty string on success, otherwise the reason.
 // unpackedSize is manifest.json's unpacked_size: the listed regular-file bytes may not exceed it, and extraction is
 // stopped once the files written exceed it by more than extractionSlack.
-QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize);
+QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize, Cancelled cancelled = {});
 // CI computes unpacked_size as the sum of regular-file sizes, so a correct archive never needs this; it only
 // absorbs rounding in a future packer.
 constexpr qint64 extractionSlack = 1 << 20;
@@ -51,7 +54,7 @@ QString runtimeLayoutError(const QString &dir);
 // Re-checks what tar actually wrote, independent of the listing: only usr/local/**, only regular files with
 // one link and no setuid/setgid bit, folders with u+rwx, and symlinks passing symlinkTargetError, then
 // runtimeLayoutError.
-QString extractedTreeError(const QString &dir);
+QString extractedTreeError(const QString &dir, Cancelled cancelled = {});
 // Why a symlink at <link> (relative to the runtime folder) must not point at <target>, or "". Absolute targets
 // must match the allow-list of the released image exactly; relative ones may only climb with leading ".." and
 // must stay in usr/local.
@@ -62,5 +65,5 @@ QString symlinkTargetError(const QString &link, const QString &target);
 // leaves room to grow while bounding the work and inodes a hostile archive can cost.
 constexpr qint64 maxArchiveMembers = 200000;
 // regularBytes, when given, receives the sum of the listed regular-file sizes.
-QString vetMembers(const QStringList &verboseListing, qint64 *regularBytes = nullptr);
+QString vetMembers(const QStringList &verboseListing, qint64 *regularBytes = nullptr, Cancelled cancelled = {});
 }
