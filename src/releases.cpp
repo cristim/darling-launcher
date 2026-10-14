@@ -24,6 +24,26 @@
 #include <climits>
 #include <unistd.h>
 namespace LauncherReleases {
+static QString finish(QProcess &process, int timeout, const Cancelled &cancelled, QByteArray *output = nullptr) {
+    QElapsedTimer clock; clock.start();
+    QByteArray bytes;
+    qint64 count = 0;
+    QString reason;
+    do {
+        process.waitForFinished(100);
+        const QByteArray chunk = process.readAllStandardOutput();
+        count += chunk.size() + process.readAllStandardError().size();
+        if (output) bytes += chunk;
+        if (cancelled && cancelled()) reason = "Cancelled";
+        else if (count > 64 * 1024 * 1024) reason = "process output limit exceeded";
+        else if (clock.elapsed() > timeout) reason = "process timed out";
+        else if (process.error() == QProcess::FailedToStart) reason = "process failed to start";
+        if (!reason.isEmpty()) { process.kill(); process.waitForFinished(5000); return reason; }
+    } while (process.state() != QProcess::NotRunning);
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) return "process exited unsuccessfully";
+    if (output) *output = bytes;
+    return {};
+}
 bool validTag(const QString &tag) {
     static const QRegularExpression pattern(R"(\Av\d{4}\.\d\d\.\d\d-[0-9a-f]{7}(-r\d+)?\z)");
     return pattern.match(tag).hasMatch();
@@ -80,17 +100,19 @@ QString attestedSourceError(const QByteArray &verifyOutput, const QString &tag) 
     }
     return {};
 }
-QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo, const QString &tag) {
+QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo, const QString &tag, Cancelled cancelled) {
     if (gh.isEmpty()) return "gh is required to verify the build attestation; install GitHub CLI or build from source";
+    if (repo != repository) return "runtime repository is not the trusted production repository";
     QProcess process;
     process.start(gh, {"attestation", "verify", archive, "--repo", repo, "--signer-workflow", signerWorkflow, "--source-ref", signerSourceRef, "--deny-self-hosted-runners", "--format", "json"});
-    if (!process.waitForFinished(120000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
-        return "attestation verification failed for " + archive + " (needs a gh with --source-ref and --deny-self-hosted-runners): " + QString::fromUtf8(process.readAllStandardError());
-    return attestedSourceError(process.readAllStandardOutput(), tag);
+    QByteArray verified;
+    const QString error = finish(process, 120000, cancelled, &verified);
+    if (!error.isEmpty()) return "attestation verification failed: " + error;
+    return attestedSourceError(verified, tag);
 }
 // Copies archive to copy (created exclusively) and returns the SHA-256 of the bytes copied, so every later step
 // reads exactly the bytes that were hashed. The final component of archive must not be a symlink.
-static QString copyAndHash(const QString &archive, const QString &copy, QString *error) {
+static QString copyAndHash(const QString &archive, const QString &copy, QString *error, const Cancelled &cancelled) {
     const int fd = ::open(QFile::encodeName(archive).constData(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);  // O_NONBLOCK: opening a FIFO must not wait for a writer
     if (fd < 0) { *error = "cannot open " + archive + (errno == ELOOP ? QString(": it is a symlink") : ": " + QString::fromLocal8Bit(strerror(errno))); return {}; }
     struct stat info;
@@ -105,6 +127,7 @@ static QString copyAndHash(const QString &archive, const QString &copy, QString 
     QByteArray buffer(1 << 20, Qt::Uninitialized);
     qint64 read = 0;
     while (remaining > 0 && (read = source.read(buffer.data(), qMin<qint64>(buffer.size(), remaining))) > 0) {
+        if (cancelled && cancelled()) { *error = "Cancelled"; return {}; }
         remaining -= read;
         hash.addData(QByteArrayView(buffer.constData(), read));
         if (out.write(buffer.constData(), read) != read) { *error = "cannot write " + copy + ": " + out.errorString(); return {}; }
@@ -151,7 +174,7 @@ QString symlinkTargetError(const QString &link, const QString &target) {
     if (resolved != installRoot && !resolved.startsWith(QString(installRoot) + '/')) return "symlink " + link + " points outside usr/local: " + target;
     return {};
 }
-QString vetMembers(const QStringList &listing, qint64 *regularBytes) {
+QString vetMembers(const QStringList &listing, qint64 *regularBytes, Cancelled cancelled) {
     // Owners must be numeric: tar prints uname/gname unescaped, so a name with spaces could shift the path column.
     // Devices list "major,minor" in the size column; they must parse so they are refused as devices below.
     static const QRegularExpression row(R"(^(\S)\S{9}\s+\d+/\d+\s+(\d+|\d+,\s*\d+)\s+\d{4}-\d\d-\d\d\s\d\d:\d\d\s(.+)$)");
@@ -159,6 +182,7 @@ QString vetMembers(const QStringList &listing, qint64 *regularBytes) {
     QString error;
     qint64 total = 0, members = 0;
     for (const QString &line : listing) {
+        if (cancelled && cancelled()) return "Cancelled";
         if (line.isEmpty()) continue;
         if (++members > maxArchiveMembers) return "archive has more than " + QString::number(maxArchiveMembers) + " members";
         const auto match = row.match(line);
@@ -209,12 +233,14 @@ QString runtimeLayoutError(const QString &dir) {
     // A hard link could be to the host's setuid darling; installArchive never produces either.
     if (launcher.st_nlink != 1) return QString(launcherPath) + " has another hard link";
     if (launcher.st_mode & (S_ISUID | S_ISGID)) return QString(launcherPath) + " is setuid or setgid";
+    if (!QFileInfo(dir + "/" + launcherPath).isExecutable()) return QString(launcherPath) + " is not an executable regular file";
     return {};
 }
-QString extractedTreeError(const QString &dir) {
+QString extractedTreeError(const QString &dir, Cancelled cancelled) {
     const QDir base(dir);
     QDirIterator entries(dir, QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
     while (entries.hasNext()) {
+        if (cancelled && cancelled()) return "Cancelled";
         const QString path = entries.next(), relative = base.relativeFilePath(path);
         if (!insideInstallRoot(relative)) return "extracted entry is outside usr/local: " + relative;
         struct stat info;
@@ -238,10 +264,16 @@ QString extractedTreeError(const QString &dir) {
     return runtimeLayoutError(dir);
 }
 // Bytes in regular files below dir; symlinks are not followed.
-static qint64 regularFileBytes(const QString &dir) {
+static qint64 regularFileBytes(const QString &dir, const Cancelled &cancelled) {
     qint64 total = 0;
     QDirIterator entries(dir, QDir::Files | QDir::Hidden | QDir::System | QDir::NoSymLinks, QDirIterator::Subdirectories);
-    while (entries.hasNext()) { entries.next(); total += entries.fileInfo().size(); }
+    while (entries.hasNext()) {
+        if (cancelled && cancelled()) return std::numeric_limits<qint64>::max();
+        entries.next();
+        const auto size = entries.fileInfo().size();
+        if (size > std::numeric_limits<qint64>::max() - total) return std::numeric_limits<qint64>::max();
+        total += size;
+    }
     return total;
 }
 // Gives the owner rwx on every folder below dir, so an archive folder extracted read-only cannot block removal.
@@ -261,9 +293,11 @@ static void removeStaleArchiveCopies(const QString &runtimesRoot) {
         QDir(path).removeRecursively();
     }
 }
-QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize) {
+QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize, Cancelled cancelled) {
+    if (cancelled && cancelled()) return "Cancelled";
     if (!validTag(tag)) return "not a release tag: " + tag;
     if (unpackedSize <= 0) return "release has no unpacked size";
+    if (unpackedSize > std::numeric_limits<qint64>::max() - extractionSlack) return "release unpacked size is out of range";
     if (sha256.isEmpty()) return "release asset has no SHA-256 digest";
     if (!QDir().mkpath(runtimesRoot)) return "cannot create " + runtimesRoot;
     // Every install holds .archive.lock shared; whoever gets it exclusively knows no other install is running, so
@@ -272,16 +306,16 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     if (lockFd < 0) return "cannot open " + runtimesRoot + "/.archive.lock: " + QString::fromLocal8Bit(strerror(errno));
     const struct LockFd { int fd; ~LockFd() { ::close(fd); } } lock{lockFd};
     if (flock(lock.fd, LOCK_EX | LOCK_NB) == 0) removeStaleArchiveCopies(runtimesRoot);
-    if (flock(lock.fd, LOCK_SH) != 0) return "cannot lock " + runtimesRoot + "/.archive.lock";
+    if (flock(lock.fd, LOCK_SH | LOCK_NB) != 0) return "another install of " + tag + " or another release is cleaning archive copies; retry the installation";
     // A 0700 folder only this user can write: the copy in it cannot be swapped between hashing and extraction.
     const QTemporaryDir privateDir(runtimesRoot + "/.archive-XXXXXX");
     if (!privateDir.isValid()) return "cannot create a private folder in " + runtimesRoot + ": " + privateDir.errorString();
     const QString copy = privateDir.filePath("runtime.tar.zst");
     QString error;
-    const QString actual = copyAndHash(archive, copy, &error);
+    const QString actual = copyAndHash(archive, copy, &error, cancelled);
     if (!error.isEmpty()) return error;
     if (actual.compare(sha256, Qt::CaseInsensitive) != 0) return "SHA-256 mismatch for " + archive + ": expected " + sha256 + ", got " + actual;
-    error = verifyAttestation(gh, copy, repo, tag);
+    error = verifyAttestation(gh, copy, repo, tag, cancelled);
     if (!error.isEmpty()) return error;
     const QString target = runtimesRoot + "/" + tag;
     if (QFileInfo::exists(target)) return target + " already exists";
@@ -291,10 +325,11 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     QProcess list;
     list.setProcessEnvironment(tarEnvironment);
     list.start("tar", {"--zstd", "--quoting-style=escape", "--numeric-owner", "-tvf", copy});
-    if (!list.waitForFinished(600000) || list.exitStatus() != QProcess::NormalExit || list.exitCode() != 0)
-        return "cannot list " + archive + ": " + QString::fromUtf8(list.readAllStandardError());
+    QByteArray listing;
+    error = finish(list, 600000, cancelled, &listing);
+    if (!error.isEmpty()) return "cannot list archive: " + error;
     qint64 listedBytes = 0;
-    error = vetMembers(QString::fromUtf8(list.readAllStandardOutput()).split('\n'), &listedBytes);
+    error = vetMembers(QString::fromUtf8(listing).split('\n'), &listedBytes, cancelled);
     if (!error.isEmpty()) return error;
     if (listedBytes > unpackedSize) return "archive unpacks to " + QString::number(listedBytes) + " bytes, more than the " + QString::number(unpackedSize) + " in manifest.json";
     const qint64 extractionLimit = unpackedSize + extractionSlack;
@@ -309,18 +344,30 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     extract.start("tar", {"--zstd", "-xf", copy, "-C", staging, "--no-same-owner", "--no-same-permissions", "--no-overwrite-dir"});
     // Defence in depth against a tar or zstd bug: the listing check above already bounds what GNU tar writes.
     // Each scan stats the whole tree (tens of ms for the full image), hence the 2 s interval.
-    QElapsedTimer clock; clock.start();
-    while (!extract.waitForFinished(2000)) {
+    QElapsedTimer clock, scan; clock.start(); scan.start();
+    qint64 outputBytes = 0;
+    do {
+        extract.waitForFinished(100);
+        outputBytes += extract.readAllStandardOutput().size() + extract.readAllStandardError().size();
         QString stop;
-        if (clock.elapsed() > 1800000) stop = "extraction timed out";
-        else if (regularFileBytes(staging) > extractionLimit) stop = "extraction wrote more than " + QString::number(extractionLimit) + " bytes";
-        if (!stop.isEmpty()) { extract.kill(); extract.waitForFinished(); return abandon(stop); }
-    }
-    if (regularFileBytes(staging) > extractionLimit) return abandon("extraction wrote more than " + QString::number(extractionLimit) + " bytes");
+        if (cancelled && cancelled()) stop = "Cancelled";
+        else if (clock.elapsed() > 1800000) stop = "extraction timed out";
+        else if (outputBytes > 64 * 1024 * 1024) stop = "extraction output limit exceeded";
+        else if (extract.error() == QProcess::FailedToStart) stop = "extraction failed to start";
+        else if (scan.elapsed() >= 2000) {
+            const qint64 written = regularFileBytes(staging, cancelled);
+            if (cancelled && cancelled()) stop = "Cancelled";
+            else if (written > extractionLimit) stop = "extraction wrote more than " + QString::number(extractionLimit) + " bytes";
+            scan.restart();
+        }
+        if (!stop.isEmpty()) { extract.kill(); extract.waitForFinished(5000); return abandon(stop); }
+    } while (extract.state() != QProcess::NotRunning);
+    if (regularFileBytes(staging, cancelled) > extractionLimit) return abandon(cancelled && cancelled() ? "Cancelled" : "extraction wrote more than " + QString::number(extractionLimit) + " bytes");
     if (extract.exitStatus() != QProcess::NormalExit || extract.exitCode() != 0)
-        return abandon("extraction failed: " + QString::fromUtf8(extract.readAllStandardError()));
-    error = extractedTreeError(staging);
+        return abandon("extraction exited unsuccessfully");
+    error = extractedTreeError(staging, cancelled);
     if (!error.isEmpty()) return abandon(error);
+    if (cancelled && cancelled()) return abandon("Cancelled");
     if (!QDir().rename(staging, target)) return abandon("cannot move " + staging + " to " + target);
     return {};
 }
