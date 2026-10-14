@@ -102,6 +102,7 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 #include <QTemporaryDir>
 #include <QElapsedTimer>
 #include <limits>
+#include <optional>
 #include <climits>
 #include <unistd.h>
 namespace LauncherReleases {
@@ -258,12 +259,12 @@ QString extractedTreeError(const QString &dir, Cancelled cancelled) {
     }
     return runtimeLayoutError(dir);
 }
-// Bytes in regular files below dir; symlinks are not followed.
-static qint64 regularFileBytes(const QString &dir, const Cancelled &cancelled) {
+// Bytes in regular files below dir; symlinks are not followed. No value means cancellation.
+static std::optional<qint64> regularFileBytes(const QString &dir, const Cancelled &cancelled) {
     qint64 total = 0;
     QDirIterator entries(dir, QDir::Files | QDir::Hidden | QDir::System | QDir::NoSymLinks, QDirIterator::Subdirectories);
     while (entries.hasNext()) {
-        if (cancelled && cancelled()) return std::numeric_limits<qint64>::max();
+        if (cancelled && cancelled()) return std::nullopt;
         entries.next();
         const auto size = entries.fileInfo().size();
         if (size > std::numeric_limits<qint64>::max() - total) return std::numeric_limits<qint64>::max();
@@ -350,14 +351,16 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
         else if (outputBytes > 64 * 1024 * 1024) stop = "extraction output limit exceeded";
         else if (extract.error() == QProcess::FailedToStart) stop = "extraction failed to start";
         else if (scan.elapsed() >= 2000) {
-            const qint64 written = regularFileBytes(staging, cancelled);
-            if (cancelled && cancelled()) stop = "Cancelled";
-            else if (written > extractionLimit) stop = "extraction wrote more than " + QString::number(extractionLimit) + " bytes";
+            const auto written = regularFileBytes(staging, cancelled);
+            if (!written) stop = "Cancelled";
+            else if (*written > extractionLimit) stop = "extraction wrote more than " + QString::number(extractionLimit) + " bytes";
             scan.restart();
         }
         if (!stop.isEmpty()) { extract.kill(); extract.waitForFinished(5000); return abandon(stop); }
     } while (extract.state() != QProcess::NotRunning);
-    if (regularFileBytes(staging, cancelled) > extractionLimit) return abandon(cancelled && cancelled() ? "Cancelled" : "extraction wrote more than " + QString::number(extractionLimit) + " bytes");
+    const auto written = regularFileBytes(staging, cancelled);
+    if (!written) return abandon("Cancelled");
+    if (*written > extractionLimit) return abandon("extraction wrote more than " + QString::number(extractionLimit) + " bytes");
     if (extract.exitStatus() != QProcess::NormalExit || extract.exitCode() != 0)
         return abandon("extraction exited unsuccessfully");
     error = extractedTreeError(staging, cancelled);
