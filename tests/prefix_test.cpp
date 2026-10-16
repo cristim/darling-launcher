@@ -238,7 +238,7 @@ private slots:
                 if (!pid.open(QIODevice::ReadOnly) || QFileInfo::exists("/proc/" + QString::fromLatin1(pid.readAll().trimmed()))) return false;
             }
             if (++scanCalls == 1) {
-                // Keep the active wrapper long enough for scanning; this row only proves cancellation, not its branch.
+                // Makes the periodic scan due; the next poll cancels first, so this row proves cancellation, not the scan.
                 if (periodic) QThread::msleep(2100);
                 return false;
             }
