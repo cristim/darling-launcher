@@ -206,6 +206,48 @@ private slots:
         clock.restart(); QVERIFY(installArchive(archive, sha256File(archive), runtimes, tag, gh, repository, roomyUnpackedSize).contains("retry the installation")); QVERIFY(clock.elapsed() < 1000);
         QVERIFY(QFileInfo::exists(heldCopy + "/keep")); QVERIFY(!QFileInfo::exists(runtimes + '/' + tag)); QVERIFY(!QFileInfo::exists(runtimes + '/' + tag + ".partial"));
     }
+    void fileSizeScanCancellation_data() {
+        QTest::addColumn<bool>("periodic");
+        QTest::addColumn<qint64>("unpackedSize");
+        const qint64 largest = std::numeric_limits<qint64>::max() - LauncherReleases::extractionSlack;
+        QTest::newRow("final") << false << roomyUnpackedSize;
+        QTest::newRow("final-max-limit") << false << largest;
+        QTest::newRow("periodic") << true << roomyUnpackedSize;
+        QTest::newRow("periodic-max-limit") << true << largest;
+    }
+    void fileSizeScanCancellation() {
+        using namespace LauncherReleases;
+        QFETCH(bool, periodic);
+        QFETCH(qint64, unpackedSize);
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QString root = temporary.path(), runtimes = root + "/runtimes", tag = "v2026.10.09-00000f3";
+        const QString archive = makeArchive(root, "good", runtimeMembers()), gh = writeScript(root + "/gh", "exit 0");
+        const QString realTar = QStandardPaths::findExecutable("tar"), pidPath = root + "/extract.pid", readyPath = root + "/ready";
+        QVERIFY(!archive.isEmpty()); QVERIFY(!gh.isEmpty()); QVERIFY(!realTar.isEmpty()); QVERIFY(QDir().mkpath(root + "/bin"));
+        QVERIFY(!writeScript(root + "/bin/tar", "case \"$*\" in\n*-xf*) echo $$ > '" + pidPath + "'\n"
+            "  \"" + realTar + "\" \"$@\" || exit $?\n  touch '" + readyPath + "'\n  " + (periodic ? "exec sleep 10" : "exit 0") +
+            ";;\n*) exec \"" + realTar + "\" \"$@\";;\nesac").isEmpty());
+        const QByteArray path = qgetenv("PATH");
+        const auto restore = qScopeGuard([&] { qputenv("PATH", path); });
+        qputenv("PATH", (root + "/bin:").toUtf8() + path);
+        int scanCalls = 0;
+        const QString error = installArchive(archive, sha256File(archive), runtimes, tag, gh, repository, unpackedSize, [&] {
+            if (!QFileInfo::exists(readyPath)) return false;
+            if (!periodic) {
+                QFile pid(pidPath);
+                if (!pid.open(QIODevice::ReadOnly) || QFileInfo::exists("/proc/" + QString::fromLatin1(pid.readAll().trimmed()))) return false;
+            }
+            if (++scanCalls == 1) {
+                // Makes the periodic scan due; the next poll cancels first, so this row proves cancellation, not the scan.
+                if (periodic) QThread::msleep(2100);
+                return false;
+            }
+            // The completed-extractor row cancels in the final scan; the active row can cancel at a later loop poll.
+            return scanCalls == 2;
+        });
+        QCOMPARE(error, QString("Cancelled")); QCOMPARE(scanCalls, 2);
+        QVERIFY(!QFileInfo::exists(runtimes + '/' + tag)); QVERIFY(!QFileInfo::exists(runtimes + '/' + tag + ".partial"));
+    }
     // Security S5: CI packs only usr/local/**, so anything else in an archive is refused before extraction.
     void membersOutsideUsrLocalAreRefused() {
         using namespace LauncherReleases;
