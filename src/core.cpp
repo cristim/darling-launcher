@@ -12,8 +12,15 @@
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QScopeGuard>
 #include <QStorageInfo>
 #include <plist/plist.h>
+#include <dirent.h>
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <cstdlib>
 
 namespace {
@@ -104,6 +111,116 @@ QStringList mountedMacVolumes() {
     for (const auto &candidate : LauncherSources::candidates(LauncherSources::mounts()))
         if (candidate.usable()) result << candidate.root;
     return result;
+}
+static AppDiscoveryStatus discoverAppsAt(int rootFd, QStringList *result, QString *error) {
+    QStringList found;
+    bool hasApplicationsDirectory = false;
+    auto failSystem = [&](const QString &path) {
+        return fail(error, "Cannot enumerate source directory " + path + ": " + QString::fromLocal8Bit(std::strerror(errno)));
+    };
+    std::function<bool(int, const QString &)> scan = [&](int directoryFd, const QString &relative) {
+        const int copyFd = ::dup(directoryFd);
+        if (copyFd < 0) return failSystem(relative);
+        DIR *directory = ::fdopendir(copyFd);
+        if (!directory) { const int saved = errno; ::close(copyFd); errno = saved; return failSystem(relative); }
+        bool ok = true;
+        while (ok) {
+            errno = 0;
+            dirent *entry = ::readdir(directory);
+            if (!entry) { if (errno != 0) ok = failSystem(relative); break; }
+            if (entry->d_name[0] == '.') continue;
+            struct stat info{};
+            if (::fstatat(directoryFd, entry->d_name, &info, AT_SYMLINK_NOFOLLOW) != 0) { ok = failSystem(relative); break; }
+            if (!S_ISDIR(info.st_mode)) continue;
+            const QByteArray rawName(entry->d_name);
+            const QString decodedName = QFile::decodeName(rawName);
+            if (QFile::encodeName(decodedName) != rawName) {
+                fail(error, "Source directory name cannot be represented safely: " + relative);
+                ok = false;
+                break;
+            }
+            const QString child = relative + '/' + decodedName;
+            if (child.endsWith(".app")) {
+                const int bundleFd = ::openat(directoryFd, entry->d_name, O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+                if (bundleFd < 0) { ok = failSystem(child); break; }
+                found << child;
+                ::close(bundleFd);
+                continue;
+            }
+            const int childFd = ::openat(directoryFd, entry->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+            if (childFd < 0) { ok = failSystem(child); break; }
+            ok = scan(childFd, child);
+            ::close(childFd);
+        }
+        ::closedir(directory);
+        return ok;
+    };
+    for (const QString &base : {QStringLiteral("Applications"), QStringLiteral("System/Applications")}) {
+        const int separator = base.lastIndexOf('/');
+        const QString parent = separator < 0 ? QString() : base.left(separator);
+        const QString leaf = separator < 0 ? base : base.mid(separator + 1);
+        int parentFd = rootFd;
+        if (!parent.isEmpty()) {
+            const QByteArray parentName = QFile::encodeName(parent);
+            parentFd = ::openat(rootFd, parentName.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+            if (parentFd < 0) {
+                if (errno == ENOENT) continue;
+                failSystem(parent);
+                return AppDiscoveryStatus::Unavailable;
+            }
+        }
+        const QByteArray name = QFile::encodeName(leaf);
+        struct stat info{};
+        if (::fstatat(parentFd, name.constData(), &info, AT_SYMLINK_NOFOLLOW) != 0) {
+            const int saved = errno;
+            if (parentFd != rootFd) ::close(parentFd);
+            if (saved == ENOENT) continue;
+            errno = saved;
+            failSystem(base);
+            return AppDiscoveryStatus::Unavailable;
+        }
+        hasApplicationsDirectory = true;
+        if (!S_ISDIR(info.st_mode)) {
+            fail(error, "Supported Applications path is not a directory: " + base);
+            if (parentFd != rootFd) ::close(parentFd);
+            return AppDiscoveryStatus::InvalidInput;
+        }
+        const int baseFd = ::openat(parentFd, name.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        const int openError = errno;
+        if (parentFd != rootFd) ::close(parentFd);
+        if (baseFd < 0) {
+            errno = openError;
+            failSystem(base);
+            return AppDiscoveryStatus::Unavailable;
+        }
+        const bool ok = scan(baseFd, base);
+        ::close(baseFd);
+        if (!ok) return AppDiscoveryStatus::Unavailable;
+    }
+    if (!hasApplicationsDirectory) { fail(error, "The source has no supported Applications directory"); return AppDiscoveryStatus::InvalidInput; }
+    found.sort(Qt::CaseInsensitive);
+    *result = std::move(found);
+    if (error) error->clear();
+    return AppDiscoveryStatus::Success;
+}
+AppDiscoveryStatus listAppsChecked(const QString &volume, QStringList *result, QString *error) {
+    if (!result) { fail(error, "App discovery requires a result destination"); return AppDiscoveryStatus::InvalidInput; }
+    result->clear();
+    auto openFailure = [&](const QString &path) {
+        const int saved = errno;
+        fail(error, "Cannot open source directory " + path + ": " + QString::fromLocal8Bit(std::strerror(saved)));
+        return saved == ENOENT || saved == ENOTDIR || saved == ELOOP ? AppDiscoveryStatus::InvalidInput : AppDiscoveryStatus::Unavailable;
+    };
+    const int rootFd = ::open(QFile::encodeName(volume).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (rootFd < 0) return openFailure(volume);
+    const auto closeRoot = qScopeGuard([&] { ::close(rootFd); });
+    const int systemFd = ::openat(rootFd, "System", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (systemFd < 0) return openFailure("System");
+    const auto closeSystem = qScopeGuard([&] { ::close(systemFd); });
+    const int libraryFd = ::openat(systemFd, "Library", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (libraryFd < 0) return openFailure("System/Library");
+    ::close(libraryFd);
+    return discoverAppsAt(rootFd, result, error);
 }
 QStringList discoverApps(const QString &volume) {
     QStringList found;

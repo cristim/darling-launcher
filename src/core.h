@@ -28,6 +28,8 @@ struct MissingSymbol {
 
 namespace LauncherCore {
 QStringList discoverApps(const QString &volume);
+enum class AppDiscoveryStatus { Success, InvalidInput, Unavailable };
+AppDiscoveryStatus listAppsChecked(const QString &volume, QStringList *result, QString *error);
 AppPreview appPreview(const QString &volume, const QString &relativeBundle);
 QStringList mountedMacVolumes();
 bool looksLikeMacVolume(const QString &root);
