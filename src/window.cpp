@@ -420,7 +420,7 @@ void Window::openRuntimeDownload() {
         if (!QDir().mkpath(freshPrefix)) { status->setText("Runtime installed, but cannot create a private prefix."); return; }
         runtimeInitializing = true; status->setText("Initializing the private prefix…"); retry->setEnabled(false); source->setEnabled(false);
         dialog->setProperty("runtimeInitializationPending", true);
-        auto *initialize = new QProcess;
+        auto *initialize = new QProcess(this);
         auto environment = QProcessEnvironment::systemEnvironment();
         for (const auto &key : environment.keys()) if (key.startsWith("DYLD_")) environment.remove(key);
         environment.insert("DPREFIX", freshPrefix); environment.insert("DARLING_INSTALL_PREFIX", runtime); initialize->setProcessEnvironment(environment);
@@ -430,7 +430,10 @@ void Window::openRuntimeDownload() {
             if (*cancelled) return;
             *cancelled = true; runtimeInitializing = false;
             status->setText("Prefix initialization cancelled. Requesting shutdown; the private prefix is retained for inspection."); source->setEnabled(true);
-            auto *shutdown = new QProcess;
+            QPointer<QProcess> hung(initialize);
+            QTimer::singleShot(5000, this, [hung] { if (hung && hung->state() != QProcess::NotRunning) hung->kill(); });
+            auto *shutdown = new QProcess(this);
+            shutdown->setObjectName("runtimeShutdown");
             shutdown->setProcessEnvironment(environment);
             connect(shutdown, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) {
                 const QString message = code == 0 && exit == QProcess::NormalExit ? "Prefix initialization cancelled; shutdown completed." : "Prefix shutdown failed. Run the selected private launcher with shutdown for the retained prefix: " + freshPrefix;
@@ -516,6 +519,7 @@ void Window::importQueued() {
 Window::~Window() {
     if (runtimeInitializing && cancelRuntimeInitialization) cancelRuntimeInitialization();
     for (auto *process : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) process->disconnect(this);
+    for (auto *process : findChildren<QProcess *>("runtimeShutdown", Qt::FindDirectChildrenOnly)) if (process->state() != QProcess::NotRunning) process->waitForFinished(5000);
 }
 
 void Window::updatePrefixChoices() {
