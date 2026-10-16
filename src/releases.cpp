@@ -350,7 +350,7 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
         else if (clock.elapsed() > 1800000) stop = "extraction timed out";
         else if (outputBytes > 64 * 1024 * 1024) stop = "extraction output limit exceeded";
         else if (extract.error() == QProcess::FailedToStart) stop = "extraction failed to start";
-        else if (scan.elapsed() >= 2000) {
+        else if (extract.state() != QProcess::NotRunning && scan.elapsed() >= 2000) {
             const auto written = regularFileBytes(staging, cancelled);
             if (!written) stop = "Cancelled";
             else if (*written > extractionLimit) stop = "extraction wrote more than " + QString::number(extractionLimit) + " bytes";

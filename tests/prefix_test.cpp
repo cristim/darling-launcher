@@ -238,11 +238,11 @@ private slots:
                 if (!pid.open(QIODevice::ReadOnly) || QFileInfo::exists("/proc/" + QString::fromLatin1(pid.readAll().trimmed()))) return false;
             }
             if (++scanCalls == 1) {
-                // The first call is the extraction loop's poll. Make its periodic scan due, or let the final scan run.
+                // Keep the active wrapper long enough for scanning; this row only proves cancellation, not its branch.
                 if (periodic) QThread::msleep(2100);
                 return false;
             }
-            // Cancel exactly once, on the scan's first file, then return false if polled again.
+            // The completed-extractor row cancels in the final scan; the active row can cancel at a later loop poll.
             return scanCalls == 2;
         });
         QCOMPARE(error, QString("Cancelled")); QCOMPARE(scanCalls, 2);
