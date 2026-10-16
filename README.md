@@ -8,6 +8,26 @@ Licensed under the GNU General Public License, version 3 or any later version (`
 
 Requires CMake, a C++17 compiler, Qt 6 Core/Widgets/Concurrent/Test, Qt image format plugins (ICNS), and `libplist-2.0`.
 
+The executable also accepts `--help` and `--headless` without loading a
+Qt display plugin or creating launcher settings or logs. With no command it opens
+the GUI when an advertised XCB or Wayland display accepts a connection; otherwise
+it prints safe help. A display can disappear between that check and GUI startup.
+`DARLING_LAUNCHER_HEADLESS=1` forces CLI mode on a desktop, while `0` keeps automatic
+selection. Other values are rejected. `--mount-all` remains a GUI option and never
+mounts anything implicitly in headless mode.
+
+Help is text; unsupported commands and invalid options return JSON with exit code
+2. Operational source-enumeration failures return JSON with exit code 3. Diagnostics use stderr.
+The read-only app listing requires an explicitly named macOS-layout source directory:
+
+```sh
+darling-launcher apps list --volume /path/to/mounted-macos-volume
+```
+
+Use `--headless` or `DARLING_LAUNCHER_HEADLESS=1` to force this command through the
+CLI even when a desktop is available. It only lists discovered `.app` bundle paths;
+it does not mount the source or import, launch, or modify bundles.
+
 ```sh
 cmake -S . -B build -G Ninja
 cmake --build build
