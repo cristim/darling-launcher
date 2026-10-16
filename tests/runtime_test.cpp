@@ -16,6 +16,7 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <signal.h>
 
 class RuntimeTest : public QObject {
     Q_OBJECT
@@ -36,7 +37,7 @@ private slots:
     void cleanupTestCase() { qputenv("PATH", originalPath); }
     void download_data() {
         QTest::addColumn<QString>("mode");
-        for (const auto &mode : {"success", "window", "window-cancel", "window-failure", "window-none", "none", "schema", "architecture", "checksum", "hash", "size", "oversize", "http", "cancel", "attestation", "verify-cancel", "host", "glibc", "redirect"}) QTest::newRow(mode) << QString(mode);
+        for (const auto &mode : {"success", "window", "window-cancel", "window-cancel-hung", "window-close-shutdown", "window-failure", "window-none", "none", "schema", "architecture", "checksum", "hash", "size", "oversize", "http", "cancel", "attestation", "verify-cancel", "host", "glibc", "redirect"}) QTest::newRow(mode) << QString(mode);
     }
     void download() {
         QFETCH(QString, mode);
@@ -45,7 +46,11 @@ private slots:
         const QString base = "http://127.0.0.1:" + QString::number(server.serverPort());
         const QString tag = "v2026.10.14-aaaaaaa", name = "darling-runtime-" + tag + "-linux-" + LauncherReleases::hostArchitecture() + ".tar.zst";
         QVERIFY(QDir().mkpath(root + "/image/usr/local/bin")); QVERIFY(QDir().mkpath(root + "/image/usr/local/libexec/darling/private/etc"));
-        QVERIFY(write(root + "/image/usr/local/bin/darling", mode == "window-cancel"
+        QVERIFY(write(root + "/image/usr/local/bin/darling", mode == "window-close-shutdown"
+            ? "#!/bin/sh\nif [ \"$1\" = shutdown ]; then /usr/bin/sleep 0.5; touch \"$DPREFIX/shutdown-done\"; exit 0; fi\ntouch \"$DPREFIX/initializing\"\nwhile :; do /usr/bin/sleep 0.05; done\n"
+            : mode == "window-cancel-hung"
+            ? "#!/bin/sh\nif [ \"$1\" = shutdown ]; then touch \"$DPREFIX/shutdown\"; exit 0; fi\necho $$ > \"$DPREFIX/pid\"\ntouch \"$DPREFIX/initializing\"\nwhile :; do /usr/bin/sleep 0.05; done\n"
+            : mode == "window-cancel"
             ? "#!/bin/sh\nif [ \"$1\" = shutdown ]; then touch \"$DPREFIX/shutdown\"; exit 0; fi\ntouch \"$DPREFIX/initializing\"\nwhile [ ! -e \"$DPREFIX/shutdown\" ]; do /usr/bin/sleep 0.05; done\nexit 0\n"
             : "#!/bin/sh\nif [ -e \"$HOME/fixture-initialize-fail\" ]; then exit 1; fi\nprintf '%s\\n' \"$DARLING_INSTALL_PREFIX\" > \"$DPREFIX/runtime-used\"\nexit 0\n", true));
         QProcess tar; tar.start("tar", {"--zstd", "-cf", root + "/fixture.tar.zst", "-C", root + "/image", "usr"}); QVERIFY(tar.waitForFinished()); QCOMPARE(tar.exitCode(), 0);
@@ -84,6 +89,8 @@ private slots:
             const QString windowHome = root + "/home"; QVERIFY(QDir().mkpath(windowHome));
             qputenv("HOME", windowHome.toUtf8()); auto restore = qScopeGuard([this] { qputenv("HOME", home.path().toUtf8()); });
             QSettings("cristim", "darling-launcher").clear();
+            const QString closedMarker = windowHome + "/.darling-launcher/prefixes/prebuilt/shutdown-done";
+            auto shutdownSurvivesClose = qScopeGuard([&] { if (mode == "window-close-shutdown") QVERIFY2(QFileInfo::exists(closedMarker), "shutdown was killed when the window was destroyed"); });
             Window window({}, false, [] { return QList<SourceMount>{}; }, QUrl(base)); window.show();
             window.findChild<QLineEdit *>("darlingField")->clear(); window.findChild<QLineEdit *>("runtimeRootField")->clear();
             window.offerRuntimeSetup(); QVERIFY(window.findChild<QDialog *>("runtimeDownloadDialog"));
@@ -100,6 +107,21 @@ private slots:
                 QVERIFY(window.findChild<QLineEdit *>("runtimeRootField")->text().isEmpty());
                 QVERIFY(QFile::remove(windowHome + "/fixture-initialize-fail"));
                 window.findChild<QPushButton *>("runtimeDownloadRetry")->click();
+            }
+            if (mode == "window-close-shutdown") {
+                QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(windowHome + "/.darling-launcher/prefixes/prebuilt/initializing"), 10000);
+                window.findChild<QPushButton *>("runtimeDownloadCancel")->click();
+                QTest::qWait(100);
+                return;
+            }
+            if (mode == "window-cancel-hung") {
+                const QString newPrefix = windowHome + "/.darling-launcher/prefixes/prebuilt";
+                QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(newPrefix + "/initializing"), 10000);
+                QFile pidFile(newPrefix + "/pid"); QVERIFY(pidFile.open(QIODevice::ReadOnly)); const pid_t pid = pidFile.readAll().trimmed().toInt(); QVERIFY(pid > 1);
+                window.findChild<QPushButton *>("runtimeDownloadCancel")->click();
+                QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(newPrefix + "/shutdown"), 5000);
+                QTRY_VERIFY_WITH_TIMEOUT(::kill(pid, 0) != 0, 10000);
+                return;
             }
             if (mode == "window-cancel") {
                 const QString newPrefix = windowHome + "/.darling-launcher/prefixes/prebuilt";
