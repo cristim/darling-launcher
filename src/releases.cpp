@@ -9,7 +9,31 @@
 #include <QFileInfo>
 #include <QCryptographicHash>
 #include <QFile>
+#include <QElapsedTimer>
+#include <QUuid>
+#include <sys/stat.h>
 namespace LauncherReleases {
+static bool stopped(const Cancelled &cancelled) { return cancelled && cancelled(); }
+static bool finish(QProcess &process, int timeout, const Cancelled &cancelled, QByteArray *output = nullptr) {
+    QElapsedTimer elapsed; elapsed.start();
+    QByteArray errors;
+    qint64 discarded = 0;
+    auto drain = [&] {
+        const auto bytes = process.readAllStandardOutput();
+        if (output) *output += bytes; else discarded += bytes.size();
+        errors += process.readAllStandardError();
+        process.setProperty("boundedError", errors.left(65536));
+        return errors.size() <= 65536 && discarded <= 1024 * 1024 && (!output || output->size() <= 32 * 1024 * 1024);
+    };
+    while (!process.waitForFinished(100)) {
+        const bool bounded = drain();
+        if (process.state() == QProcess::NotRunning) break;
+        if (stopped(cancelled) || elapsed.elapsed() >= timeout || !bounded) {
+            process.kill(); process.waitForFinished(5000); return false;
+        }
+    }
+    return drain() && !stopped(cancelled) && process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+}
 bool validTag(const QString &tag) {
     static const QRegularExpression pattern(R"(^v\d{4}\.\d\d\.\d\d-[0-9a-f]{7}(-r\d+)?$)");
     return pattern.match(tag).hasMatch();
@@ -49,12 +73,13 @@ Selection select(const QJsonObject &release, const QJsonObject &manifest, const 
     if (!listed) return fail("Release " + tag + " does not list " + artifact.file + ".");
     Selection result; result.tag = tag; result.artifact = artifact; return result;
 }
-QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo) {
+QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo, const Cancelled &cancelled) {
+    if (repo != "VibeDarling/darling") return "untrusted runtime repository";
     if (gh.isEmpty()) return "gh is required to verify the build attestation; install GitHub CLI or build from source";
     QProcess process;
-    process.start(gh, {"attestation", "verify", archive, "--repo", repo, "--signer-workflow", repo + "/.github/workflows/release-binaries.yml"});
-    if (!process.waitForFinished(120000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
-        return "attestation verification failed for " + archive + ": " + QString::fromUtf8(process.readAllStandardError());
+    process.start(gh, {"attestation", "verify", archive, "--repo", repo, "--signer-workflow", repo + "/.github/workflows/release-binaries.yml", "--source-ref", "refs/heads/master", "--deny-self-hosted-runners"});
+    if (!finish(process, 120000, cancelled))
+        return "attestation verification failed for " + archive + ": " + QString::fromUtf8(process.property("boundedError").toByteArray());
     return {};
 }
 }
@@ -66,11 +91,16 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 #include <QProcess>
 #include <QSet>
 namespace LauncherReleases {
-static QString sha256Of(const QString &path, QString *error) {
+static QString sha256Of(const QString &path, QString *error, const Cancelled &cancelled) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) { *error = "cannot read " + path + ": " + file.errorString(); return {}; }
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    if (!hash.addData(&file)) { *error = "cannot hash " + path; return {}; }
+    while (!file.atEnd()) {
+        if (stopped(cancelled)) { *error = "Cancelled"; return {}; }
+        const auto bytes = file.read(1024 * 1024);
+        if (bytes.isEmpty() && file.error() != QFile::NoError) { *error = "cannot hash " + path; return {}; }
+        hash.addData(bytes);
+    }
     return hash.result().toHex();
 }
 QString vetMembers(const QStringList &listing) {
@@ -96,33 +126,37 @@ QString vetMembers(const QStringList &listing) {
     }
     return {};
 }
-QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo) {
+QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, const Cancelled &cancelled) {
     if (!validTag(tag)) return "not a release tag: " + tag;
     if (sha256.isEmpty()) return "release asset has no SHA-256 digest";
     QString error;
-    const QString actual = sha256Of(archive, &error);
+    const QString actual = sha256Of(archive, &error, cancelled);
     if (!error.isEmpty()) return error;
     if (actual.compare(sha256, Qt::CaseInsensitive) != 0) return "SHA-256 mismatch for " + archive + ": expected " + sha256 + ", got " + actual;
-    error = verifyAttestation(gh, archive, repo);
+    error = verifyAttestation(gh, archive, repo, cancelled);
     if (!error.isEmpty()) return error;
     const QString target = runtimesRoot + "/" + tag;
     if (QFileInfo::exists(target)) return target + " already exists";
     QProcess list;
     list.start("tar", {"--zstd", "--quoting-style=escape", "-tvf", archive});
-    if (!list.waitForFinished(600000) || list.exitStatus() != QProcess::NormalExit || list.exitCode() != 0)
-        return "cannot list " + archive + ": " + QString::fromUtf8(list.readAllStandardError());
-    error = vetMembers(QString::fromUtf8(list.readAllStandardOutput()).split('\n'));
+    QByteArray listing;
+    if (!finish(list, 600000, cancelled, &listing))
+        return "cannot list " + archive + ": " + QString::fromUtf8(list.property("boundedError").toByteArray());
+    error = vetMembers(QString::fromUtf8(listing).split('\n'));
     if (!error.isEmpty()) return error;
-    const QString staging = target + ".partial";
+    const QString staging = target + ".partial-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
     if (QFileInfo::exists(staging)) return staging + " is left over from an earlier attempt; remove it by hand";
     if (!QDir().mkpath(staging)) return "cannot create " + staging;
     QProcess extract;
     extract.start("tar", {"--zstd", "-xf", archive, "-C", staging, "--no-same-owner", "--no-same-permissions", "--no-overwrite-dir"});
-    if (!extract.waitForFinished(1800000) || extract.exitStatus() != QProcess::NormalExit || extract.exitCode() != 0)
-        return "extraction failed, partial files left in " + staging + ": " + QString::fromUtf8(extract.readAllStandardError());
+    if (!finish(extract, 1800000, cancelled))
+        return "extraction failed, partial files left in " + staging + ": " + QString::fromUtf8(extract.property("boundedError").toByteArray());
     const QFileInfo launcher(staging + "/" + launcherPath);
-    if (launcher.isSymLink() || !launcher.isFile())
-        return "archive has no regular (non-symlink) usr/local/bin/darling, partial files left in " + staging;
+    struct stat mode{};
+    if (launcher.isSymLink() || !launcher.isFile() || !launcher.isExecutable() || ::stat(launcher.filePath().toLocal8Bit().constData(), &mode) != 0 || (mode.st_mode & (S_ISUID | S_ISGID)))
+        return "archive has no executable regular (non-symlink, non-setuid) usr/local/bin/darling, partial files left in " + staging;
+    if (!QFileInfo(staging + "/usr/local/libexec/darling/private/etc").isDir()) return "archive has no runtime marker, partial files left in " + staging;
+    if (stopped(cancelled)) return "Cancelled; partial files left in " + staging;
     if (!QDir().rename(staging, target)) return "cannot move " + staging + " to " + target;
     return {};
 }
