@@ -283,17 +283,19 @@ static void openFolders(const QString &dir) {
     chmod(QFile::encodeName(dir).constData(), (info.st_mode & 07777) | S_IRWXU);
     for (const QString &name : QDir(dir).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)) openFolders(dir + "/" + name);
 }
-// Removes .archive-XXXXXX folders this user owns (not symlinks); the caller must hold .archive.lock exclusively.
+// Removes .archive-XXXXXX copies and <tag>.partial staging folders this user owns (not symlinks) left by a killed
+// install; the caller must hold .archive.lock exclusively, so no install is running.
 static void removeStaleArchiveCopies(const QString &runtimesRoot) {
-    static const QRegularExpression name(R"(^\.archive-[A-Za-z0-9]{6}$)");
+    static const QRegularExpression name(R"(\A(\.archive-[A-Za-z0-9]{6}|v\d{4}\.\d\d\.\d\d-[0-9a-f]{7}(-r\d+)?\.partial)\z)");
     for (const QString &entry : QDir(runtimesRoot).entryList(QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot | QDir::NoSymLinks)) {
         struct stat info;
         const QString path = runtimesRoot + "/" + entry;
         if (!name.match(entry).hasMatch() || lstat(QFile::encodeName(path).constData(), &info) != 0 || !S_ISDIR(info.st_mode) || info.st_uid != getuid()) continue;
+        openFolders(path);
         QDir(path).removeRecursively();
     }
 }
-QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize, Cancelled cancelled) {
+static QString install(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize, Cancelled cancelled) {
     if (cancelled && cancelled()) return "Cancelled";
     if (!validTag(tag)) return "not a release tag: " + tag;
     if (unpackedSize <= 0) return "release has no unpacked size";
@@ -370,5 +372,15 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     if (cancelled && cancelled()) return abandon("Cancelled");
     if (!QDir().rename(staging, target)) return abandon("cannot move " + staging + " to " + target);
     return {};
+}
+InstallResult installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize, Cancelled cancelled) {
+    // Latched, so the status below does not depend on the caller's callback staying true, and not on the message,
+    // which can contain archive member names.
+    bool wasCancelled = false;
+    const Cancelled latched = [&] { return wasCancelled = wasCancelled || (cancelled && cancelled()); };
+    InstallResult result;
+    result.error = install(archive, sha256, runtimesRoot, tag, gh, repo, unpackedSize, latched);
+    result.status = result.error.isEmpty() ? InstallStatus::Installed : (wasCancelled ? InstallStatus::Cancelled : InstallStatus::Failed);
+    return result;
 }
 }
