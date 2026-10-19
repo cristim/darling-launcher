@@ -28,7 +28,9 @@ constexpr const char *signerWorkflow = "VibeDarling/darling/.github/workflows/re
 constexpr const char *signerSourceRef = "refs/heads/master";
 // Runs `gh attestation verify <archive> --repo <repo> --signer-workflow <signerWorkflow> --source-ref <signerSourceRef>
 // --deny-self-hosted-runners`. Empty string = verified.
-QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo);
+// Empty when the attestation verifies and every attested source commit starts with the sha7 in the tag.
+QString attestedSourceError(const QByteArray &verifyOutput, const QString &tag);
+QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo, const QString &tag);
 // Removes .archive-* copies left by a killed install when no other install holds .archive.lock, then copies the
 // archive into a private 0700 folder under runtimesRoot, then verifies the digest and attestation of
 // that copy and vets the member list (relative paths under usr/local only, no device or

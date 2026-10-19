@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "releases.h"
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QUrl>
@@ -10,9 +11,21 @@
 #include <QFileInfo>
 #include <QCryptographicHash>
 #include <QFile>
+#include <QSet>
+#include <QDirIterator>
+#include <sys/stat.h>
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <QTemporaryDir>
+#include <QElapsedTimer>
+#include <limits>
+#include <climits>
+#include <unistd.h>
 namespace LauncherReleases {
 bool validTag(const QString &tag) {
-    static const QRegularExpression pattern(R"(^v\d{4}\.\d\d\.\d\d-[0-9a-f]{7}(-r\d+)?$)");
+    static const QRegularExpression pattern(R"(\Av\d{4}\.\d\d\.\d\d-[0-9a-f]{7}(-r\d+)?\z)");
     return pattern.match(tag).hasMatch();
 }
 QString hostArchitecture() {
@@ -55,34 +68,26 @@ Selection select(const QJsonObject &release, const QJsonObject &manifest, const 
     if (!listed) return fail("Release " + tag + " does not list " + artifact.file + ".");
     Selection result; result.tag = tag; result.artifact = artifact; return result;
 }
-QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo) {
-    if (gh.isEmpty()) return "gh is required to verify the build attestation; install GitHub CLI or build from source";
-    QProcess process;
-    process.start(gh, {"attestation", "verify", archive, "--repo", repo, "--signer-workflow", signerWorkflow, "--source-ref", signerSourceRef, "--deny-self-hosted-runners"});
-    if (!process.waitForFinished(120000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
-        return "attestation verification failed for " + archive + " (needs a gh with --source-ref and --deny-self-hosted-runners): " + QString::fromUtf8(process.readAllStandardError());
+QString attestedSourceError(const QByteArray &verifyOutput, const QString &tag) {
+    if (!validTag(tag)) return "not a release tag: " + tag;
+    const QString sha7 = tag.mid(12, 7);  // vYYYY.MM.DD- is 12 characters
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(verifyOutput, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isArray() || document.array().isEmpty()) return "gh attestation verify printed no attestation to check against " + tag;
+    for (const auto &value : document.array()) {
+        const QString digest = value.toObject().value("verificationResult").toObject().value("signature").toObject().value("certificate").toObject().value("sourceRepositoryDigest").toString();
+        if (!digest.startsWith(sha7)) return "attestation is for source commit " + digest + ", not the commit " + sha7 + " named by " + tag;
+    }
     return {};
 }
+QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo, const QString &tag) {
+    if (gh.isEmpty()) return "gh is required to verify the build attestation; install GitHub CLI or build from source";
+    QProcess process;
+    process.start(gh, {"attestation", "verify", archive, "--repo", repo, "--signer-workflow", signerWorkflow, "--source-ref", signerSourceRef, "--deny-self-hosted-runners", "--format", "json"});
+    if (!process.waitForFinished(120000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
+        return "attestation verification failed for " + archive + " (needs a gh with --source-ref and --deny-self-hosted-runners): " + QString::fromUtf8(process.readAllStandardError());
+    return attestedSourceError(process.readAllStandardOutput(), tag);
 }
-
-#include <QCryptographicHash>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
-#include <QProcess>
-#include <QSet>
-#include <QDirIterator>
-#include <sys/stat.h>
-#include <cerrno>
-#include <cstring>
-#include <fcntl.h>
-#include <sys/file.h>
-#include <QTemporaryDir>
-#include <QElapsedTimer>
-#include <limits>
-#include <climits>
-#include <unistd.h>
-namespace LauncherReleases {
 // Copies archive to copy (created exclusively) and returns the SHA-256 of the bytes copied, so every later step
 // reads exactly the bytes that were hashed. The final component of archive must not be a symlink.
 static QString copyAndHash(const QString &archive, const QString &copy, QString *error) {
@@ -276,7 +281,7 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     const QString actual = copyAndHash(archive, copy, &error);
     if (!error.isEmpty()) return error;
     if (actual.compare(sha256, Qt::CaseInsensitive) != 0) return "SHA-256 mismatch for " + archive + ": expected " + sha256 + ", got " + actual;
-    error = verifyAttestation(gh, copy, repo);
+    error = verifyAttestation(gh, copy, repo, tag);
     if (!error.isEmpty()) return error;
     const QString target = runtimesRoot + "/" + tag;
     if (QFileInfo::exists(target)) return target + " already exists";
