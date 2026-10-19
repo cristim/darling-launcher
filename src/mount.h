@@ -24,7 +24,8 @@ QList<MacPartition> parsePartitions(const QByteArray &json, QString *error);
 // Root-owned directory under which tools/mount-macos.py mounts for this user (its MOUNT_PARENT/<uid>).
 QString mountParent();
 // True only for a mount point the helper created: a direct, canonical child of a root-owned mountParent().
-bool isHelperMount(const QString &path);
+// parent and extraOwner exist so tests can use a directory they own; production callers pass only the path.
+bool isHelperMount(const QString &path, const QString &parent = mountParent(), unsigned extraOwner = 0);
 QString exitDescription(int code);
 }
 

@@ -66,12 +66,12 @@ QList<MacPartition> parsePartitions(const QByteArray &json, QString *error) {
 
 QString mountParent() { return "/run/darling-launcher/" + QString::number(::getuid()); }
 
-bool isHelperMount(const QString &path) {
+bool isHelperMount(const QString &path, const QString &parent, unsigned extraOwner) {
     const QFileInfo info(path);
     struct stat status {};
     // The mounted root reports the caller's uid (uid= option), so only the parent chain is checked.
-    return QDir::isAbsolutePath(path) && info.canonicalFilePath() == path && info.isDir() && info.absolutePath() == mountParent()
-        && untrustedComponent(mountParent(), 0, &status).isEmpty() && S_ISDIR(status.st_mode);
+    return QDir::isAbsolutePath(path) && info.canonicalFilePath() == path && info.isDir() && info.absolutePath() == parent
+        && untrustedComponent(parent, extraOwner, &status).isEmpty() && S_ISDIR(status.st_mode);
 }
 
 QString exitDescription(int code) {
