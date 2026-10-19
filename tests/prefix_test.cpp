@@ -77,7 +77,7 @@ const QString ghAttests = "printf '[{\"verificationResult\":{\"signature\":{\"ce
 // installArchive with the stub gh attesting the commit named by the tag.
 QString installAttested(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize, LauncherReleases::Cancelled cancelled = {}) {
     qputenv("GH_STUB_SHA7", tag.mid(12, 7).toUtf8());
-    return LauncherReleases::installArchive(archive, sha256, runtimesRoot, tag, gh, repo, unpackedSize, cancelled);
+    return LauncherReleases::installArchive(archive, sha256, runtimesRoot, tag, gh, repo, unpackedSize, cancelled).error;
 }
 }
 class PrefixTest : public QObject {
@@ -213,6 +213,38 @@ private slots:
         clock.restart(); QVERIFY(installAttested(archive, sha256File(archive), runtimes, tag, gh, repository, roomyUnpackedSize).contains("retry the installation")); QVERIFY(clock.elapsed() < 1000);
         QVERIFY(QFileInfo::exists(heldCopy + "/keep")); QVERIFY(!QFileInfo::exists(runtimes + '/' + tag)); QVERIFY(!QFileInfo::exists(runtimes + '/' + tag + ".partial"));
     }
+    // The cancel result was a string a hostile member name could imitate; the status comes from the callback.
+    void installStatusSeparatesCancelFromFailure() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString gh = writeScript(root + "/gh", ghAttests); QVERIFY(!gh.isEmpty());
+        const QString good = makeArchive(root, "good", runtimeMembers());
+        auto bad = runtimeMembers(); bad.append(fileMember("etc/Cancelled"));
+        const QString evil = makeArchive(root, "evil", bad); QVERIFY(!good.isEmpty()); QVERIFY(!evil.isEmpty());
+        qputenv("GH_STUB_SHA7", "00000a1");
+        const auto run = [&](const QString &archive, const QString &tag, Cancelled cancelled) { qputenv("GH_STUB_SHA7", tag.mid(12, 7).toUtf8()); return installArchive(archive, sha256File(archive), runtimes, tag, gh, repository, roomyUnpackedSize, cancelled); };
+        const auto failed = run(evil, "v2026.10.09-00000a1", {});
+        QVERIFY2(failed.error.contains("Cancelled"), qPrintable(failed.error)); QVERIFY(failed.status == InstallStatus::Failed);
+        QVERIFY(run(good, "v2026.10.09-00000a2", [] { return true; }).status == InstallStatus::Cancelled);
+        int polls = 0;  // true once, then false: still reported as a cancel
+        QVERIFY(run(good, "v2026.10.09-00000a3", [&] { return ++polls == 3; }).status == InstallStatus::Cancelled);
+        const auto installed = run(good, "v2026.10.09-00000a4", {});
+        QVERIFY(installed.status == InstallStatus::Installed); QVERIFY(installed.error.isEmpty());
+        const auto lateCancel = run(good, "v2026.10.09-00000a5", [&] { return QFileInfo::exists(runtimes + "/v2026.10.09-00000a5/" + launcherPath); });
+        QVERIFY(lateCancel.status == InstallStatus::Installed);
+    }
+    // A killed install leaves <tag>.partial, which blocked the next install of that tag until removed by hand.
+    void killedInstallPartialIsReclaimed() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString gh = writeScript(root + "/gh", ghAttests); QVERIFY(!gh.isEmpty());
+        const QString good = makeArchive(root, "good", runtimeMembers()); QVERIFY(!good.isEmpty());
+        const QString tag = "v2026.10.09-00000b1", leftover = runtimes + "/" + tag + ".partial", foreign = runtimes + "/notatag.partial";
+        QVERIFY(QDir().mkpath(leftover + "/usr/local")); QVERIFY(QDir().mkpath(foreign));
+        QCOMPARE(installAttested(good, sha256File(good), runtimes, tag, gh, repository, roomyUnpackedSize), QString());
+        QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/bin/darling").isFile()); QVERIFY(!QFileInfo::exists(leftover));
+        QVERIFY(QFileInfo::exists(foreign));
+    }
     // Security S5: CI packs only usr/local/**, so anything else in an archive is refused before extraction.
     void membersOutsideUsrLocalAreRefused() {
         using namespace LauncherReleases;
@@ -301,8 +333,8 @@ private slots:
         QVERIFY(runtime(root + "/up")); QVERIFY(QFile::link("../../../outside", root + "/up/usr/local/up"));
         QVERIFY(extractedTreeError(root + "/up").contains("points outside usr/local"));
     }
-    // Review F4: the signer pin followed the repo argument, so a fork override also replaced the trust root.
-    void signerPinIgnoresRepository() {
+    // Review F4: the signer pin followed the repo argument, so a fork override also replaced the trust root; a repo other than the production one is now refused.
+    void signerPinRejectsOtherRepository() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path();
         const QString gh = writeScript(root + "/gh", "echo \"$@\" > '" + root + "/gh-args'; " + ghAttests); QVERIFY(!gh.isEmpty());
         QVERIFY(LauncherReleases::verifyAttestation(gh, root + "/archive.tar.zst", "cristim/darling", "v2026.10.09-3721b65").contains("trusted production repository"));
@@ -361,8 +393,12 @@ private slots:
         QCOMPARE(installAttested(good, sha256File(good), runtimes, tag, gh, "VibeDarling/darling", roomyUnpackedSize), QString());
         const QString foreign = runtimes + "/v2026.10.09-0000007.partial"; QVERIFY(QDir().mkpath(foreign));
         { QFile mine(foreign + "/someone-elses"); QVERIFY(mine.open(QIODevice::WriteOnly)); }
+        // A live install holds .archive.lock shared; its staging folder must survive.
+        const int liveFd = ::open(QFile::encodeName(runtimes + "/.archive.lock").constData(), O_RDWR | O_CLOEXEC); QVERIFY(liveFd >= 0);
+        auto release = qScopeGuard([&] { ::close(liveFd); }); QCOMPARE(::flock(liveFd, LOCK_SH), 0);
         QVERIFY(installAttested(good, sha256File(good), runtimes, "v2026.10.09-0000007", gh, "VibeDarling/darling", roomyUnpackedSize).contains("another install"));
         QVERIFY(QFileInfo::exists(foreign + "/someone-elses"));
+        release.dismiss(); ::close(liveFd);
         // No launcher, so the install fails after tar has applied the read-only folder mode.
         QJsonArray lockedMembers = runtimeMembers(); lockedMembers.removeLast(); QJsonObject locked = dirMember("usr/local/locked"); locked.insert("mode", "555");
         lockedMembers.append(locked); lockedMembers.append(fileMember("usr/local/locked/file"));
