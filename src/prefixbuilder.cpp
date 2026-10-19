@@ -25,7 +25,7 @@ bool loadJson(const QString &path, QJsonObject *object) {
 }
 }
 namespace LauncherPrefix {
-bool selectInputs(const QJsonObject &discovery, bool includePrs, QJsonObject *selected, QString *message) {
+bool selectInputs(const QJsonObject &discovery, QJsonObject *selected, QString *message) {
     if (discovery.value("schema").toInt() != 1 || discovery.value("owner").toString() != "VibeDarling" || !discovery.value("complete").toBool())
         return error(message, "The builder did not produce a complete VibeDarling schema-1 lock");
     QJsonArray repos = discovery.value("repos").toArray();
@@ -37,15 +37,15 @@ bool selectInputs(const QJsonObject &discovery, bool includePrs, QJsonObject *se
         auto item = value.toObject();
         if (!item.value("prs").isArray() || item.value("base").toString().isEmpty() || item.value("branch").toString().isEmpty())
             return error(message, "Discovery lock is missing repository inputs");
-        if (!includePrs) item.insert("prs", QJsonArray{});
+        item.insert("prs", QJsonArray{});
         inputs.append(item);
     }
     result.insert("repos", inputs);
-    result.insert("launcher_input_selection", includePrs ? "default-branches-and-open-prs" : "default-branches-only");
+    result.insert("launcher_input_selection", "default-branches-only");
     if (selected) *selected = result;
     return true;
 }
-bool selectNestedInputs(const QJsonObject &discovery, bool includePrs, QJsonObject *selected, QString *message) {
+bool selectNestedInputs(const QJsonObject &discovery, QJsonObject *selected, QString *message) {
     if (discovery.value("schema").toInt() != 1 || discovery.value("owner").toString() != "VibeDarling" ||
         discovery.value("top_lock_sha256").toString().isEmpty() || !discovery.value("vibedarling").isArray() || !discovery.value("external_pinned").isArray())
         return error(message, "Invalid nested-submodule discovery lock");
@@ -54,11 +54,11 @@ bool selectNestedInputs(const QJsonObject &discovery, bool includePrs, QJsonObje
         auto item = value.toObject();
         if (!item.value("prs").isArray() || item.value("base").toString().isEmpty() || item.value("branch").toString().isEmpty())
             return error(message, "Nested lock is missing repository inputs");
-        if (!includePrs) item.insert("prs", QJsonArray{});
+        item.insert("prs", QJsonArray{});
         repos.append(item);
     }
     result.insert("vibedarling", repos);
-    result.insert("launcher_input_selection", includePrs ? "default-branches-and-open-prs" : "default-branches-only");
+    result.insert("launcher_input_selection", "default-branches-only");
     if (selected) *selected = result;
     return true;
 }
@@ -105,7 +105,7 @@ void PrefixBuilder::start(const PrefixBuildRequest &value) {
     if (!snapshot.open(QIODevice::WriteOnly) || snapshot.write(bytes) != bytes.size()) { fail("Cannot snapshot the selected builder script"); return; }
     snapshot.close();
     provenance = {{"script", request.script}, {"script_sha256", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())},
-                  {"source_clone", request.source}, {"workspace", request.workspace}, {"include_open_prs", request.includePrs}, {"jobs", request.jobs}, {"cmake_arguments", QJsonArray::fromStringList(request.cmakeArguments)}};
+                  {"source_clone", request.source}, {"workspace", request.workspace}, {"jobs", request.jobs}, {"cmake_arguments", QJsonArray::fromStringList(request.cmakeArguments)}};
     run(Phase::Inspect, {"--help"});
 }
 void PrefixBuilder::run(Phase next, const QStringList &arguments) {
@@ -139,7 +139,7 @@ void PrefixBuilder::advance() {
     } else if (phase == Phase::Resolve) {
         QJsonObject discovery, selected; QString message;
         if (!loadJson(staging.path() + "/discovery.lock.json", &discovery)) { fail("Cannot read the discovery lock"); return; }
-        if (!LauncherPrefix::selectInputs(discovery, request.includePrs, &selected, &message)) { fail(message); return; }
+        if (!LauncherPrefix::selectInputs(discovery, &selected, &message)) { fail(message); return; }
         if (!saveJson(staging.path() + "/selected.lock.json", selected)) { fail("Cannot write selected input lock"); return; }
         run(Phase::Checkout, {"checkout", "--lock", staging.path() + "/selected.lock.json", "--workspace", request.workspace, "--jobs", QString::number(request.jobs)});
     } else if (phase == Phase::Checkout) {
@@ -150,7 +150,7 @@ void PrefixBuilder::advance() {
     } else if (phase == Phase::ResolveNested) {
         QJsonObject discovery, selected; QString message;
         if (!loadJson(staging.path() + "/nested.discovery.lock.json", &discovery)) { fail("Cannot read nested discovery lock"); return; }
-        if (!LauncherPrefix::selectNestedInputs(discovery, request.includePrs, &selected, &message)) { fail(message); return; }
+        if (!LauncherPrefix::selectNestedInputs(discovery, &selected, &message)) { fail(message); return; }
         if (!saveJson(staging.path() + "/nested.selected.lock.json", selected)) { fail("Cannot write nested input selection"); return; }
         run(Phase::CheckoutNested, {"checkout-nested", "--workspace", request.workspace, "--lock", staging.path() + "/nested.selected.lock.json"});
     } else if (phase == Phase::CheckoutNested) {

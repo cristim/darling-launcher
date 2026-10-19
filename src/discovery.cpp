@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "discovery.h"
+#include "releases.h"
 #include <algorithm>
 #include <QDir>
 #include <QFileInfo>
@@ -52,6 +53,10 @@ QList<Runtime> runtimes(const QStringList &roots, const QString &installedLaunch
         add(path + "/build/src/startup/darling", path + "/install/usr/local");
         add(path + "/build/src/startup/darling", path + "/build/image/usr/local");
     }
+    const QDir prebuilt(dataRoot() + "/runtimes");
+    for (const auto &entry : prebuilt.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks))
+        if (LauncherReleases::validTag(entry.fileName()) && LauncherReleases::runtimeLayoutError(entry.absoluteFilePath()).isEmpty())
+            add(entry.absoluteFilePath() + "/" + LauncherReleases::launcherPath, entry.absoluteFilePath() + "/" + LauncherReleases::installRoot);
     std::sort(result.begin(), result.end(), [](const Runtime &a, const Runtime &b) { return QFileInfo(a.launcher).lastModified() > QFileInfo(b.launcher).lastModified(); });
     return result;
 }

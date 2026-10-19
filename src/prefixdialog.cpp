@@ -27,7 +27,6 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
     auto *form = new QFormLayout;
     auto *sourceLabel = new QLabel(source); sourceLabel->setObjectName("prefixBuilderSource"); form->addRow("Source clone", sourceLabel);
     auto *workspaceLabel = new QLabel; workspaceLabel->setObjectName("prefixBuilderWorkspace"); form->addRow("New workspace", workspaceLabel);
-    auto *scope = new QComboBox; scope->setObjectName("prefixBuilderScope"); scope->addItems({"Main/master (default branches) only", "Main/master plus all open PRs"}); form->addRow("Inputs", scope);
     auto *jobs = new QSpinBox; jobs->setRange(1, 1024); jobs->setValue(1); form->addRow("Parallel jobs", jobs);
     auto *cmake = new QTextEdit; cmake->setPlaceholderText("Optional: one -DNAME=VALUE CMake setting per line"); cmake->setMaximumHeight(70); form->addRow("CMake settings", cmake);
     layout->addLayout(form);
@@ -58,7 +57,7 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
         QString volume = QFileInfo(sourceVolume).canonicalFilePath();
         QString parent = QFileInfo(QFileInfo(workspace).absolutePath()).canonicalFilePath();
         if (!volume.isEmpty() && (parent == volume || parent.startsWith(volume + '/'))) { status->setText("The build workspace must be outside the macOS source volume."); return; }
-        PrefixBuildRequest request{QStandardPaths::findExecutable("python3"), script, source, workspace, scope->currentIndex() == 1, jobs->value(), {}};
+        PrefixBuildRequest request{QStandardPaths::findExecutable("python3"), script, source, workspace, jobs->value(), {}};
         for (const auto &line : cmake->toPlainText().split('\n', Qt::SkipEmptyParts)) request.cmakeArguments << line.trimmed();
         QString message;
         if (!LauncherPrefix::validateRequest(request, &message)) { status->setText(message); return; }
