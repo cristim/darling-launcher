@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "core.h"
 #include "sources.h"
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
@@ -129,12 +130,13 @@ private slots:
         QVERIFY2(LauncherCore::saveCatalog(prefix, catalog, &error), qPrintable(error));
         QCOMPARE(LauncherCore::loadCatalog(prefix), catalog);
         QString source = temporary.path() + "/Brewfile"; QFile file(source); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("brew \"wget\"\n"); file.close();
-        QString guest;
-        QVERIFY2(LauncherCore::stageBrewfile(prefix, source, &guest, &error), qPrintable(error));
+        QString guest, digest;
+        QVERIFY2(LauncherCore::stageBrewfile(prefix, source, &guest, &digest, &error), qPrintable(error));
         QCOMPARE(guest, "/.darling-launcher/Brewfile");
+        QCOMPARE(digest, QString::fromLatin1(QCryptographicHash::hash("brew \"wget\"\n", QCryptographicHash::Sha256).toHex()));
         QFile staged(prefix + guest); QVERIFY(staged.open(QIODevice::ReadOnly)); QCOMPARE(staged.readAll(), QByteArray("brew \"wget\"\n")); staged.close();
         QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate)); file.write("mas(\"App\", id: 123)\n"); file.close();
-        QVERIFY(!LauncherCore::stageBrewfile(prefix, source, &guest, &error));
+        QVERIFY(!LauncherCore::stageBrewfile(prefix, source, &guest, &digest, &error));
         AppEntry entry{"Test", "Applications/Test.app", "Test", "System/Applications/Test.app"};
         QString issue = LauncherCore::issueDraft(entry, QJsonArray{QJsonObject{{"symbol", "_Example"}, {"library", "/usr/lib/libExample.dylib"}, {"action", "imported"}}},
             "Symbol not found: _Example", "/mnt/mac", prefix, "/usr/bin/darling");
