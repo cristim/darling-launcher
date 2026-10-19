@@ -22,6 +22,9 @@ def partitions(document):
     result = []
     def collect(items):
         for item in items:
+            # Root parses these filesystems, and anyone can attach a loop device holding an image of their choosing.
+            if item.get("type") == "loop":
+                continue
             if item.get("fstype") in ("apfs", "hfs", "hfsplus"):
                 result.append(item)
             collect(item.get("children", []))
@@ -213,7 +216,7 @@ def mount_batch(options, uid, gid, run_command=run, emit_event=emit, check_devic
 
 
 def mount_volumes(root, root_fd, options, uid, gid, run_command, emit_event, check_device):
-    inventory = partitions(json.loads(run_command(["/usr/bin/lsblk", "--json", "--output", "PATH,FSTYPE,LABEL,MOUNTPOINTS"])))
+    inventory = partitions(json.loads(run_command(["/usr/bin/lsblk", "--json", "--output", "PATH,TYPE,FSTYPE,LABEL,MOUNTPOINTS"])))
     selected, index, kernel = getattr(options, "device", None), getattr(options, "volume", None), getattr(options, "kernel", False)
     if selected is not None:
         inventory = [p for p in inventory if p.get("path") == selected]

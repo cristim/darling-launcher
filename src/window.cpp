@@ -743,7 +743,7 @@ void Window::discoverMacPartitions() {
             for (const auto &key : recoveryDialogs.keys()) updateRecovery(key);
         });
     }
-    partitionDiscovery->start(tool, {"--json", "--output", "PATH,FSTYPE,LABEL,MOUNTPOINTS"});
+    partitionDiscovery->start(tool, {"--json", "--output", "PATH,TYPE,FSTYPE,LABEL,MOUNTPOINTS"});
     QTimer::singleShot(5000, partitionDiscovery, [this] { if (partitionDiscovery->state() != QProcess::NotRunning) partitionDiscovery->kill(); });
 }
 bool Window::hasPossibleMacOSSource() const {

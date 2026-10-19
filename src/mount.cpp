@@ -14,6 +14,8 @@ bool fail(QString *error, const QString &message) { if (error) *error = message;
 void collect(const QJsonArray &devices, QList<MacPartition> *result) {
     for (const auto &value : devices) {
         const auto item = value.toObject();
+        // Root parses these filesystems, and anyone can attach a loop device holding an image of their choosing.
+        if (item.value("type").toString() == "loop") continue;
         const QString fs = item.value("fstype").toString().toLower();
         if (fs == "apfs" || fs == "hfs" || fs == "hfsplus") {
             QStringList points;
