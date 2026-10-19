@@ -54,6 +54,7 @@ class Fixture:
         self.umount_failures = 0
         self.lsblk_path = "/dev/synthetic"
         self.lsblk_type = "part"
+        self.volume_listing = VOLUMES
 
     def tools(self):
         return patch.dict(mount.APFS_TOOLS, {"apfsutil": (str(self.root / "util"),), "apfs-fuse": (str(self.root / "fuse"),)})
@@ -68,7 +69,7 @@ class Fixture:
                 raise RuntimeError("findmnt failed with exit status 1")
             return json.dumps({"filesystems": self.records})
         if arguments[0] == str(self.root / "util"):
-            return VOLUMES
+            return self.volume_listing
         if arguments[0] == "/usr/bin/umount":
             if self.umount_failures:
                 self.umount_failures -= 1
@@ -281,6 +282,27 @@ class MountScriptTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not a detected"):
                 fixture.batch(SimpleNamespace(device="/dev/synthetic", volume=0, kernel=False))
         self.assertEqual(mount.partitions({"blockdevices": [{"path": "/dev/loop1", "type": "loop", "fstype": None, "children": [{"path": "/dev/loop1p1", "type": "part", "fstype": "apfs"}]}]}), [])
+
+    def test_a_second_volume_of_a_mounted_container_still_mounts(self):
+        # The dialog mounts one volume per run; a record naming the device must only skip that volume.
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.volume_listing = "Volume 0 12345678-1234-1234-1234-123456789ABC\nName: one\nFileVault: No\nVolume 1 12345678-1234-1234-1234-123456789ABC\nName: two\nFileVault: No\n"
+            first = fixture.batch(SimpleNamespace(device="/dev/synthetic", volume=0, kernel=False))
+            second = fixture.batch(SimpleNamespace(device="/dev/synthetic", volume=1, kernel=False))
+            self.assertEqual([Path(p).name for p in first + second], ["synthetic-volume-0", "synthetic-volume-1"])
+            self.assertEqual(len(fixture.mounts()), 2)
+            fixture.events.clear()
+            self.assertEqual(fixture.batch(SimpleNamespace(device="/dev/synthetic", volume=1, kernel=False)), [])
+            self.assertEqual(len(fixture.mounts()), 2)
+            self.assertIn({"event": "skip", "device": "/dev/synthetic", "volume": 1, "reason": "Already mounted"}, fixture.events)
+
+    def test_a_mounted_non_apfs_device_is_skipped_whole(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory, fstype="hfsplus")
+            self.assertEqual(len(fixture.batch()), 1)
+            self.assertEqual(fixture.batch(), [])
+            self.assertEqual(len(fixture.mounts()), 1)
 
     def test_privileged_batch_refuses_user_owned_apfs_tools(self):
         with tempfile.TemporaryDirectory() as directory:

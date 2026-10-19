@@ -229,7 +229,9 @@ def mount_volumes(root, root_fd, options, uid, gid, run_command, emit_event, che
         try:
             if not re.fullmatch(r"/dev/[A-Za-z0-9_/-]+", device) or ".." in device:
                 raise ValueError("Invalid detected device path")
-            if any(partition.get("mountpoints", [])) or any(r.get("source") == device for r in existing):
+            # An APFS container holds several volumes that are mounted one at a time, so a mount record naming the
+            # device only skips the volumes that are already mounted (below); anything else is skipped as a whole.
+            if any(partition.get("mountpoints", [])) or (partition["fstype"] != "apfs" and any(r.get("source") == device for r in existing)):
                 emit_event("skip", device=device, reason="Already mounted")
                 continue
             if check_device:
@@ -258,6 +260,9 @@ def mount_volumes(root, root_fd, options, uid, gid, run_command, emit_event, che
                     continue
                 destination = root / f"{Path(device).name}-volume-{volume['index']}"
                 try:
+                    if any(r.get("target") == str(destination) and r.get("source") == device for r in existing):
+                        emit_event("skip", device=device, volume=volume["index"], reason="Already mounted")
+                        continue
                     if any(r.get("target") == str(destination) for r in existing):
                         raise ValueError("Mount directory is mounted or not empty")
                     prepared = mount_directory(root_fd, destination.name)
