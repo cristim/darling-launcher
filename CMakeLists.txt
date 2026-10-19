@@ -38,6 +38,8 @@ set_tests_properties(launcher-tests launcher-mount-tests launcher-prefix-tests l
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME launcher-mount-script-tests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/mount_script_test.py)
 set_tests_properties(launcher-mount-script-tests PROPERTIES TIMEOUT 30)
+add_test(NAME launcher-builder-script-tests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/prefix_builder_script_test.py)
+set_tests_properties(launcher-builder-script-tests PROPERTIES TIMEOUT 30)
 
 qt_add_resources(darling-launcher runtime_builder PREFIX "/launcher" FILES tools/all-vibedarling-pr-prefix.py)
 qt_add_resources(launcher-gui-tests test_runtime_builder PREFIX "/launcher" FILES tools/all-vibedarling-pr-prefix.py)
