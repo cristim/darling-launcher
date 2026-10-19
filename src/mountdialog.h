@@ -6,7 +6,6 @@
 #include <QDialog>
 
 class QComboBox;
-class QLineEdit;
 class QSpinBox;
 class QPushButton;
 class QTextEdit;
@@ -27,10 +26,10 @@ private:
     QComboBox *partitions;
     QComboBox *backend;
     QComboBox *ownedMountChoices;
-    QLineEdit *directory;
     QSpinBox *volumeIndex;
     QPushButton *mountButton = nullptr;
     QPushButton *unmountButton;
+    QPushButton *allButton = nullptr;
     QTextEdit *output = nullptr;
     bool mountBusy = false;
     bool requestedBatch = false;
@@ -42,5 +41,6 @@ private:
     void updateExistingSources();
     void discover();
     void mountSelected();
-    void execute(const MountCommand &command, bool unmount, const QString &device = {});
+    void runHelper(const QStringList &selection);
+    void unmount(const MountCommand &command);
 };

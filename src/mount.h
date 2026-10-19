@@ -13,14 +13,19 @@ struct MacPartition {
     QStringList mountPoints;
 };
 
-enum class MountBackend { Kernel, ApfsFuse };
 struct MountCommand { QString program; QStringList arguments; };
 
 namespace LauncherMount {
+inline const QString pkexecPath = QStringLiteral("/usr/bin/pkexec");
+inline const QString umountPath = QStringLiteral("/usr/bin/umount");
+// Canonical path of an executable that only root (or extraOwner, when non-zero) can change, or empty with error set.
+QString trustedExecutable(const QString &path, unsigned extraOwner, QString *error);
 QList<MacPartition> parsePartitions(const QByteArray &json, QString *error);
-bool makeCommand(const MacPartition &partition, const QString &directory, MountBackend backend,
-                 int volumeIndex, unsigned uid, unsigned gid, const QString &pkexec,
-                 const QString &mountTool, MountCommand *command, QString *error);
+// Root-owned directory under which tools/mount-macos.py mounts for this user (its MOUNT_PARENT/<uid>).
+QString mountParent();
+// True only for a mount point the helper created: a direct, canonical child of a root-owned mountParent().
+// parent and extraOwner exist so tests can use a directory they own; production callers pass only the path.
+bool isHelperMount(const QString &path, const QString &parent = mountParent(), unsigned extraOwner = 0);
 QString exitDescription(int code);
 }
 
