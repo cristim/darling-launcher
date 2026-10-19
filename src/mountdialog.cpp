@@ -129,7 +129,7 @@ void MountDialog::discover() {
     if (discovery.state() != QProcess::NotRunning) return;
     QString tool = QStandardPaths::findExecutable("lsblk");
     if (tool.isEmpty()) { output->append("lsblk is unavailable."); return; }
-    discovery.start(tool, {"--json", "--output", "PATH,FSTYPE,LABEL,MOUNTPOINTS"});
+    discovery.start(tool, {"--json", "--output", "PATH,TYPE,FSTYPE,LABEL,MOUNTPOINTS"});
 }
 void MountDialog::mountSelected() {
     int selected = partitions->currentData().toInt();

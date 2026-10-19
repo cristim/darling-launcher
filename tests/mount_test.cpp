@@ -18,6 +18,12 @@ private slots:
         QCOMPARE(partitions[1].label, "macOS"); QVERIFY(partitions[1].mounted); QCOMPARE(partitions[1].mountPoints, QStringList{"/mnt/mac"});
         QVERIFY(LauncherMount::parsePartitions("bad JSON", &error).isEmpty()); QVERIFY(!error.isEmpty());
     }
+    // Anyone can attach a loop device with an image of their choosing, which root would then parse.
+    void loopDevicesAreNotOffered() {
+        QString error;
+        const auto partitions = LauncherMount::parsePartitions(R"({"blockdevices":[{"path":"/dev/loop0","type":"loop","fstype":"apfs"},{"path":"/dev/loop1","type":"loop","fstype":null,"children":[{"path":"/dev/loop1p1","type":"part","fstype":"hfsplus"}]},{"path":"/dev/sda","type":"disk","fstype":null,"children":[{"path":"/dev/sda2","type":"part","fstype":"apfs"}]}]})", &error);
+        QVERIFY(error.isEmpty()); QCOMPARE(partitions.size(), 1); QCOMPARE(partitions[0].device, "/dev/sda2");
+    }
     void onlyRootOwnedHelpersReachPkexec() {
         // A user-writable helper (build output, PATH entry) must never be run as root.
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); QString error;

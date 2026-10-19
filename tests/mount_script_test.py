@@ -53,6 +53,7 @@ class Fixture:
         self.findmnt_broken = False
         self.umount_failures = 0
         self.lsblk_path = "/dev/synthetic"
+        self.lsblk_type = "part"
 
     def tools(self):
         return patch.dict(mount.APFS_TOOLS, {"apfsutil": (str(self.root / "util"),), "apfs-fuse": (str(self.root / "fuse"),)})
@@ -60,7 +61,7 @@ class Fixture:
     def run(self, arguments):
         self.calls.append(arguments)
         if arguments[0] == "/usr/bin/lsblk":
-            return json.dumps({"blockdevices": [{"path": self.lsblk_path, "fstype": self.fstype, "mountpoints": []},
+            return json.dumps({"blockdevices": [{"path": self.lsblk_path, "type": self.lsblk_type, "fstype": self.fstype, "mountpoints": []},
                                                 {"path": "/dev/already", "fstype": "apfs", "mountpoints": ["/existing"]}]})
         if arguments[0] == "/usr/bin/findmnt":
             if self.findmnt_broken and self.mounts():
@@ -269,6 +270,17 @@ class MountScriptTest(unittest.TestCase):
             self.assertEqual(mount.trusted("/usr/bin/true"), os.path.realpath("/usr/bin/true"))
             with self.assertRaisesRegex(ValueError, "Not an executable"):
                 mount.trusted("/etc/hostname" if os.path.isfile("/etc/hostname") else "/etc/passwd")
+
+    def test_loop_devices_are_never_mounted(self):
+        # Anyone can attach a loop device holding an image of their choosing; root would parse it.
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.lsblk_type = "loop"
+            self.assertEqual(fixture.batch(), [])
+            self.assertEqual(fixture.mounts(), [])
+            with self.assertRaisesRegex(ValueError, "not a detected"):
+                fixture.batch(SimpleNamespace(device="/dev/synthetic", volume=0, kernel=False))
+        self.assertEqual(mount.partitions({"blockdevices": [{"path": "/dev/loop1", "type": "loop", "fstype": None, "children": [{"path": "/dev/loop1p1", "type": "part", "fstype": "apfs"}]}]}), [])
 
     def test_privileged_batch_refuses_user_owned_apfs_tools(self):
         with tempfile.TemporaryDirectory() as directory:
