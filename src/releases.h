@@ -3,7 +3,10 @@
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
+#include <functional>
 namespace LauncherReleases {
+using Cancelled = std::function<bool()>;
+constexpr const char *repository = "VibeDarling/darling";
 // The CI release contract: tag vYYYY.MM.DD-<sha7>[-rN], manifest.json with artifacts keyed by `uname -m`.
 struct Artifact { QString file, url, sha256, installRoot, launcher; qint64 size = 0, unpackedSize = 0; };
 struct Selection { QString tag; Artifact artifact; QString error; bool valid() const { return error.isEmpty(); } };
@@ -19,18 +22,18 @@ QString hostArchitecture();
 // disagrees with the release or the API digest, install_root/launcher other than the fixed values, a size that
 // is not positive, and a url that is not https on github.com or objects.githubusercontent.com are errors.
 Selection select(const QJsonObject &release, const QJsonObject &manifest, const QString &arch, bool allowPrerelease);
-// Trust root for prebuilt runtimes: only builds attested by this workflow install, whatever repo they are
-// fetched from (DESIGN sec 6). Accepting a fork's own workflow must be an explicit, user-visible exception.
+// Trust root for prebuilt runtimes: only builds attested by this workflow install, and only from the pinned
+// `repository` (DESIGN sec 6). Accepting a fork's workflow or repo must be an explicit, user-visible exception.
 constexpr const char *signerWorkflow = "VibeDarling/darling/.github/workflows/release-binaries.yml";
 // Only master builds count: a workflow edited on another branch can sign anything. Prereleases dispatched from
 // another ref (DESIGN sec 5) therefore fail verification even with allowPrerelease; accepting one needs the
 // same explicit, user-visible exception as a fork.
 constexpr const char *signerSourceRef = "refs/heads/master";
 // Runs `gh attestation verify <archive> --repo <repo> --signer-workflow <signerWorkflow> --source-ref <signerSourceRef>
-// --deny-self-hosted-runners`. Empty string = verified.
+// --deny-self-hosted-runners`. Empty string = verified; any <repo> other than the pinned `repository` is refused.
 // Empty when the attestation verifies and every attested source commit starts with the sha7 in the tag.
 QString attestedSourceError(const QByteArray &verifyOutput, const QString &tag);
-QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo, const QString &tag);
+QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo, const QString &tag, Cancelled cancelled = {});
 // Removes .archive-* copies left by a killed install when no other install holds .archive.lock, then copies the
 // archive into a private 0700 folder under runtimesRoot, then verifies the digest and attestation of
 // that copy and vets the member list (relative paths under usr/local only, no device or
@@ -39,10 +42,16 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 // into <runtimesRoot>/<tag>. Symlink targets must pass symlinkTargetError.
 // Extraction goes to <tag>.partial, created with an exclusive mkdir, so one install of a tag runs at a time;
 // a failed install removes the .partial it created and never one that already existed.
-// Returns an empty string on success, otherwise the reason.
+// A killed install that left <tag>.partial or .archive-* behind is cleaned up by the next install that finds no other
+// running (it holds .archive.lock exclusively).
 // unpackedSize is manifest.json's unpacked_size: the listed regular-file bytes may not exceed it, and extraction is
 // stopped once the files written exceed it by more than extractionSlack.
-QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize);
+enum class InstallStatus { Installed, Cancelled, Failed };
+// error is empty exactly when status is Installed. A cancel after the launcher is in place still returns Installed.
+// Cancelled: polled from the installing thread and must be cheap; once it has returned true the install is treated as
+// cancelled, and the status is Cancelled if the install then failed.
+struct InstallResult { InstallStatus status = InstallStatus::Failed; QString error; };
+InstallResult installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize, Cancelled cancelled = {});
 // CI computes unpacked_size as the sum of regular-file sizes, so a correct archive never needs this; it only
 // absorbs rounding in a future packer.
 constexpr qint64 extractionSlack = 1 << 20;
@@ -53,7 +62,7 @@ QString runtimeLayoutError(const QString &dir);
 // Re-checks what tar actually wrote, independent of the listing: only usr/local/**, only regular files with
 // one link and no setuid/setgid bit, folders with u+rwx, and symlinks passing symlinkTargetError, then
 // runtimeLayoutError.
-QString extractedTreeError(const QString &dir);
+QString extractedTreeError(const QString &dir, Cancelled cancelled = {});
 // Why a symlink at <link> (relative to the runtime folder) must not point at <target>, or "". Absolute targets
 // must match the allow-list of the released image exactly; relative ones may only climb with leading ".." and
 // must stay in usr/local.
@@ -64,5 +73,5 @@ QString symlinkTargetError(const QString &link, const QString &target);
 // leaves room to grow while bounding the work and inodes a hostile archive can cost.
 constexpr qint64 maxArchiveMembers = 200000;
 // regularBytes, when given, receives the sum of the listed regular-file sizes.
-QString vetMembers(const QStringList &verboseListing, qint64 *regularBytes = nullptr);
+QString vetMembers(const QStringList &verboseListing, qint64 *regularBytes = nullptr, Cancelled cancelled = {});
 }

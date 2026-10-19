@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <limits>
 
 namespace {
 QJsonObject readJson(const QString &path) { QFile file(path); if (!file.open(QIODevice::ReadOnly)) return {}; return QJsonDocument::fromJson(file.readAll()).object(); }
@@ -52,7 +53,8 @@ QJsonObject linkMember(const QString &name, const QString &target) { return {{"n
 QJsonArray runtimeMembers() {
     QJsonArray members;
     for (const char *dir : {"usr", "usr/local", "usr/local/bin", "usr/local/libexec", "usr/local/libexec/darling", "usr/local/libexec/darling/private", "usr/local/libexec/darling/private/etc"}) members.append(dirMember(dir));
-    members.append(fileMember("usr/local/bin/darling")); return members;
+    auto launcher = fileMember("usr/local/bin/darling"); launcher["mode"] = "755";
+    members.append(launcher); return members;
 }
 // Stand-ins for a host /usr/local runtime: <root>/hostlocal and <root>/hostroot/local, each with bin/darling and the marker.
 bool makeHostRuntimes(const QString &root) {
@@ -73,9 +75,9 @@ QString writeScript(const QString &path, const QString &body) {
 // What `gh attestation verify --format json` prints for a build of the commit whose sha7 is in $GH_STUB_SHA7.
 const QString ghAttests = "printf '[{\"verificationResult\":{\"signature\":{\"certificate\":{\"sourceRepositoryDigest\":\"%s0000000000000000000000000000000000\"}}}}]' \"$GH_STUB_SHA7\"";
 // installArchive with the stub gh attesting the commit named by the tag.
-QString installAttested(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize) {
+QString installAttested(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize, LauncherReleases::Cancelled cancelled = {}) {
     qputenv("GH_STUB_SHA7", tag.mid(12, 7).toUtf8());
-    return LauncherReleases::installArchive(archive, sha256, runtimesRoot, tag, gh, repo, unpackedSize);
+    return LauncherReleases::installArchive(archive, sha256, runtimesRoot, tag, gh, repo, unpackedSize, cancelled).error;
 }
 }
 class PrefixTest : public QObject {
@@ -108,6 +110,7 @@ private slots:
         auto run = [&](const QStringList &args) { QProcess p; p.setWorkingDirectory(root); p.start(args.first(), args.mid(1)); QVERIFY2(p.waitForFinished(30000) && p.exitCode() == 0, qPrintable(p.readAllStandardError())); };
         QVERIFY(QDir().mkpath(root + "/good/usr/local/bin")); QVERIFY(QDir().mkpath(root + "/good/usr/local/libexec/darling/private/etc")); QVERIFY(QDir().mkpath(root + "/evil"));
         { QFile f(root + "/good/usr/local/bin/darling"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
+        QVERIFY(QFile::setPermissions(root + "/good/usr/local/bin/darling", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         QVERIFY(QFile::link("bin/darling", root + "/good/usr/local/libz"));
         run({"tar", "--zstd", "-cf", "good.tar.zst", "-C", "good", "usr"});
         QVERIFY(QFile::link("/etc", root + "/evil/dir")); { QFile f(root + "/evil/payload"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
@@ -167,6 +170,119 @@ private slots:
         QVERIFY2(chainError.contains("writes through the symlink usr/local/a"), qPrintable(chainError));
         QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-0000016")); QVERIFY(!QFileInfo::exists(runtimes + "/v2026.10.09-0000018"));
         QVERIFY(vetMembers({"-rw-r--r-- u/" + spoof + " 1 2025-10-09 10:53 /abs"}).contains("unparsable"));
+    }
+    void cancellationAndBoundedProcessFailures() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes", tag = "v2026.10.09-00000f2";
+        const QString archive = makeArchive(root, "good", runtimeMembers()); QVERIFY(!archive.isEmpty());
+        const QString gh = writeScript(root + "/gh", ghAttests); QVERIFY(!gh.isEmpty());
+        QVERIFY(installAttested(archive, sha256File(archive), runtimes, tag, gh, repository, std::numeric_limits<qint64>::max()).contains("out of range"));
+        QCOMPARE(installAttested(archive, sha256File(archive), runtimes, tag, gh, repository, roomyUnpackedSize, [] { return true; }), QString("Cancelled"));
+        const auto error = installAttested(archive, sha256File(archive), runtimes, tag, gh, repository, roomyUnpackedSize, [&] { return QFileInfo::exists(runtimes + '/' + tag + ".partial/" + launcherPath); });
+        QVERIFY2(error.contains("Cancelled"), qPrintable(error));
+        QVERIFY(!QFileInfo::exists(runtimes + '/' + tag)); QVERIFY(!QFileInfo::exists(runtimes + '/' + tag + ".partial"));
+        QVERIFY(verifyAttestation(root + "/missing-gh", archive, repository, tag).contains("failed to start"));
+        const QString oldGh = writeScript(root + "/old-gh", "echo 'unknown flag: --source-ref' >&2\necho second-line >&2\nexit 1"); QVERIFY(!oldGh.isEmpty());
+        const QString oldGhError = verifyAttestation(oldGh, archive, repository, tag);
+        QVERIFY2(oldGhError.contains("exited unsuccessfully: unknown flag: --source-ref"), qPrintable(oldGhError)); QVERIFY(!oldGhError.contains("second-line"));
+        const QString noisy = writeScript(root + "/noisy", "exec python3 -c 'import sys; sys.stderr.write(\"secret-marker\" * 6000000)' "); QVERIFY(!noisy.isEmpty());
+        const QString noisyError = verifyAttestation(noisy, archive, repository, tag);
+        QVERIFY2(noisyError.contains("output limit exceeded"), qPrintable(noisyError)); QVERIFY(!noisyError.contains("secret-marker"));
+        const QString slow = writeScript(root + "/slow", "exec /usr/bin/sleep 30"); QVERIFY(!slow.isEmpty());
+        QElapsedTimer clock; clock.start();
+        const QString cancelled = verifyAttestation(slow, archive, repository, tag, [&] { return clock.elapsed() > 250; });
+        QVERIFY(cancelled.contains("Cancelled")); QVERIFY(clock.elapsed() < 5000);
+        auto nonexec = runtimeMembers(); auto launcher = nonexec.last().toObject(); launcher["mode"] = "644"; nonexec.replace(nonexec.size() - 1, launcher);
+        const QString inert = makeArchive(root, "nonexec", nonexec); QVERIFY(!inert.isEmpty());
+        QVERIFY(installAttested(inert, sha256File(inert), runtimes, tag, gh, repository, roomyUnpackedSize).contains("executable regular"));
+        auto asymmetric = runtimeMembers(); launcher = asymmetric.last().toObject(); launcher["mode"] = "641"; asymmetric.replace(asymmetric.size() - 1, launcher);
+        const QString otherExec = makeArchive(root, "otherexec", asymmetric); QVERIFY(!otherExec.isEmpty());
+        QVERIFY(installAttested(otherExec, sha256File(otherExec), runtimes, tag, gh, repository, roomyUnpackedSize).contains("executable regular"));
+        int visited = 0;
+        QStringList listing;
+        for (int i = 0; i < 1000; ++i) listing << "-rw-r--r-- 0/0 1 2026-10-09 14:32 usr/local/file" + QString::number(i);
+        QCOMPARE(vetMembers(listing, nullptr, [&] { return ++visited == 10; }), QString("Cancelled")); QCOMPARE(visited, 10);
+        const QString tree = root + "/tree"; QVERIFY(QDir().mkpath(tree + "/usr/local/bin")); QVERIFY(QDir().mkpath(tree + '/' + runtimeMarker));
+        for (int i = 0; i < 100; ++i) { QFile file(tree + "/usr/local/file" + QString::number(i)); QVERIFY(file.open(QIODevice::WriteOnly)); }
+        visited = 0;
+        QCOMPARE(extractedTreeError(tree, [&] { return ++visited == 10; }), QString("Cancelled")); QCOMPARE(visited, 10);
+        const QString large = root + "/large.tar.zst"; { QFile file(large); QVERIFY(file.open(QIODevice::WriteOnly)); QVERIFY(file.resize(8 << 20)); }
+        visited = 0;
+        QCOMPARE(installAttested(large, QString(64, '0'), runtimes, tag, gh, repository, roomyUnpackedSize, [&] { return ++visited == 4; }), QString("Cancelled")); QCOMPARE(visited, 4);
+        const int lockFd = ::open(QFile::encodeName(runtimes + "/.archive.lock").constData(), O_RDWR | O_CLOEXEC); QVERIFY(lockFd >= 0);
+        auto unlock = qScopeGuard([&] { ::close(lockFd); }); QCOMPARE(::flock(lockFd, LOCK_EX | LOCK_NB), 0);
+        const QString heldCopy = runtimes + "/.archive-Aa12Bb"; QVERIFY(QDir().mkdir(heldCopy));
+        { QFile file(heldCopy + "/keep"); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("retained"); }
+        clock.restart(); QVERIFY(installAttested(archive, sha256File(archive), runtimes, tag, gh, repository, roomyUnpackedSize).contains("retry the installation")); QVERIFY(clock.elapsed() < 1000);
+        QVERIFY(QFileInfo::exists(heldCopy + "/keep")); QVERIFY(!QFileInfo::exists(runtimes + '/' + tag)); QVERIFY(!QFileInfo::exists(runtimes + '/' + tag + ".partial"));
+    }
+    // The cancel result was a string a hostile member name could imitate; the status comes from the callback.
+    void installStatusSeparatesCancelFromFailure() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString gh = writeScript(root + "/gh", ghAttests); QVERIFY(!gh.isEmpty());
+        const QString good = makeArchive(root, "good", runtimeMembers());
+        auto bad = runtimeMembers(); bad.append(fileMember("etc/Cancelled"));
+        const QString evil = makeArchive(root, "evil", bad); QVERIFY(!good.isEmpty()); QVERIFY(!evil.isEmpty());
+        qputenv("GH_STUB_SHA7", "00000a1");
+        const auto run = [&](const QString &archive, const QString &tag, Cancelled cancelled) { qputenv("GH_STUB_SHA7", tag.mid(12, 7).toUtf8()); return installArchive(archive, sha256File(archive), runtimes, tag, gh, repository, roomyUnpackedSize, cancelled); };
+        const auto failed = run(evil, "v2026.10.09-00000a1", {});
+        QVERIFY2(failed.error.contains("Cancelled"), qPrintable(failed.error)); QVERIFY(failed.status == InstallStatus::Failed);
+        QVERIFY(run(good, "v2026.10.09-00000a2", [] { return true; }).status == InstallStatus::Cancelled);
+        int polls = 0;  // true once, then false: still reported as a cancel
+        QVERIFY(run(good, "v2026.10.09-00000a3", [&] { return ++polls == 3; }).status == InstallStatus::Cancelled);
+        const auto installed = run(good, "v2026.10.09-00000a4", {});
+        QVERIFY(installed.status == InstallStatus::Installed); QVERIFY(installed.error.isEmpty());
+        const auto lateCancel = run(good, "v2026.10.09-00000a5", [&] { return QFileInfo::exists(runtimes + "/v2026.10.09-00000a5/" + launcherPath); });
+        QVERIFY(lateCancel.status == InstallStatus::Installed);
+    }
+    // gh and tar stderr reaches the UI, so terminal control characters must not survive.
+    void failureMessageDropsControlCharacters() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path();
+        const QString archive = makeArchive(root, "good", runtimeMembers()); QVERIFY(!archive.isEmpty());
+        const QString gh = writeScript(root + "/gh", "printf 'bad \\033[31mred\\033[0m\\007 flag\\n' >&2\nexit 1"); QVERIFY(!gh.isEmpty());
+        const QString error = verifyAttestation(gh, archive, repository, "v2026.10.09-00000d1");
+        QVERIFY2(error.contains("bad [31mred[0m flag"), qPrintable(error));
+        for (const QChar c : error) QVERIFY2(c.unicode() >= 0x20 && c.unicode() != 0x7f, qPrintable(error.toHtmlEscaped()));
+    }
+    // The last cancel poll before the rename is the only thing that stops a cancel arriving after the tree walk.
+    void cancelAfterTreeWalkStopsBeforeRename() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString gh = writeScript(root + "/gh", ghAttests); QVERIFY(!gh.isEmpty());
+        const QString good = makeArchive(root, "good", runtimeMembers()); QVERIFY(!good.isEmpty());
+        // Polls made once tar has exited are fixed by the tree (regularFileBytes, extractedTreeError, final poll).
+        const auto settledPoll = [&](const QString &tag) {
+            if (!QFileInfo::exists(runtimes + '/' + tag + ".partial/" + launcherPath)) return false;
+            for (const QString &thread : QDir("/proc/self/task").entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+                QFile children("/proc/self/task/" + thread + "/children");
+                if (children.open(QIODevice::ReadOnly) && !children.readAll().trimmed().isEmpty()) return false;
+            }
+            return true;
+        };
+        const QString first = "v2026.10.09-00000c1", second = "v2026.10.09-00000c2";
+        int settled = 0;
+        QCOMPARE(installAttested(good, sha256File(good), runtimes, first, gh, repository, roomyUnpackedSize, [&] { if (settledPoll(first)) ++settled; return false; }), QString());
+        // Settled polls: the one that saw tar finish, one per regular file, one per entry, and the final one before the rename.
+        qint64 files = 0, entries = 0;
+        for (QDirIterator it(runtimes + '/' + first, QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDirIterator::Subdirectories); it.hasNext(); it.next()) { ++entries; files += it.fileInfo().isFile() && !it.fileInfo().isSymLink(); }
+        QCOMPARE(qint64(settled), files + entries + 2);
+        int polls = 0;
+        const QString error = installAttested(good, sha256File(good), runtimes, second, gh, repository, roomyUnpackedSize, [&] { return settledPoll(second) && ++polls == settled; });
+        QCOMPARE(error, QString("Cancelled")); QVERIFY(!QFileInfo::exists(runtimes + '/' + second)); QVERIFY(!QFileInfo::exists(runtimes + '/' + second + ".partial"));
+    }
+    // A killed install leaves <tag>.partial, which blocked the next install of that tag until removed by hand.
+    void killedInstallPartialIsReclaimed() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString gh = writeScript(root + "/gh", ghAttests); QVERIFY(!gh.isEmpty());
+        const QString good = makeArchive(root, "good", runtimeMembers()); QVERIFY(!good.isEmpty());
+        const QString tag = "v2026.10.09-00000b1", leftover = runtimes + "/" + tag + ".partial", foreign = runtimes + "/notatag.partial";
+        QVERIFY(QDir().mkpath(leftover + "/usr/local")); QVERIFY(QDir().mkpath(foreign));
+        QCOMPARE(installAttested(good, sha256File(good), runtimes, tag, gh, repository, roomyUnpackedSize), QString());
+        QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/bin/darling").isFile()); QVERIFY(!QFileInfo::exists(leftover));
+        QVERIFY(QFileInfo::exists(foreign));
     }
     // Security S5: CI packs only usr/local/**, so anything else in an archive is refused before extraction.
     void membersOutsideUsrLocalAreRefused() {
@@ -229,7 +345,7 @@ private slots:
         using namespace LauncherReleases;
         auto runtime = [](const QString &dir) {
             if (!QDir().mkpath(dir + "/usr/local/bin") || !QDir().mkpath(dir + "/" + runtimeMarker)) return false;
-            QFile launcher(dir + "/" + launcherPath); return launcher.open(QIODevice::WriteOnly);
+            QFile launcher(dir + "/" + launcherPath); return launcher.open(QIODevice::WriteOnly) && launcher.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
         };
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path();
         QVERIFY(runtime(root + "/ok")); QVERIFY(QFile::link("../local/bin/darling", root + "/ok/usr/local/rel-link"));
@@ -256,14 +372,16 @@ private slots:
         QVERIFY(runtime(root + "/up")); QVERIFY(QFile::link("../../../outside", root + "/up/usr/local/up"));
         QVERIFY(extractedTreeError(root + "/up").contains("points outside usr/local"));
     }
-    // Review F4: the signer pin followed the repo argument, so a fork override also replaced the trust root.
-    void signerPinIgnoresRepository() {
+    // Review F4: the signer pin followed the repo argument, so a fork override also replaced the trust root; a repo other than the production one is now refused.
+    void signerPinRejectsOtherRepository() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path();
         const QString gh = writeScript(root + "/gh", "echo \"$@\" > '" + root + "/gh-args'; " + ghAttests); QVERIFY(!gh.isEmpty());
+        QVERIFY(LauncherReleases::verifyAttestation(gh, root + "/archive.tar.zst", "cristim/darling", "v2026.10.09-3721b65").contains("trusted production repository"));
+        QVERIFY(!QFileInfo::exists(root + "/gh-args"));
         qputenv("GH_STUB_SHA7", "3721b65");
-        QCOMPARE(LauncherReleases::verifyAttestation(gh, root + "/archive.tar.zst", "cristim/darling", "v2026.10.09-3721b65"), QString());
+        QCOMPARE(LauncherReleases::verifyAttestation(gh, root + "/archive.tar.zst", "VibeDarling/darling", "v2026.10.09-3721b65"), QString());
         QFile args(root + "/gh-args"); QVERIFY(args.open(QIODevice::ReadOnly));
-        QCOMPARE(args.readAll().trimmed(), QByteArray("attestation verify " + (root + "/archive.tar.zst").toUtf8() + " --repo cristim/darling --signer-workflow VibeDarling/darling/.github/workflows/release-binaries.yml --source-ref refs/heads/master --deny-self-hosted-runners --format json"));
+        QCOMPARE(args.readAll().trimmed(), QByteArray("attestation verify " + (root + "/archive.tar.zst").toUtf8() + " --repo VibeDarling/darling --signer-workflow VibeDarling/darling/.github/workflows/release-binaries.yml --source-ref refs/heads/master --deny-self-hosted-runners --format json"));
     }
     // Review F5: two installs of one tag could both pass exists(staging) before either mkpath()ed it; the loser's
     // tar then kept writing into the folder the winner had already renamed into place.
@@ -314,8 +432,12 @@ private slots:
         QCOMPARE(installAttested(good, sha256File(good), runtimes, tag, gh, "VibeDarling/darling", roomyUnpackedSize), QString());
         const QString foreign = runtimes + "/v2026.10.09-0000007.partial"; QVERIFY(QDir().mkpath(foreign));
         { QFile mine(foreign + "/someone-elses"); QVERIFY(mine.open(QIODevice::WriteOnly)); }
+        // A live install holds .archive.lock shared; its staging folder must survive.
+        const int liveFd = ::open(QFile::encodeName(runtimes + "/.archive.lock").constData(), O_RDWR | O_CLOEXEC); QVERIFY(liveFd >= 0);
+        auto release = qScopeGuard([&] { ::close(liveFd); }); QCOMPARE(::flock(liveFd, LOCK_SH), 0);
         QVERIFY(installAttested(good, sha256File(good), runtimes, "v2026.10.09-0000007", gh, "VibeDarling/darling", roomyUnpackedSize).contains("another install"));
         QVERIFY(QFileInfo::exists(foreign + "/someone-elses"));
+        release.dismiss(); ::close(liveFd);
         // No launcher, so the install fails after tar has applied the read-only folder mode.
         QJsonArray lockedMembers = runtimeMembers(); lockedMembers.removeLast(); QJsonObject locked = dirMember("usr/local/locked"); locked.insert("mode", "555");
         lockedMembers.append(locked); lockedMembers.append(fileMember("usr/local/locked/file"));
