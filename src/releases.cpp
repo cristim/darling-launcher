@@ -44,7 +44,9 @@ static QString finish(QProcess &process, int timeout, const Cancelled &cancelled
     } while (process.state() != QProcess::NotRunning);
     if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
         // First line only, so a failure like an old gh rejecting --source-ref is diagnosable without dumping logs.
-        const QString line = QString::fromUtf8(errors).split('\n', Qt::SkipEmptyParts).value(0).simplified().left(200);
+        QString line = QString::fromUtf8(errors).split('\n', Qt::SkipEmptyParts).value(0).simplified();
+        line.removeIf([](QChar c) { return c.unicode() < 0x20 || c.unicode() == 0x7f; });  // no terminal escapes into the UI
+        line = line.left(200);
         return line.isEmpty() ? "process exited unsuccessfully" : "process exited unsuccessfully: " + line;
     }
     if (output) *output = bytes;

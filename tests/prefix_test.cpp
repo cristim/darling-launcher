@@ -236,6 +236,16 @@ private slots:
         const auto lateCancel = run(good, "v2026.10.09-00000a5", [&] { return QFileInfo::exists(runtimes + "/v2026.10.09-00000a5/" + launcherPath); });
         QVERIFY(lateCancel.status == InstallStatus::Installed);
     }
+    // gh and tar stderr reaches the UI, so terminal control characters must not survive.
+    void failureMessageDropsControlCharacters() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path();
+        const QString archive = makeArchive(root, "good", runtimeMembers()); QVERIFY(!archive.isEmpty());
+        const QString gh = writeScript(root + "/gh", "printf 'bad \\033[31mred\\033[0m\\007 flag\\n' >&2\nexit 1"); QVERIFY(!gh.isEmpty());
+        const QString error = verifyAttestation(gh, archive, repository, "v2026.10.09-00000d1");
+        QVERIFY2(error.contains("bad [31mred[0m flag"), qPrintable(error));
+        for (const QChar c : error) QVERIFY2(c.unicode() >= 0x20 && c.unicode() != 0x7f, qPrintable(error.toHtmlEscaped()));
+    }
     // The last cancel poll before the rename is the only thing that stops a cancel arriving after the tree walk.
     void cancelAfterTreeWalkStopsBeforeRename() {
         using namespace LauncherReleases;
