@@ -304,6 +304,26 @@ class MountScriptTest(unittest.TestCase):
             self.assertEqual(fixture.batch(), [])
             self.assertEqual(len(fixture.mounts()), 1)
 
+    def test_trusted_rejects_write_bits_and_foreign_owners_on_every_component(self):
+        # The test user cannot own root directories, so lstat is replaced to report root ownership and chosen modes.
+        real = os.lstat
+        def fake(overrides):
+            def lstat(path):
+                status = real(path)
+                uid, extra = overrides.get(str(path), (0, 0))
+                return os.stat_result((status.st_mode & ~0o022 | extra, status.st_ino, status.st_dev, status.st_nlink, uid, 0, status.st_size, 0, 0, 0))
+            return lstat
+        target = os.path.realpath("/usr/bin/true")
+        with patch.object(mount.os, "lstat", fake({})):
+            self.assertEqual(mount.trusted(target), target)
+        components = ["/"]
+        for part in Path(target).parts[1:]:
+            components.append(os.path.join(components[-1], part))
+        for component in components:
+            for label, override in (("group-writable", (0, 0o020)), ("other-writable", (0, 0o002)), ("owned by someone else", (1000, 0))):
+                with self.subTest(component=component, case=label), patch.object(mount.os, "lstat", fake({component: override})), self.assertRaisesRegex(ValueError, "Refusing to run"):
+                    mount.trusted(target)
+
     def test_privileged_batch_refuses_user_owned_apfs_tools(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory)

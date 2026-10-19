@@ -24,6 +24,39 @@ private slots:
         const auto partitions = LauncherMount::parsePartitions(R"({"blockdevices":[{"path":"/dev/loop0","type":"loop","fstype":"apfs"},{"path":"/dev/loop1","type":"loop","fstype":null,"children":[{"path":"/dev/loop1p1","type":"part","fstype":"hfsplus"}]},{"path":"/dev/sda","type":"disk","fstype":null,"children":[{"path":"/dev/sda2","type":"part","fstype":"apfs"}]}]})", &error);
         QVERIFY(error.isEmpty()); QCOMPARE(partitions.size(), 1); QCOMPARE(partitions[0].device, "/dev/sda2");
     }
+    // Every component of the resolved path must be root-owned (or extraOwner) and not group/other writable.
+    void writeBitsOnAnyComponentRefuseTheHelper() {
+        QTemporaryDir temporary(QDir::homePath() + "/launcher-mount-test-XXXXXX"); QVERIFY(temporary.isValid());
+        const unsigned me = getuid(); QString error;
+        const QString dir = temporary.path() + "/libexec", tool = dir + "/helper"; QVERIFY(QDir().mkpath(dir));
+        QFile file(tool); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("#!/bin/sh\n"); file.close();
+        const auto mode = [](const QString &path, QFile::Permissions extra) { return QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::ReadGroup | QFile::ExeGroup | QFile::ReadOther | QFile::ExeOther | extra); };
+        QVERIFY(mode(tool, {})); QVERIFY(mode(dir, {}));
+        if (LauncherMount::trustedExecutable(tool, me, &error).isEmpty()) QSKIP(qPrintable("home directory is not usable as a trusted tree: " + error));
+        for (const auto bit : {QFile::WriteGroup, QFile::WriteOther}) {
+            QVERIFY(mode(tool, bit)); QVERIFY2(LauncherMount::trustedExecutable(tool, me, &error).isEmpty(), "file"); QVERIFY(mode(tool, {}));
+            QVERIFY(mode(dir, bit)); QVERIFY2(LauncherMount::trustedExecutable(tool, me, &error).isEmpty(), "directory"); QVERIFY(mode(dir, {}));
+        }
+        QVERIFY(!LauncherMount::trustedExecutable(tool, me, &error).isEmpty());
+        QVERIFY(LauncherMount::trustedExecutable(tool, 0, &error).isEmpty());  // owned by this user, not root
+    }
+    // Root unmounts only a direct child of a parent only root (here: the test user) can change.
+    void helperMountNeedsADirectChildOfATrustedParent() {
+        QTemporaryDir temporary(QDir::homePath() + "/launcher-mount-test-XXXXXX"); QVERIFY(temporary.isValid());
+        const unsigned me = getuid(); const QString parent = temporary.path() + "/parent", child = parent + "/sda1-volume-0";
+        QVERIFY(QDir().mkpath(child)); QVERIFY(QDir().mkpath(parent + "/other/deep"));
+        QVERIFY(QFile::setPermissions(temporary.path(), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        QVERIFY(QFile::setPermissions(parent, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        if (!LauncherMount::isHelperMount(child, parent, me)) QSKIP("home directory is not usable as a trusted tree");
+        QVERIFY(!LauncherMount::isHelperMount(parent + "/other/deep", parent, me));  // not a direct child
+        QVERIFY(!LauncherMount::isHelperMount(parent, parent, me));
+        QVERIFY(QFile::link(child, parent + "/link")); QVERIFY(!LauncherMount::isHelperMount(parent + "/link", parent, me));
+        QVERIFY(!LauncherMount::isHelperMount(child, parent, 0));  // the parent chain is owned by this user
+        for (const auto bit : {QFile::WriteGroup, QFile::WriteOther}) {
+            QVERIFY(QFile::setPermissions(parent, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | bit));
+            QVERIFY(!LauncherMount::isHelperMount(child, parent, me));
+        }
+    }
     void onlyRootOwnedHelpersReachPkexec() {
         // A user-writable helper (build output, PATH entry) must never be run as root.
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); QString error;
