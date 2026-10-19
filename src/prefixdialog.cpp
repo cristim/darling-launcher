@@ -40,7 +40,7 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
     auto reopen = [this, background](bool success) { background->setEnabled(false); emit finished(); if (!(automatic && success)) { show(); raise(); activateWindow(); } };
     auto newWorkspace = [workspaceLabel, data] { QDir().mkpath(data + "/workspaces"); workspaceLabel->setText(LauncherDiscovery::newWorkspace(data + "/workspaces")); };
     newWorkspace();
-    QString script = scriptOverride, scriptSha256;
+    QString script = scriptOverride, scriptSha256, pinError;
     if (script.isEmpty()) {
         QFile bundled(":/launcher/tools/all-vibedarling-pr-prefix.py");
         if (bundled.open(QIODevice::ReadOnly)) {
@@ -56,8 +56,10 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
     } else {
         QFile chosen(script);
         if (chosen.open(QIODevice::ReadOnly)) scriptSha256 = QString::fromLatin1(QCryptographicHash::hash(chosen.readAll(), QCryptographicHash::Sha256).toHex());
+        else pinError = "Cannot read the prefix-builder script " + script + ": " + chosen.errorString();
     }
     auto startBuild = [=] {
+        if (!pinError.isEmpty()) { status->setText(pinError); return; }
         newWorkspace();
         const QString workspace = workspaceLabel->text();
         QString volume = QFileInfo(sourceVolume).canonicalFilePath();
