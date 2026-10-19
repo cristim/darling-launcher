@@ -182,6 +182,9 @@ private slots:
         QVERIFY2(error.contains("Cancelled"), qPrintable(error));
         QVERIFY(!QFileInfo::exists(runtimes + '/' + tag)); QVERIFY(!QFileInfo::exists(runtimes + '/' + tag + ".partial"));
         QVERIFY(verifyAttestation(root + "/missing-gh", archive, repository, tag).contains("failed to start"));
+        const QString oldGh = writeScript(root + "/old-gh", "echo 'unknown flag: --source-ref' >&2\necho second-line >&2\nexit 1"); QVERIFY(!oldGh.isEmpty());
+        const QString oldGhError = verifyAttestation(oldGh, archive, repository, tag);
+        QVERIFY2(oldGhError.contains("exited unsuccessfully: unknown flag: --source-ref"), qPrintable(oldGhError)); QVERIFY(!oldGhError.contains("second-line"));
         const QString noisy = writeScript(root + "/noisy", "exec python3 -c 'import sys; sys.stderr.write(\"secret-marker\" * 6000000)' "); QVERIFY(!noisy.isEmpty());
         const QString noisyError = verifyAttestation(noisy, archive, repository, tag);
         QVERIFY2(noisyError.contains("output limit exceeded"), qPrintable(noisyError)); QVERIFY(!noisyError.contains("secret-marker"));
