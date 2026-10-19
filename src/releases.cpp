@@ -26,13 +26,15 @@
 namespace LauncherReleases {
 static QString finish(QProcess &process, int timeout, const Cancelled &cancelled, QByteArray *output = nullptr) {
     QElapsedTimer clock; clock.start();
-    QByteArray bytes;
+    QByteArray bytes, errors;
     qint64 count = 0;
     QString reason;
     do {
         process.waitForFinished(100);
         const QByteArray chunk = process.readAllStandardOutput();
-        count += chunk.size() + process.readAllStandardError().size();
+        const QByteArray diagnostics = process.readAllStandardError();
+        count += chunk.size() + diagnostics.size();
+        if (errors.size() < 4096) errors += diagnostics.left(4096 - errors.size());
         if (output) bytes += chunk;
         if (cancelled && cancelled()) reason = "Cancelled";
         else if (count > 64 * 1024 * 1024) reason = "process output limit exceeded";
@@ -40,7 +42,11 @@ static QString finish(QProcess &process, int timeout, const Cancelled &cancelled
         else if (process.error() == QProcess::FailedToStart) reason = "process failed to start";
         if (!reason.isEmpty()) { process.kill(); process.waitForFinished(5000); return reason; }
     } while (process.state() != QProcess::NotRunning);
-    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) return "process exited unsuccessfully";
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        // First line only, so a failure like an old gh rejecting --source-ref is diagnosable without dumping logs.
+        const QString line = QString::fromUtf8(errors).split('\n', Qt::SkipEmptyParts).value(0).simplified().left(200);
+        return line.isEmpty() ? "process exited unsuccessfully" : "process exited unsuccessfully: " + line;
+    }
     if (output) *output = bytes;
     return {};
 }
