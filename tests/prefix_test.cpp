@@ -236,6 +236,32 @@ private slots:
         const auto lateCancel = run(good, "v2026.10.09-00000a5", [&] { return QFileInfo::exists(runtimes + "/v2026.10.09-00000a5/" + launcherPath); });
         QVERIFY(lateCancel.status == InstallStatus::Installed);
     }
+    // The last cancel poll before the rename is the only thing that stops a cancel arriving after the tree walk.
+    void cancelAfterTreeWalkStopsBeforeRename() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        const QString gh = writeScript(root + "/gh", ghAttests); QVERIFY(!gh.isEmpty());
+        const QString good = makeArchive(root, "good", runtimeMembers()); QVERIFY(!good.isEmpty());
+        // Polls made once tar has exited are fixed by the tree (regularFileBytes, extractedTreeError, final poll).
+        const auto settledPoll = [&](const QString &tag) {
+            if (!QFileInfo::exists(runtimes + '/' + tag + ".partial/" + launcherPath)) return false;
+            for (const QString &thread : QDir("/proc/self/task").entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+                QFile children("/proc/self/task/" + thread + "/children");
+                if (children.open(QIODevice::ReadOnly) && !children.readAll().trimmed().isEmpty()) return false;
+            }
+            return true;
+        };
+        const QString first = "v2026.10.09-00000c1", second = "v2026.10.09-00000c2";
+        int settled = 0;
+        QCOMPARE(installAttested(good, sha256File(good), runtimes, first, gh, repository, roomyUnpackedSize, [&] { if (settledPoll(first)) ++settled; return false; }), QString());
+        // Settled polls: the one that saw tar finish, one per regular file, one per entry, and the final one before the rename.
+        qint64 files = 0, entries = 0;
+        for (QDirIterator it(runtimes + '/' + first, QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDirIterator::Subdirectories); it.hasNext(); it.next()) { ++entries; files += it.fileInfo().isFile() && !it.fileInfo().isSymLink(); }
+        QCOMPARE(qint64(settled), files + entries + 2);
+        int polls = 0;
+        const QString error = installAttested(good, sha256File(good), runtimes, second, gh, repository, roomyUnpackedSize, [&] { return settledPoll(second) && ++polls == settled; });
+        QCOMPARE(error, QString("Cancelled")); QVERIFY(!QFileInfo::exists(runtimes + '/' + second)); QVERIFY(!QFileInfo::exists(runtimes + '/' + second + ".partial"));
+    }
     // A killed install leaves <tag>.partial, which blocked the next install of that tag until removed by hand.
     void killedInstallPartialIsReclaimed() {
         using namespace LauncherReleases;
