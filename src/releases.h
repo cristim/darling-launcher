@@ -22,15 +22,15 @@ QString hostArchitecture();
 // disagrees with the release or the API digest, install_root/launcher other than the fixed values, a size that
 // is not positive, and a url that is not https on github.com or objects.githubusercontent.com are errors.
 Selection select(const QJsonObject &release, const QJsonObject &manifest, const QString &arch, bool allowPrerelease);
-// Trust root for prebuilt runtimes: only builds attested by this workflow install, whatever repo they are
-// fetched from (DESIGN sec 6). Accepting a fork's own workflow must be an explicit, user-visible exception.
+// Trust root for prebuilt runtimes: only builds attested by this workflow install, and only from the pinned
+// `repository` (DESIGN sec 6). Accepting a fork's workflow or repo must be an explicit, user-visible exception.
 constexpr const char *signerWorkflow = "VibeDarling/darling/.github/workflows/release-binaries.yml";
 // Only master builds count: a workflow edited on another branch can sign anything. Prereleases dispatched from
 // another ref (DESIGN sec 5) therefore fail verification even with allowPrerelease; accepting one needs the
 // same explicit, user-visible exception as a fork.
 constexpr const char *signerSourceRef = "refs/heads/master";
 // Runs `gh attestation verify <archive> --repo <repo> --signer-workflow <signerWorkflow> --source-ref <signerSourceRef>
-// --deny-self-hosted-runners`. Empty string = verified.
+// --deny-self-hosted-runners`. Empty string = verified; any <repo> other than the pinned `repository` is refused.
 // Empty when the attestation verifies and every attested source commit starts with the sha7 in the tag.
 QString attestedSourceError(const QByteArray &verifyOutput, const QString &tag);
 QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo, const QString &tag, Cancelled cancelled = {});
