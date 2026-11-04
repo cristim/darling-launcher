@@ -1,0 +1,1 @@
+{bad {"symbol": "_f", "regs": []}

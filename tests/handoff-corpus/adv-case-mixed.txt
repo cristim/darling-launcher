@@ -1,0 +1,3 @@
+MoV x0, X1
+LdR x2, [SP, #8]
+Bl _foo

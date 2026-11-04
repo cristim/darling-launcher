@@ -1,0 +1,4 @@
+add 5
+sub 3
+and then
+call foo bar
