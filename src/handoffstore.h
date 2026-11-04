@@ -20,7 +20,10 @@ struct Result {
 };
 // The file must be a regular, single-link, non-symlink file inside <runRoot>/<from>/.
 Result submit(const QString &runRoot, const QString &from, const QString &to, const QString &file, const QString &agentId = {}, const QStringList &inputs = {});
-struct Release { QString name, sha256, from, to; };
+struct Release {
+    QString name, sha256, from, to;
+    bool operator==(const Release &o) const { return name == o.name && sha256 == o.sha256; }
+};
 QList<Release> releases(const QString &runRoot, QString *error);
 // Pipeline events (verdict = STAGE, TAINT, CANCEL, TIMEOUT, DONE, FAILED) on the same chain.
 QString appendEvent(const QString &runRoot, const QString &verdict, QJsonObject fields);
