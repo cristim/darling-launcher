@@ -74,6 +74,7 @@ const RX CLASSDUMP_IVAR = rx(R"(;\s*(?://|/\*)\s*(?:\d+\s*=\s*)?[+@]?0x)" + H + 
 const RX OBJC_INTERFACE = rx(R"(^\s*@interface\s+\w+)");
 const RX HEX_WORD = rx(R"((?<![\w])(?:0[xX][0-9a-fA-F_']{8,24}|(?:)" + H + "{4}_){1,3}" + H + "{4}|" + H + R"({16}|[0-9]{15,20}|(?=[0-9a-fA-F]*[0-9])(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{8,15})(?![\w]))");
 const RX MD_PREFIX = rx(R"(^[\s>|]*(?:(?:[-*+\x{2022}]|\d+[.)])\s+)*)");
+const RX PATH_SLASHES = rx(R"(/(?:\.?/)+)");
 const RX TRACE_REG_KEY = rx(R"(^(?:x[0-7]|rdi|rsi|rdx|rcx|r8|r9)$)");
 
 // Python str.isspace() also covers U+001C..U+001F, which QChar::isSpace() and PCRE's \s do not.
@@ -278,7 +279,10 @@ QList<HandoffCheck::Hit> HandoffCheck::checkTextImpl(const QString &input, bool 
     for (const QString &l : lines) ci << caselessView(l);
     const bool hasInterface = std::any_of(lines.begin(), lines.end(), [](const QString &l) { return OBJC_INTERFACE.match(l).hasMatch(); });
     for (int i = 0; i < lines.size(); ++i) {
-        for (const auto &rule : LINE_RULES) if (search(rule.pattern, lines[i], ci[i])) hits << Hit{i + 1, rule.id, rule.description};
+        // "//" and "/./" name the same path, so R6 sees them collapsed.
+        QString flat = lines[i], flatCi = ci[i];
+        flat.replace(PATH_SLASHES, "/"); flatCi.replace(PATH_SLASHES, "/");
+        for (const auto &rule : LINE_RULES) if (rule.id == "R6" ? search(rule.pattern, flat, flatCi) : search(rule.pattern, lines[i], ci[i])) hits << Hit{i + 1, rule.id, rule.description};
         if (hasInterface && (OBJC_INTERFACE.match(lines[i]).hasMatch() || CLASSDUMP_IVAR.match(lines[i]).hasMatch())) hits << Hit{i + 1, "R3", "class-dump style @interface with ivar offsets"};
     }
     for (int i = 0; i < lines.size(); ++i) {
