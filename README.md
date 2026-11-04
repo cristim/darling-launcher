@@ -17,7 +17,7 @@ selection. Other values are rejected. `--mount-all` remains a GUI option and nev
 mounts anything implicitly in headless mode.
 
 Help is text; unsupported commands and invalid options return JSON with exit code
-2. Operational source-enumeration failures return JSON with exit code 3. Diagnostics use stderr.
+2. Operational source-enumeration failures return JSON with exit code 3. Errors are reported in that JSON on stdout; only display-probe reasons go to stderr. SIGINT and SIGTERM exit with 130.
 The read-only app listing requires an explicitly named macOS-layout source directory:
 
 ```sh
