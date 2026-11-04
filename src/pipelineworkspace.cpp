@@ -84,7 +84,7 @@ QString makePrivateDir(int at, const QString &name) {
 }
 // Directories locked while another stage runs: run-root children other than the active stage.
 QStringList lockable(int rootFd) {
-    static const QRegularExpression names("^(?:research|spec|impl|validate|handoff|(?:research|spec|impl|validate)\\.tainted)$");
+    static const QRegularExpression names("^(?:research|spec|impl|validate|recon|handoff|(?:research|spec|impl|validate|recon)\\.tainted)$");
     QStringList out;
     for (const QString &n : QDir(QString("/proc/self/fd/%1").arg(rootFd)).entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::NoSymLinks))
         if (names.match(n).hasMatch()) out << n;

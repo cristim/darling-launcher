@@ -41,12 +41,12 @@ private slots:
         qputenv("PATH", bin.path().toUtf8());
         PipelineConsentDialog dialog("/home/u/.darling/trace.jsonl", "_CFFoo", "CoreFoundation"); dialog.show();
         const QString text = dialog.findChild<QLabel *>("pipelineIsolation")->text();
-        for (const char *must : {"This is not a sandbox", "runs as your user account", "Codex and OpenCode can read outside the folder", "session history", "/home/u/.darling/trace.jsonl", "never the trace or the research facts"})
+        for (const char *must : {"Not approved for Apple stock apps until a per-stage sandbox exists.", "runs as your user account", "Codex and OpenCode can read outside the folder", "session history", "/home/u/.darling/trace.jsonl", "never the trace or the research facts"})
             QVERIFY2(text.contains(must), must);
         auto *ok = dialog.findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok);
         QVERIFY(!ok->isEnabled()); dialog.findChild<QCheckBox *>("approvePipeline")->setChecked(true); QVERIFY(ok->isEnabled());
         const auto options = dialog.options();
-        QCOMPARE(options.agents, QStringList({"claude", "opencode", "claude", "opencode"})); // providers alternate when several are installed
+        QCOMPARE(options.agents, QStringList({"claude", "opencode", "claude", "opencode", "claude"})); // providers alternate when several are installed
         QCOMPARE(options.symbol, QString("_CFFoo")); QCOMPARE(options.trace, QString("/home/u/.darling/trace.jsonl"));
     }
     void mountOfferTracksAvailability() {

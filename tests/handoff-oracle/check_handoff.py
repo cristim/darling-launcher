@@ -7,6 +7,19 @@ an append-only, hash-chained audit trail of every release and rejection.
 
   check_handoff.py --run-root DIR --from STAGE --to STAGE --file PATH [--agent-id ID] [--inputs A,B]
   check_handoff.py --verify-chain --run-root DIR   (or --summary)
+
+Rule R10 (reported to compliance like R1/R3/R5) rejects library+offset forms (`libfoo.dylib+0x1c`,
+`AppKit + 0x4f10`, `lib:0x..`) and pc/lr/return-address/frame hex values next to an Apple library
+name on the same or an adjacent line. A library name or public symbol name alone is fine.
+
+Text is NFKC-normalised, Unicode format characters (category Cf, e.g. U+200B/U+200D) are stripped, and
+lone CR, U+0085, U+2028, U+2029 count as line breaks before any rule is matched. Any file in handoff/ that
+is not an audited release, AUDIT.jsonl or MANIFEST.txt (including names with non-ASCII digits) is a stray
+file (verify exit 1, release exit 2). report_to_compliance in an audit record must be a JSON boolean.
+If a store failure aborts a run after R1/R3/R5/R10 hits, the REPORT-TO-COMPLIANCE lines are still printed.
+
+Stages: research spec impl validate recon. recon (the tainted reconciler) may only send recon->impl, in the
+fixed three-statement format (rule F1), citing the authorising spec->impl release in Inputs:.
 """
 import argparse
 import datetime
@@ -19,13 +32,16 @@ import stat
 import sys
 import unicodedata
 
-STAGES = ("research", "spec", "impl", "validate")
+STAGES = ("research", "spec", "impl", "validate", "recon")
 FORWARD = {("research", "spec"), ("spec", "impl"), ("impl", "validate"), ("spec", "validate")}
 # Back-channels carry behavioural questions or mismatch reports; same checks.
 BACK = {("impl", "spec"), ("validate", "impl"), ("validate", "spec")}
-ALLOWED = FORWARD | BACK
+# The reconciler (recon) reads only the working-tree files it must edit and greps callers by name (no git
+# history); its output stays tainted-by-reading and goes to impl only.
+RECON = {("recon", "impl")}
+ALLOWED = FORWARD | BACK | RECON
 # Hits on these rules go to coord-compliance (possible exposure to disassembly), not just back to the author.
-COMPLIANCE_RULES = {"R1", "R3", "R5"}
+COMPLIANCE_RULES = {"R1", "R3", "R5", "R10"}
 
 # R4: more than this many raw hex words (32- or 64-bit, 8+ hex digits) in a line or adjacent lines is rejected.
 MAX_HEX_WORDS = 4
@@ -87,6 +103,15 @@ LINE_RULES = [
         r"""|(?<![\w.])(?:backtrace|image_offset|return_address)\s*[:=]\s*(?:0x[0-9a-f]+|\[|\{|\d)""",
         re.I)),
 ]
+# R10 (ruling F3): never derive, record or cite an address/offset inside an Apple library image.
+_FRAMEWORKS = ("AppKit Foundation CoreFoundation CoreGraphics CoreServices Security QuartzCore IOKit "
+               "SystemConfiguration CFNetwork CoreText CoreAudio AVFoundation Metal ImageIO LaunchServices "
+               "ApplicationServices UIKit WebKit Carbon DiskArbitration CoreData").split()
+APPLE_LIB = (r"(?:\blib[\w+-]*(?:\.[\w.]+)?|\b\w+\.framework\b|\b\w+\.dylib\b|\b(?:"
+             + "|".join(_FRAMEWORKS) + r")\b)")
+LIB_OFFSET = re.compile(APPLE_LIB + rf"[^\n]{{0,30}}?(?:[+:@]\s*|\boffset\s+|\bat\s+)0x{_H}+", re.I)
+LIB_ONLY = re.compile(APPLE_LIB, re.I)
+PC_VALUE = re.compile(rf"\b(?:pc|lr|rip|return\s+addr(?:ess)?|frame(?:\s+addr(?:ess)?)?)\b[^\n]{{0,20}}?0x{_H}{{4,}}", re.I)
 CLASSDUMP_IVAR = re.compile(rf";\s*(?://|/\*)\s*(?:\d+\s*=\s*)?[+@]?0x{_H}+")
 OBJC_INTERFACE = re.compile(r"^\s*@interface\s+\w+")
 HEX_WORD = re.compile(
@@ -163,7 +188,12 @@ def asm_like(line):
 def check_text(text, src, dst):
     """Return sorted [(line_no, rule_id, description)]. src/dst are kept for the
     signature; every rule applies on every transition."""
-    text = unicodedata.normalize("NFKC", text).replace("\ufeff", "").replace("\r\n", "\n")
+    text = unicodedata.normalize("NFKC", text)
+    # Format characters (zero-width joiners etc.) split tokens invisibly; lone CR, NEL, LS, PS are line breaks.
+    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    text = text.replace("\r\n", "\n")
+    for br in ("\r", "\x85", "\u2028", "\u2029"):
+        text = text.replace(br, "\n")
     lines = [strip_md(l) for l in text.split("\n")]
     hits = []
     has_interface = any(OBJC_INTERFACE.match(l) for l in lines)
@@ -174,6 +204,10 @@ def check_text(text, src, dst):
                 hits.append((i, rid, desc))
         if has_interface and (OBJC_INTERFACE.match(line) or CLASSDUMP_IVAR.search(line)):
             hits.append((i, "R3", "class-dump style @interface with ivar offsets"))
+    for i, line in enumerate(lines, 1):
+        near = lines[max(0, i - 2):i + 1]
+        if LIB_OFFSET.search(line) or (PC_VALUE.search(line) and any(LIB_ONLY.search(x) for x in near)):
+            hits.append((i, "R10", "address/offset inside an Apple library image (library+offset, pc/lr/frame value)"))
     for ln in trace_hits(text):
         hits.append((ln, "R7", "raw trace (T0) JSON object" if ln else "too many JSON candidates to scan"))
 
@@ -376,12 +410,12 @@ HASH64 = re.compile(r"\b[0-9a-f]{64}\b", re.I)
 
 
 def released_map(lines):
-    """name -> (output_sha256, to-stage) for every RELEASE record."""
+    """name -> (output_sha256, to-stage, from-stage) for every RELEASE record."""
     out = {}
     for l in lines:
         r = json.loads(l)
         if r.get("verdict") == "RELEASE":
-            out[r["output"]] = (r["output_sha256"], r["to"])
+            out[r["output"]] = (r["output_sha256"], r["to"], r["from"])
     return out
 
 
@@ -398,7 +432,7 @@ def refuse_broken(d, lines):
             raise UnsafePath(f"released file {n} is missing (crashed release?); "
                              "run --verify-chain and investigate")
     for n in sorted(names):
-        if re.match(r"^\d\d-", n) and n not in released:
+        if n not in released and n not in (AUDIT, MANIFEST):
             raise UnsafePath(f"stray file {n} has no audit record; run --verify-chain and investigate")
 
 
@@ -413,8 +447,48 @@ def manifest_hashes(d):
 
 
 # Accepted Inputs: header form from spec onward: "<NN-from-to-to.md> <sha256>" entries separated by ; or ,
-INPUT_ENTRY = re.compile(r"(\d\d-[a-z]+-to-[a-z]+\.md)\s+([0-9a-fA-F]{64})")
-NEEDS_AGENT = ("impl", "validate")
+INPUT_ENTRY = re.compile(r"([0-9][0-9]-[a-z]+-to-[a-z]+\.md)\s+([0-9a-fA-F]{64})")
+NEEDS_AGENT = ("impl", "validate", "recon")
+
+
+RECON_NAME = r"[A-Za-z_$][\w$.@]*"
+RECON_L1 = re.compile(rf"Absent:\s*({RECON_NAME}(?:\s*,\s*{RECON_NAME})*)")
+RECON_L2 = re.compile(r"Branch:\s*[\w][\w./-]*\s+Commit:\s*[0-9a-fA-F]{40}")
+RECON_L3 = re.compile(r"Callers exist:\s*(yes|no)(?:\s*;\s*files:\s*(.+))?")
+RECON_PATH = re.compile(r"[\w.+-]+(?:/[\w.+-]+)*")
+RECON_HEADER = re.compile(r"\s*(?:Agent|Inputs):", re.I)
+R6_RX = next(rx for rid, _, rx in LINE_RULES if rid == "R6")
+
+
+def recon_format(text):
+    """F1: the recon->impl file is exactly three fixed statements plus Agent:/Inputs: headers."""
+    body = [(i, l.strip()) for i, l in enumerate(text.split("\n"), 1)
+            if l.strip() and not RECON_HEADER.match(l)]
+    out = []
+    for k, (rx, what) in enumerate(((RECON_L1, "Absent: <names>"),
+                                    (RECON_L2, "Branch: <name>  Commit: <40-hex SHA>"),
+                                    (RECON_L3, "Callers exist: yes|no [; files: <paths>]"))):
+        if k >= len(body):
+            out.append((body[-1][0] if body else 0, "F1", f"missing line {k + 1}: expected '{what}'"))
+            continue
+        ln, line = body[k]
+        m = rx.fullmatch(line)
+        if not m:
+            out.append((ln, "F1", f"line {k + 1} does not match '{what}'"))
+        elif k == 2:
+            files = m.group(2)
+            if m.group(1) == "yes" and not files:
+                out.append((ln, "F1", "'Callers exist: yes' needs '; files: <paths>'"))
+            elif m.group(1) == "no" and files:
+                out.append((ln, "F1", "'Callers exist: no' must not list files"))
+            for p in ([x.strip() for x in files.split(",")] if files else []):
+                if (not RECON_PATH.fullmatch(p) or p.startswith("/") or ".." in p.split("/")
+                        or R6_RX.search(p)):
+                    out.append((ln, "F1", "file path must be repo-relative (no leading '/', no '..', no system paths)"))
+                    break
+    for ln, _ in body[3:4]:
+        out.append((ln, "F1", "more than 3 non-empty content lines"))
+    return out
 
 
 def provenance(text, released, src, agent_flag, inputs_flag):
@@ -423,9 +497,13 @@ def provenance(text, released, src, agent_flag, inputs_flag):
 
     def resolve(name, digest=None):
         got = released.get(name)
-        if not got or got[1] != src or (digest and digest.lower() != got[0]):
+        # recon is the one exception: it cites the spec->impl release that authorises the removal.
+        route = ("spec", "impl") if src == "recon" else (None, src)
+        if (not got or got[1] != route[1] or (route[0] and got[2] != route[0])
+                or (digest and digest.lower() != got[0])):
             reasons.append((0, "P2", "input is not an earlier entry released to this stage "
-                                     "(name and sha256 must match a release whose 'to' is --from)"))
+                                     "(name and sha256 must match a release whose 'to' is --from; "
+                                     "recon must cite a spec->impl release)"))
             return False
         return True
 
@@ -455,18 +533,30 @@ def provenance(text, released, src, agent_flag, inputs_flag):
         names = names or h_names
     elif h_raw is not None:
         names = names or parse_list(text, "Inputs")
+    if src == "recon" and not names:
+        reasons.append((0, "P2", "recon must cite the authorising spec->impl release in Inputs:"))
     hashes = [released[n][0] for n in names if n in released]
     return agent, names, hashes, reasons
 
 
 def run_check(args):
+    reasons = []
+    try:
+        return _run_check(args, reasons)
+    except (UnsafePath, OSError, ValueError, RecursionError):
+        # A store failure must not drop a compliance report for hits already found.
+        for rid in sorted(COMPLIANCE_RULES & {r[1] for r in reasons}):
+            print(f"REPORT-TO-COMPLIANCE: rule {rid}", file=sys.stderr)
+        raise
+
+
+def _run_check(args, reasons):
     src, dst = args.from_stage, args.to_stage
     root = prepare_run_root(args.run_root)
     check_input_location(root, src, args.file)
     data = read_input(args.file)
     d = private_dir(os.path.join(root, "handoff"), True)
 
-    reasons = []
     if (src, dst) not in ALLOWED:
         reasons.append((0, "X1", f"transition {src}->{dst} not allowed"))
     if b"\0" in data:
@@ -477,6 +567,8 @@ def run_check(args):
         text = data.decode("utf-8", "replace")
         reasons.append((0, "R9", "input is not valid UTF-8"))
     reasons += check_text(text, src, dst)
+    if src == "recon":
+        reasons += recon_format(text)
     in_hash = sha256_bytes(data)
     if in_hash in manifest_hashes(d):
         reasons.append((0, "D1", "identical content is already released (re-release of a copy)"))
@@ -491,6 +583,8 @@ def run_check(args):
                "inputs": names, "input_hashes": hashes, "input_sha256": in_hash,
                "output_sha256": None, "sources": parse_sources(text),
                "report_to_compliance": False}
+        if src == "recon":
+            rec.update(stage_tainted_by_reading=True, reuse="never")
         if reasons:
             ids = sorted({r[1] for r in reasons})
             rec.update(verdict="REJECT", rules=ids, output=None,
@@ -511,7 +605,7 @@ def run_check(args):
     return 0
 
 
-TAINT_DIR = re.compile(r"^(?:research|spec|impl|validate)\.tainted$")
+TAINT_DIR = re.compile(r"^(?:research|spec|impl|validate|recon)\.tainted$")
 
 
 def count_tainted(root):
@@ -532,13 +626,16 @@ def summary_line(root, lines, prev):
     for b in bare:
         print(f"warning: {b} has no <agent-id> subdirectory and counts 0; "
               f"taints belong in {b}/<agent-id>/", file=sys.stderr)
-    flagged = 0
+    flagged = recon = 0
     for l in lines:
         try:
-            flagged += bool(json.loads(l).get("report_to_compliance"))
+            r = json.loads(l)
+            flagged += r.get("report_to_compliance") is True
+            recon += r.get("verdict") == "RELEASE" and r.get("from") == "recon"
         except (ValueError, AttributeError):
             pass
-    return f"records={len(lines)} last_hash={prev} tainted_stages={tainted} compliance_reports={flagged}"
+    return (f"records={len(lines)} last_hash={prev} tainted_stages={tainted} "
+            f"compliance_reports={flagged} recon_releases={recon}")
 
 
 def verify_chain(run_root, check=True):
@@ -569,6 +666,8 @@ def verify_chain(run_root, check=True):
             break
         if rec.get("prev_hash") != prev:
             problems.append(f"audit line {i}: prev_hash mismatch (record removed or altered before it)")
+        if not isinstance(rec.get("report_to_compliance", False), bool):
+            problems.append(f"audit line {i}: report_to_compliance is not a JSON boolean")
         prev = sha256_bytes(raw)
         if rec.get("verdict") == "RELEASE":
             name = rec.get("output", "")
@@ -581,15 +680,18 @@ def verify_chain(run_root, check=True):
                 if sha256_bytes(body) != rec.get("output_sha256"):
                     problems.append(f"audit line {i}: released file {name} was modified")
                 inputs_hdr = parse_header(body.decode("utf-8", "replace"), "Inputs") or ""
-                for h in HASH64.findall(inputs_hdr) if rec.get("from") != "research" else []:
-                    if (h.lower(), rec.get("from")) not in released.values():
+                frm = rec.get("from")
+                for h in HASH64.findall(inputs_hdr) if frm != "research" else []:
+                    want = ("impl", "spec") if frm == "recon" else (frm, None)
+                    if not any(v[0] == h.lower() and v[1] == want[0] and want[1] in (None, v[2])
+                               for v in released.values()):
                         problems.append(f"{name}: Inputs hash {h[:12]}... matches no earlier released entry")
-            released[name] = (rec.get("output_sha256"), rec.get("to"))
+            released[name] = (rec.get("output_sha256"), rec.get("to"), rec.get("from"))
     for name in sorted(os.listdir(d)):
-        if re.match(r"^\d\d-.*\.md$", name) and name not in released:
-            problems.append(f"{name}: released file with no audit record")
         if name.startswith(".tmp-"):
             problems.append(f"{name}: leftover temp file from a crashed release")
+        elif name not in released and name not in (AUDIT, MANIFEST):
+            problems.append(f"{name}: stray file with no audit record")
     mpath = os.path.join(d, MANIFEST)
     manifest = {}
     if os.path.islink(mpath):
@@ -600,7 +702,7 @@ def verify_chain(run_root, check=True):
                 p = l.split()
                 if len(p) >= 2:
                     manifest[p[0]] = p[1]
-    if manifest != {n: h for n, (h, _) in released.items()}:
+    if manifest != {n: v[0] for n, v in released.items()}:
         problems.append("MANIFEST.txt does not match released records in AUDIT.jsonl")
     for p in problems:
         print(p, file=sys.stderr)
@@ -621,7 +723,7 @@ def main(argv=None):
     ap.add_argument("--verify-chain", action="store_true")
     ap.add_argument("--summary", action="store_true",
                     help="print the summary line without checking the chain. tainted_stages counts "
-                         "the immediate subdirs (one per agent id) of <run-root>/{research,spec,impl,validate}.tainted")
+                         "the immediate subdirs (one per agent id) of <run-root>/{research,spec,impl,validate,recon}.tainted")
     a = ap.parse_args(argv)
     try:
         if a.verify_chain or a.summary:

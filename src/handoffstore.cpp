@@ -19,7 +19,6 @@
 #include <map>
 namespace {
 const char *Audit = "AUDIT.jsonl", *Manifest = "MANIFEST.txt";
-const QSet<QString> Compliance{"R1", "R3", "R5"};
 struct Unsafe { QString message; };
 struct Fd {
     int fd = -1;
@@ -134,21 +133,22 @@ void appendRecord(int auditFd, const QList<QByteArray> &lines, QJsonObject recor
     record.insert("prev_hash", lines.isEmpty() ? HandoffStore::Genesis : sha256(lines.last()));
     writeAll(auditFd, QJsonDocument(record).toJson(QJsonDocument::Compact) + '\n');
 }
-struct Released { QString sha256, to; };
+struct Released { QString sha256, to, from; };
 std::map<QString, Released> releasedMap(const QList<QByteArray> &lines) {
     std::map<QString, Released> out;
     for (const QByteArray &l : lines) {
         const QJsonObject r = QJsonDocument::fromJson(l).object();
-        if (r.value("verdict").toString() == "RELEASE") out[r.value("output").toString()] = {r.value("output_sha256").toString(), r.value("to").toString()};
+        if (r.value("verdict").toString() == "RELEASE") out[r.value("output").toString()] = {r.value("output_sha256").toString(), r.value("to").toString(), r.value("from").toString()};
     }
     return out;
 }
-const QRegularExpression NN("^\\d\\d-"), NNmd("^\\d\\d-.*\\.md$", QRegularExpression::DotMatchesEverythingOption);
+// Anything in handoff/ that is not an audited release or one of the two bookkeeping files is stray.
+bool stray(const QString &name, const std::map<QString, Released> &released) { return !released.count(name) && name != Audit && name != Manifest; }
 void refuseBroken(int handoffFd, const QList<QByteArray> &lines) {
     const auto released = releasedMap(lines); const QStringList names = listDir(handoffFd);
     for (const QString &n : names) if (n.startsWith(".tmp-")) throw Unsafe{"leftover temp file " + n + " from a crashed release; run --verify-chain, investigate and remove it by hand"};
     for (const auto &[n, r] : released) if (!names.contains(n)) throw Unsafe{"released file " + n + " is missing (crashed release?); run --verify-chain and investigate"};
-    for (const QString &n : names) if (NN.match(n).hasMatch() && !released.count(n)) throw Unsafe{"stray file " + n + " has no audit record; run --verify-chain and investigate"};
+    for (const QString &n : names) if (stray(n, released)) throw Unsafe{"stray file " + n + " has no audit record; run --verify-chain and investigate"};
 }
 QSet<QString> manifestHashes(int handoffFd) {
     Fd fd(::openat(handoffFd, Manifest, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
@@ -166,8 +166,10 @@ QList<Hit> provenance(const QString &body, const std::map<QString, Released> &re
     QList<Hit> reasons;
     auto resolve = [&](const QString &name, const QString &digest = {}) {
         const auto it = released.find(name);
-        if (it == released.end() || it->second.to != src || (!digest.isEmpty() && digest.toLower() != it->second.sha256)) {
-            reasons << Hit{0, "P2", "input is not an earlier entry released to this stage (name and sha256 must match a release whose 'to' is --from)"};
+        // recon is the one exception: it cites the spec->impl release that authorises the removal.
+        const QString wantFrom = src == "recon" ? "spec" : QString(), wantTo = src == "recon" ? "impl" : src;
+        if (it == released.end() || it->second.to != wantTo || (!wantFrom.isEmpty() && it->second.from != wantFrom) || (!digest.isEmpty() && digest.toLower() != it->second.sha256)) {
+            reasons << Hit{0, "P2", "input is not an earlier entry released to this stage (name and sha256 must match a release whose 'to' is --from; recon must cite a spec->impl release)"};
             return false;
         }
         return true;
@@ -175,7 +177,7 @@ QList<Hit> provenance(const QString &body, const std::map<QString, Released> &re
     const auto hAgent = HandoffCheck::parseHeader(body, "Agent");
     if (!agentFlag.isEmpty() && hAgent && !hAgent->isEmpty() && agentFlag != *hAgent) reasons << Hit{0, "P1", "--agent-id disagrees with the Agent: header"};
     *agent = !agentFlag.isEmpty() ? QJsonValue(agentFlag) : hAgent ? QJsonValue(*hAgent) : QJsonValue();
-    if ((src == "impl" || src == "validate") && agent->toString().isEmpty()) reasons << Hit{0, "P3", "no agent id (--agent-id or Agent: header) for stage " + src};
+    if ((src == "impl" || src == "validate" || src == "recon") && agent->toString().isEmpty()) reasons << Hit{0, "P3", "no agent id (--agent-id or Agent: header) for stage " + src};
     QStringList flagNames;
     for (const QString &n : inputFlag) if (!n.trimmed().isEmpty()) flagNames << n.trimmed();
     for (const QString &n : flagNames) resolve(n);
@@ -194,13 +196,15 @@ QList<Hit> provenance(const QString &body, const std::map<QString, Released> &re
         if (!flagNames.isEmpty() && QSet<QString>(flagNames.begin(), flagNames.end()) != QSet<QString>(hNames.begin(), hNames.end())) reasons << Hit{0, "P1", "--inputs disagrees with the Inputs: header"};
         if (names->isEmpty()) *names = hNames;
     } else if (hRaw && names->isEmpty()) *names = HandoffCheck::parseList(body, "Inputs");
+    if (src == "recon" && names->isEmpty()) reasons << Hit{0, "P2", "recon must cite the authorising spec->impl release in Inputs:"};
+    if (src == "recon") reasons += HandoffCheck::reconFormat(body);
     return reasons;
 }
 QString nowUtc() { return QDateTime::currentDateTimeUtc().toString("yyyy-MM-ddTHH:mm:ss") + "+00:00"; }
 QJsonArray array(const QStringList &l) { return QJsonArray::fromStringList(l); }
 }
 bool HandoffStore::allowedTransition(const QString &from, const QString &to) {
-    static const QSet<QString> allowed{"research>spec", "spec>impl", "impl>validate", "spec>validate", "impl>spec", "validate>impl", "validate>spec"};
+    static const QSet<QString> allowed{"research>spec", "spec>impl", "impl>validate", "spec>validate", "impl>spec", "validate>impl", "validate>spec", "recon>impl"};
     return allowed.contains(from + '>' + to);
 }
 HandoffStore::Result HandoffStore::submit(const QString &runRoot, const QString &from, const QString &to, const QString &file, const QString &agentId, const QStringList &inputs) {
@@ -231,13 +235,14 @@ HandoffStore::Result HandoffStore::submit(const QString &runRoot, const QString 
         for (const QString &n : names) if (released.count(n)) hashes << released.at(n).sha256;
         QJsonObject rec{{"time", nowUtc()}, {"from", from}, {"to", to}, {"author", from}, {"agent", agent}, {"inputs", array(names)}, {"input_hashes", array(hashes)},
                         {"input_sha256", inHash}, {"output_sha256", QJsonValue()}, {"sources", array(HandoffCheck::parseSources(body))}, {"report_to_compliance", false}};
+        if (from == "recon") { rec.insert("stage_tainted_by_reading", true); rec.insert("reuse", "never"); }
         if (!result.reasons.isEmpty()) {
             QStringList ids;
             for (const Hit &h : result.reasons) {
                 ids << (h.inner.isEmpty() ? h.rule : h.rule + '/' + h.inner);
-                result.reportToCompliance = result.reportToCompliance || HandoffCheck::isComplianceRule(h);
+                if (HandoffCheck::isComplianceRule(h)) { result.reportToCompliance = true; result.complianceRules << (h.inner.isEmpty() ? h.rule : h.inner); }
             }
-            ids.removeDuplicates(); ids.sort();
+            ids.removeDuplicates(); ids.sort(); result.complianceRules.removeDuplicates(); result.complianceRules.sort();
             rec.insert("verdict", "REJECT"); rec.insert("rules", array(ids)); rec.insert("output", QJsonValue()); rec.insert("report_to_compliance", result.reportToCompliance);
             appendRecord(audit.fd, lines, rec);
             result.status = Status::Rejected;
@@ -266,6 +271,9 @@ HandoffStore::Result HandoffStore::submit(const QString &runRoot, const QString 
         result.status = Status::Released; result.released = name; result.sha256 = inHash;
     } catch (const Unsafe &e) {
         result.status = Status::Unsafe; result.error = e.message;
+        // A store failure must not drop a compliance report for hits already found.
+        for (const Hit &h : result.reasons) if (HandoffCheck::isComplianceRule(h)) { result.reportToCompliance = true; result.complianceRules << (h.inner.isEmpty() ? h.rule : h.inner); }
+        result.complianceRules.removeDuplicates(); result.complianceRules.sort();
     }
     return result;
 }
@@ -312,6 +320,7 @@ HandoffStore::Chain HandoffStore::verifyChain(const QString &runRoot, bool check
             const QJsonDocument doc = QJsonDocument::fromJson(lines[i]);
             if (!doc.isObject()) { chain.problems << where + "not a JSON object"; break; }
             const QJsonObject rec = doc.object();
+            if (rec.contains("report_to_compliance") && !rec.value("report_to_compliance").isBool()) chain.problems << where + "report_to_compliance is not a JSON boolean";
             if (rec.value("prev_hash").toString() != prev || !rec.value("prev_hash").isString()) chain.problems << where + "prev_hash mismatch (record removed or altered before it)";
             prev = sha256(lines[i]);
             if (rec.value("verdict").toString() != "RELEASE") continue;
@@ -327,16 +336,16 @@ HandoffStore::Chain HandoffStore::verifyChain(const QString &runRoot, bool check
                     for (auto it = hash64.globalMatch(HandoffCheck::parseHeader(QString::fromUtf8(content), "Inputs").value_or(QString())); it.hasNext();) {
                         const QString h = it.next().captured();
                         bool found = false;
-                        for (const auto &[n, r] : released) found = found || (r.sha256 == h.toLower() && r.to == from);
+                        for (const auto &[n, r] : released) found = found || (r.sha256 == h.toLower() && (from == "recon" ? r.to == "impl" && r.from == "spec" : r.to == from));
                         if (!found) chain.problems << name + ": Inputs hash " + h.left(12) + "... matches no earlier released entry";
                     }
             }
-            released[name] = {rec.value("output_sha256").toString(), rec.value("to").toString()};
+            released[name] = {rec.value("output_sha256").toString(), rec.value("to").toString(), rec.value("from").toString()};
         }
         if (check) {
             for (const QString &n : listDir(hand.fd)) {
-                if (NNmd.match(n).hasMatch() && !released.count(n)) chain.problems << n + ": released file with no audit record";
                 if (n.startsWith(".tmp-")) chain.problems << n + ": leftover temp file from a crashed release";
+                else if (stray(n, released)) chain.problems << n + ": stray file with no audit record";
             }
             std::map<QString, QString> manifest, expected;
             Fd m(::openat(hand.fd, Manifest, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
@@ -348,8 +357,8 @@ HandoffStore::Chain HandoffStore::verifyChain(const QString &runRoot, bool check
             if (!chain.problems.isEmpty()) { chain.exitCode = 1; return chain; }
         }
         prev = lines.isEmpty() ? Genesis : sha256(lines.last());
-        int tainted = 0, flagged = 0;
-        static const QRegularExpression taintDir("^(?:research|spec|impl|validate)\\.tainted$");
+        int tainted = 0, flagged = 0, recon = 0;
+        static const QRegularExpression taintDir("^(?:research|spec|impl|validate|recon)\\.tainted$"); // compliance ruling: recon counts
         for (const QString &n : listDir(rootFd.fd)) {
             if (!taintDir.match(n).hasMatch() || ::fstatat(rootFd.fd, local(n).constData(), &st, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISDIR(st.st_mode)) continue;
             const Fd t = openDir(rootFd.fd, n, n); int k = 0;
@@ -357,8 +366,12 @@ HandoffStore::Chain HandoffStore::verifyChain(const QString &runRoot, bool check
             tainted += k;
             if (!k) chain.warnings << "warning: " + n + " has no <agent-id> subdirectory and counts 0; taints belong in " + n + "/<agent-id>/";
         }
-        for (const QByteArray &l : lines) flagged += QJsonDocument::fromJson(l).object().value("report_to_compliance").toBool();
-        chain.summary = QString("records=%1 last_hash=%2 tainted_stages=%3 compliance_reports=%4").arg(lines.size()).arg(prev).arg(tainted).arg(flagged);
+        for (const QByteArray &l : lines) {
+            const QJsonObject r = QJsonDocument::fromJson(l).object();
+            flagged += r.value("report_to_compliance").toBool();
+            recon += r.value("verdict").toString() == "RELEASE" && r.value("from").toString() == "recon";
+        }
+        chain.summary = QString("records=%1 last_hash=%2 tainted_stages=%3 compliance_reports=%4 recon_releases=%5").arg(lines.size()).arg(prev).arg(tainted).arg(flagged).arg(recon);
         chain.exitCode = 0;
     } catch (const Unsafe &e) { chain.exitCode = 2; chain.problems << "error: " + e.message; }
     return chain;

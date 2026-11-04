@@ -7,7 +7,8 @@
 // AUDIT.jsonl. Port of check_handoff.py's run_check/release/verify_chain; the on-disk format is the
 // oracle's, so either implementation can verify the other's chain.
 namespace HandoffStore {
-inline const QStringList Stages{"research", "spec", "impl", "validate"};
+inline const QStringList Stages{"research", "spec", "impl", "validate", "recon"};
+// recon (the reconciler) reads Darling's working tree; its output is tainted by reading and goes to impl only.
 constexpr qint64 MaxInput = 1000000;
 inline const QString Genesis = QString(64, '0');
 bool allowedTransition(const QString &from, const QString &to);
@@ -17,6 +18,7 @@ struct Result {
     QList<HandoffCheck::Hit> reasons; // rule text only, never the matched content
     QString released, sha256, error;
     bool reportToCompliance = false;
+    QStringList complianceRules; // R1, R3, R5, R10 (or E hits of them): report to compliance, never drop
 };
 // The file must be a regular, single-link, non-symlink file inside <runRoot>/<from>/.
 Result submit(const QString &runRoot, const QString &from, const QString &to, const QString &file, const QString &agentId = {}, const QStringList &inputs = {});
@@ -25,7 +27,7 @@ struct Release {
     bool operator==(const Release &o) const { return name == o.name && sha256 == o.sha256; }
 };
 QList<Release> releases(const QString &runRoot, QString *error);
-// Pipeline events (verdict = STAGE, TAINT, CANCEL, TIMEOUT, DONE, FAILED) on the same chain.
+// Pipeline events (verdict = STAGE, TAINT, DELIVER, CANCEL, TIMEOUT, DONE, FAILED, ...) on the same chain.
 QString appendEvent(const QString &runRoot, const QString &verdict, QJsonObject fields);
 struct Chain { int exitCode = 2; QStringList problems, warnings; QString summary; };
 Chain verifyChain(const QString &runRoot, bool check = true);

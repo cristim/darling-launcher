@@ -43,6 +43,17 @@ class HandoffStoreTest : public QObject {
         QCOMPARE(submit("spec", "impl", "sub_ABCD\n").status, Status::Rejected);
         QCOMPARE(HandoffStore::verifyChain(root).exitCode, 0);
     }
+    // ReconTests of the oracle.
+    const QByteArray sha = "3ddf2a330123456789abcdef0123456789abcdef";
+    QByteArray good() const { return "Absent: _FooBar, _BazQux\nBranch: feature/x  Commit: " + sha + "\nCallers exist: yes; files: src/a.c, include/b.h\n"; }
+    HandoffStore::Release specToImpl() {
+        [&] { QCOMPARE(submit("research", "spec", "t1\n").status, Status::Released); QCOMPARE(submit("spec", "impl", "t2\n").status, Status::Released); }();
+        QString e; for (const auto &r : HandoffStore::releases(root, &e)) if (r.to == "impl") return r;
+        return {};
+    }
+    HandoffStore::Result recon(const QByteArray &body, const QByteArray &hdr) {
+        return HandoffStore::submit(root, "recon", "impl", write(hdr + body, "recon", "r" + QString::number(counter++) + ".md"));
+    }
 private slots:
     void init() {
         temp = new QTemporaryDir; QVERIFY(temp->isValid());
@@ -200,26 +211,106 @@ private slots:
         QCOMPARE(submit("spec", "impl", "see sub_1A2B\n").status, Status::Rejected);
         QCOMPARE(submit("research", "spec", "ok\n").status, Status::Released);
         QCOMPARE(HandoffStore::appendEvent(root, "TAINT", {{"stage", "spec"}, {"report_to_compliance", true}}), QString());
-        for (const QString &d : {"spec.tainted/agent-a", "spec.tainted/agent-b", "impl.tainted", "notes.tainted.bak/x"}) QDir().mkpath(root + '/' + d);
+        for (const QString &d : {"spec.tainted/agent-a", "spec.tainted/agent-b", "recon.tainted/recon-1", "impl.tainted", "notes.tainted.bak/x"}) QDir().mkpath(root + '/' + d);
         put(root + "/spec.tainted/file", "");
         const auto chain = HandoffStore::verifyChain(root);
         QCOMPARE(chain.exitCode, 0); QVERIFY(chain.warnings.join('\n').contains("impl.tainted has no <agent-id> subdirectory"));
-        QVERIFY2(QRegularExpression("^records=3 last_hash=[0-9a-f]{64} tainted_stages=2 compliance_reports=2$").match(chain.summary).hasMatch(), qPrintable(chain.summary));
+        QVERIFY2(QRegularExpression("^records=3 last_hash=[0-9a-f]{64} tainted_stages=3 compliance_reports=2 recon_releases=0$").match(chain.summary).hasMatch(), qPrintable(chain.summary));
         QCOMPARE(HandoffStore::verifyChain(root, false).summary, chain.summary);
         QString error; QCOMPARE(HandoffStore::releases(root, &error).size(), 1); QVERIFY(error.isEmpty());
+    }
+    // Oracle CliTests.test_non_ascii_digit_file_name_is_a_stray_file
+    void anyUnauditedFileInHandoffIsStray() {
+        QCOMPARE(submit("research", "spec", clean).status, Status::Released);
+        const QString odd = hand + QString::fromUtf8("/\u0660\u0662-spec-to-impl.md"); put(odd, "x");
+        auto chain = HandoffStore::verifyChain(root); QCOMPARE(chain.exitCode, 1); QVERIFY(chain.problems.join('\n').contains("stray file"));
+        auto r = submit("spec", "impl", clean); QCOMPARE(r.status, Status::Unsafe); QVERIFY(r.error.contains("stray file"));
+        QFile::remove(odd); put(hand + "/notes.txt", "x");
+        QCOMPARE(HandoffStore::verifyChain(root).exitCode, 1);
+    }
+    // Oracle ComplianceTests.test_report_to_compliance_must_be_json_boolean
+    void reportToComplianceMustBeABoolean() {
+        submit("spec", "impl", "see sub_1A2B\n");
+        QCOMPARE(submit("research", "spec", "ok\n").status, Status::Released);
+        for (const QJsonValue bad : {QJsonValue(1), QJsonValue("yes"), QJsonValue("true")}) {
+            QStringList lines = auditLines(); QJsonObject rec = QJsonDocument::fromJson(lines.last().toUtf8()).object();
+            rec.insert("report_to_compliance", bad); lines.last() = QString::fromUtf8(QJsonDocument(rec).toJson(QJsonDocument::Compact)); setAuditLines(lines);
+            const auto chain = HandoffStore::verifyChain(root);
+            QCOMPARE(chain.exitCode, 1); QVERIFY(chain.problems.join('\n').contains("not a JSON boolean"));
+            QVERIFY2(HandoffStore::verifyChain(root, false).summary.contains("compliance_reports=1 "), qPrintable(HandoffStore::verifyChain(root, false).summary));
+        }
+    }
+    // Oracle ComplianceTests.test_compliance_report_printed_even_when_store_fails
+    void complianceHitSurvivesAStoreFailure() {
+        QCOMPARE(submit("research", "spec", "ok\n").status, Status::Released);
+        setAuditLines(auditLines() << "garbage");
+        const auto r = submit("spec", "impl", "see sub_1A2B and libobjc.A.dylib+0x1c\n");
+        QCOMPARE(r.status, Status::Unsafe); QVERIFY(r.reportToCompliance); QCOMPARE(r.complianceRules, QStringList({"R10", "R5"}));
+    }
+    void r10IsReportedToCompliance() {
+        const auto r = submit("spec", "impl", "see libsystem_kernel.dylib+0x1c2\n");
+        QCOMPARE(r.status, Status::Rejected); QVERIFY(r.reportToCompliance); QCOMPARE(r.complianceRules, QStringList{"R10"});
+        QVERIFY(audit().last().value("report_to_compliance").toBool());
+        const auto other = submit("research", "spec", "/System/Library/Foo\n");
+        QVERIFY(!other.reportToCompliance); QVERIFY(other.complianceRules.isEmpty());
+    }
+    void reconReleaseCarriesTaintFlags() {
+        const auto si = specToImpl(); const QByteArray hdr = "Agent: recon-1\nInputs: " + si.name.toUtf8() + ' ' + si.sha256.toUtf8() + '\n';
+        auto r = recon(good(), hdr); QVERIFY2(r.status == Status::Released, qPrintable(rules(r) + r.error));
+        const auto rec = audit().last();
+        QCOMPARE(rec.value("stage_tainted_by_reading").toBool(), true); QCOMPARE(rec.value("reuse").toString(), QString("never")); QCOMPARE(rec.value("from").toString(), QString("recon"));
+        const auto chain = HandoffStore::verifyChain(root); QCOMPARE(chain.exitCode, 0); QVERIFY(chain.summary.endsWith("recon_releases=1"));
+        QCOMPARE(recon("Absent: _A\nBranch: m  Commit: " + sha + "\nCallers exist: no\n", hdr + "\n").status, Status::Released);
+        // the launcher's way: --agent-id and --inputs instead of headers
+        QCOMPARE(HandoffStore::submit(root, "recon", "impl", write("Absent: _B\nBranch: m  Commit: " + sha + "\nCallers exist: no\n", "recon", "flags.md"), "recon-2", {si.name}).status, Status::Released);
+    }
+    void onlyReconToImplAllowed() {
+        for (const QString &t : QStringList{"research>recon", "spec>recon", "impl>recon", "validate>recon", "recon>spec", "recon>validate", "recon>research", "recon>recon"})
+            QVERIFY2(rules(submit(t.section('>', 0, 0), t.section('>', 1), "x\n", "a")).contains("X1"), qPrintable(t));
+    }
+    void reconFormatAndProvenance() {
+        const auto si = specToImpl(); const QByteArray hdr = "Agent: recon-1\nInputs: " + si.name.toUtf8() + ' ' + si.sha256.toUtf8() + '\n';
+        const QList<QByteArray> bad{good() + "Extra: line\n", "The functions are absent now.\n", "Absent: _A\nBranch: m  Commit: " + sha + "\n",
+            "Absent: _A\nBranch: m  Commit: 3ddf2a33\nCallers exist: no\n", "Absent: _A\nBranch: m  Commit: " + sha + "\nCallers exist: yes; files: /src/a.c\n",
+            "Absent: _A\nBranch: m  Commit: " + sha + "\nCallers exist: yes; files: a/../b.c\n", "Absent: _A\nBranch: m  Commit: " + sha + "\nCallers exist: yes\n",
+            "Absent: _A\nBranch: m  Commit: " + sha + "\nCallers exist: no; files: a.c\n", "Absent: a name here\nBranch: m  Commit: " + sha + "\nCallers exist: no\n"};
+        for (const QByteArray &b : bad) { const auto r = recon(b, hdr); QCOMPARE(r.status, Status::Rejected); QVERIFY2(QRegularExpression("[1-9]\\d*:F1").match(rules(r)).hasMatch(), b.constData()); }
+        QString e; HandoffStore::Release t1; for (const auto &r : HandoffStore::releases(root, &e)) if (r.to == "spec") t1 = r;
+        for (const QByteArray &h : {QByteArray("Agent: r\n"), "Agent: r\nInputs: " + t1.name.toUtf8() + ' ' + t1.sha256.toUtf8() + '\n', "Agent: r\nInputs: " + si.name.toUtf8() + ' ' + QByteArray(64, '0') + '\n'})
+            QVERIFY2(rules(recon(good(), h)).contains("P2"), h.constData());
+        QVERIFY(rules(recon(good(), "Inputs: " + si.name.toUtf8() + ' ' + si.sha256.toUtf8() + '\n')).contains("P3"));
+        const auto r6 = recon("Absent: _A\nBranch: m  Commit: " + sha + "\nCallers exist: yes; files: /System/Library/x\n", hdr);
+        QVERIFY(rules(r6).contains("R6")); QVERIFY(rules(r6).contains("F1"));
+        QVERIFY(rules(recon(good() + "sub_1A2B\n", hdr)).contains("R5"));
+        for (const auto &rec : audit()) if (rec.value("from") == "recon") QVERIFY(rec.value("stage_tainted_by_reading").toBool());
     }
     void pythonAndCppVerifyEachOther() {
         const QString python = QStandardPaths::findExecutable("python3");
         if (python.isEmpty()) QSKIP("python3 not found: cross-verification of audit chains with the python oracle was NOT checked");
-        auto oracle = [&](const QStringList &args, QString *out = nullptr) {
+        auto oracle = [&](const QStringList &args, QString *out = nullptr, QString *err = nullptr) {
             QProcess p; auto env = QProcessEnvironment::systemEnvironment(); env.insert("PYTHONDONTWRITEBYTECODE", "1"); p.setProcessEnvironment(env); p.start(python, QStringList{TEST_SOURCE_DIR "/tests/handoff-oracle/check_handoff.py"} + args); p.waitForFinished(60000);
             if (out) *out = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+            if (err) *err = QString::fromUtf8(p.readAllStandardError());
             return p.exitCode();
         };
         threeReleases();
+        QString e; HandoffStore::Release si; for (const auto &r : HandoffStore::releases(root, &e)) if (r.from == "spec" && r.to == "impl") si = r;
+        QCOMPARE(recon("Absent: _A\nBranch: m  Commit: " + sha + "\nCallers exist: no\n", "Agent: recon-1\nInputs: " + si.name.toUtf8() + ' ' + si.sha256.toUtf8() + '\n').status, Status::Released);
         QCOMPARE(HandoffStore::appendEvent(root, "DELIVER", {{"stage", "validate"}, {"input", "02-spec-to-impl.md"}}), QString());
         QString pySummary; QCOMPARE(oracle({"--verify-chain", "--run-root", root}, &pySummary), 0);
         QCOMPARE(pySummary, HandoffStore::verifyChain(root).summary);
+        // The oracle's TaintedReconTests layouts: summary and warning must match.
+        for (bool agentDir : {true, false}) {
+            QDir(root + "/recon.tainted").removeRecursively();
+            QDir().mkpath(root + (agentDir ? "/recon.tainted/reconciler-1" : "/recon.tainted"));
+            QString pyErr; QCOMPARE(oracle({"--verify-chain", "--run-root", root}, &pySummary, &pyErr), 0);
+            const auto chain = HandoffStore::verifyChain(root);
+            QCOMPARE(pySummary, chain.summary);
+            QVERIFY(chain.summary.contains(agentDir ? "tainted_stages=1 " : "tainted_stages=0 "));
+            const QString warning = "recon.tainted has no <agent-id> subdirectory";
+            QCOMPARE(pyErr.contains(warning), !agentDir); QCOMPARE(chain.warnings.join('\n').contains(warning), !agentDir);
+        }
+        QDir(root + "/recon.tainted").removeRecursively();
         // python extends the C++ chain; C++ verifies and extends it again; python verifies the result.
         const QString p = write("Agent: v1\nmismatch: behaviour differs\n", "validate", "v.md");
         QCOMPARE(oracle({"--run-root", root, "--from", "validate", "--to", "impl", "--file", p}), 0);

@@ -1,0 +1,3 @@
+Inputs: 01-research-to-spec.md 181668dd3ae698c9a440a6c2c0db1f41ebf934b3083e6403d66bee320dc08e2f
+
+note 86

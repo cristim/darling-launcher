@@ -3,17 +3,26 @@
 #include "pipelineworkspace.h"
 #include <QFutureWatcher>
 #include <QObject>
+#include <QSet>
 #include <QProcess>
 #include <QTimer>
 // Missing-symbol clean-room pipeline: research -> spec -> impl -> validate, one fresh headless agent
 // per stage, launcher-copied handoffs that pass HandoffStore, every step in the audit chain.
+// Recon runs once per spec release that carries a `Reconcile:` line (compliance ruling): a revised
+// spec with its own line gets a new reconciler, the same release never a second one.
+class ReconcileTracker {
+public:
+    bool shouldReconcile(const HandoffStore::Release &release, const QString &text);
+private:
+    QSet<QString> reconciled; // sha256 of spec->impl releases already reconciled
+};
 class MissingSymbolPipeline : public QObject {
     Q_OBJECT
 public:
     enum class State { Idle, Running, Done, Failed, Cancelled, TimedOut };
     Q_ENUM(State)
     struct Options {
-        QStringList agents;            // CLI per stage (research, spec, impl, validate)
+        QStringList agents;            // CLI per stage, in HandoffStore::Stages order (recon last)
         QString trace;                 // T0 trace written by the tracer
         QString symbol, library;       // shown to the agents as the task
         QString supervisor;            // executable understanding --stage-supervisor
@@ -32,13 +41,17 @@ public:
 signals:
     void statusChanged(const QString &message);
     void finished(MissingSymbolPipeline::State state, const QString &message);
+    // A handoff matched R1/R3/R5/R10: coord-compliance must be told (the stage is also tainted).
+    void complianceReport(const QString &stage, const QStringList &rules);
 private:
     void launch(const QString &stage);
     void stageExited(int code, QProcess::ExitStatus status);
     void submitted(const HandoffStore::Result &result);
     void handOff(const HandoffStore::Release &release);
     void revise(const QStringList &reasons);
-    void taint(const QString &reason);
+    void taint(const QString &reason, const QStringList &complianceRules = {});
+    QString reportCompliance(const QStringList &rules); // log line, status, signal; returns the log text
+    QString releasedText(const HandoffStore::Release &release) const;
     void finish(State state, const QString &message);
     bool record(const QString &verdict, QJsonObject fields);
     QString deliver(const HandoffStore::Release &release, const QString &stage, bool asInput);
@@ -52,6 +65,7 @@ private:
     QHash<QString, QList<HandoffStore::Release>> delivered, inputs; // per stage: all deliveries / those named in Inputs
     int validationRounds = 0, logFd = -1, runLock = -1;
     bool cancelling = false, timedOut = false;
+    ReconcileTracker reconciler;
     QProcess *process = nullptr;
     QTimer timeout;
     QFutureWatcher<HandoffStore::Result> watcher;

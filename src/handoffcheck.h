@@ -18,14 +18,17 @@ constexpr int MaxHexWords = 4, AsmRun = 3, AsmBlock = 6, MaxJsonFailures = 2000,
 // Oracle rules R1-R8, sorted and de-duplicated like check_text().
 QList<Hit> checkText(const QString &text);
 // checkText() plus launcher-only rules on decoded variants of the text: E1 look-alike letters folded,
-// E2 base64 blobs, E3 \x \u % &# escapes; E4 rejects lines too long to match reliably. Stricter than the oracle.
+// E2 base64 blobs, E3 \x \u % &# escapes; E4 flags lines over MaxLineLength and re-checks them in short
+// windows (a window hit carries its rule as inner); E5 re-checks text with NUL/U+FFFD removed. Stricter than the oracle.
 QList<Hit> checkTextStrict(const QString &text);
-// R1, R3, R5 (and E hits of those) suggest exposure to disassembly: report and taint, not revise.
+// R1, R3, R5, R10 (and E hits of those) suggest exposure to disassembly: report and taint, not revise.
 bool isComplianceRule(const Hit &hit);
 // Narrow scan for agent logs and notes (which may quote Darling's own assembly or C): tool-dump
 // signatures (R3) and decompiler names/byte macros (part of R5) only.
 QList<Hit> exposureMarkers(const QString &text);
 QList<Hit> rawTraceObjects(const QString &text); // R7 alone, for scanning workspaces
+// F1: a recon->impl file is exactly the three fixed statements (plus Agent:/Inputs: headers).
+QList<Hit> reconFormat(const QString &text);
 std::optional<QString> parseHeader(const QString &text, const QString &label);
 QStringList parseList(const QString &text, const QString &label);
 QStringList parseSources(const QString &text);

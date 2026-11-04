@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Regenerate tests/handoff-corpus/ (run: python3 tests/handoff-corpus/generate.py) from the oracle test fixtures plus adversarial cases.
-expected.tsv holds the ORACLE's rule set for each file (R/X/P/D ids) and, for E-only cases, the
-launcher-only E rule expected on top. Re-run only to regenerate."""
-import base64, os, sys
+"""Regenerate tests/handoff-corpus/ (run: python3 tests/handoff-corpus/generate.py).
+
+Rows: (1) every text the CURRENT oracle test suite (tests/handoff-oracle/test_check_handoff.py) passes to
+check_text() or recon_format(), captured by running that suite: oracle-<sha>.txt and recon-<sha>.txt;
+(2) the named rows below (earlier fixtures, json/word-boundary parity cases, adversarial encodings).
+expected.tsv holds the ORACLE's own verdict (check_text, plus recon_format for recon-* rows) and the
+launcher-only E rules expected on top."""
+import base64, contextlib, hashlib, io, os, sys, tempfile, unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "handoff-oracle"))
 import check_handoff as ch
@@ -99,6 +103,28 @@ add("r5-near-composed", "a\u0301sub_1 x\n")
 add("r5-near-mark-after-digit", "v1\u0301 = 2\n")
 add("r2-combining-mark", "at _foo\u0301+0x1c\n")
 
+# --- R10 (ruling F3) adversarial ---
+add("r10-upper-case", "LIBSYSTEM_KERNEL.DYLIB+0X1C2\n")
+add("r10-bulleted-backticks", "- `AppKit` @ 0x4f10\n")
+add("r10-pc-next-line", "QuartzCore drew it\npc 0x7ff800001234\n")
+add("r10-near-two-lines-apart", "QuartzCore drew it\n\npc 0x7ff800001234\n")
+
+# --- Turkish dotted/dotless I under re.I (PCRE2 does not fold them by default) ---
+add("r6-dotted-capital-i", "see /System/L\u0130brary/Frameworks for docs\n")
+add("r6-dotless-small-i", "see /System/L\u0131brary/Frameworks for docs\n")
+add("r10-dotless-i-lib", "see l\u0131bsystem_kernel.dylib+0x1c2\n")
+# --- compliance markers past the 4096-char window (strict re-check) ---
+add("long-line-sub-at-5000", "a " * 2500 + "calls sub_1A2B\n", "E4")
+add("long-line-lib-offset-at-9000", "b " * 4500 + "libsystem_kernel.dylib+0x1c2\n", "E4")
+
+# --- case folding of keys and headers (python lower()/re.I vs Qt) ---
+add("r7-key-dotted-capital-i", '{"sym": "_f", "RD\u0130": 1}\n')
+add("r7-key-upper", '{"sym": "_f", "RDI": 1}\n')
+add("r7-key-kelvin", '{"sym": "_f", "x0": 1, "\u212aey": 2}\n')
+# --- NUL / U+FFFD inside a marker: oracle no hit (store rejects R9); launcher E5 catches it ---
+add("e5-nul-in-sub", "see su\x00b_1A2B here\n", "E5")
+add("e5-fffd-in-sub", "see su\ufffdb_1A2B here\n", "E5")
+
 # --- json raw_decode details (parity) ---
 add("json-dup-key-last-wins", '{"a": {"symbol": "_f", "regs": []}, "a": 1}\n')
 add("json-dup-key-trace-last", '{"a": 1, "a": {"symbol": "_f", "regs": []}}\n')
@@ -140,12 +166,38 @@ add("adv-html-escaped-sub", "&#115;&#117;&#98;_1A2B", "E3")
 add("adv-near-prose-escapes", "Use \\n for newlines and 100% of tests; &amp; is fine.\n")
 add("adv-near-russian", "Это обычный текст.\n")
 
+# --- capture every fixture of the current oracle test suite ---
+captured = {}
+orig_check, orig_recon = ch.check_text, ch.recon_format
+def spy_check(text, src, dst):
+    captured.setdefault(text, "oracle")
+    return orig_check(text, src, dst)
+def spy_recon(text):
+    captured[text] = "recon"
+    return orig_recon(text)
+ch.check_text, ch.recon_format = spy_check, spy_recon
+os.environ["TMPDIR"] = os.environ.get("TMPDIR", tempfile.gettempdir())
+import test_check_handoff  # noqa: E402  (same directory as the oracle)
+suite = unittest.defaultTestLoader.loadTestsFromModule(test_check_handoff)
+with contextlib.redirect_stderr(io.StringIO()):
+    result = unittest.TextTestRunner(stream=io.StringIO()).run(suite)
+ch.check_text, ch.recon_format = orig_check, orig_recon
+assert result.wasSuccessful() and result.testsRun >= 78, (result.testsRun, result.failures, result.errors)
+MAX_CAPTURED = 200_000  # larger inputs are rejected before the rules run, or only repeat smaller rows
+for text, kind in sorted(captured.items()):
+    if len(text.encode()) <= MAX_CAPTURED:
+        add(f"{kind}-{hashlib.sha256(text.encode()).hexdigest()[:12]}", text, "*")  # E rules not asserted
+
+def oracle_rules(name, text):
+    hits = ch.check_text(text, "research", "spec") + (ch.recon_format(text) if name.startswith("recon-") else [])
+    return sorted({r[1] for r in hits})
+
 with open(os.path.join(out, "expected.tsv"), "w") as man:
-    man.write("# file\toracle rules (R/X/P/D, from check_handoff.check_text)\tlauncher-only E rules\n")
+    man.write("# file\toracle rules (check_text, plus recon_format for recon-*)\tlauncher-only E rules ('*' = not asserted)\n")
     for name, text, extra in cases:
         fn = name + ".txt"
         with open(os.path.join(out, fn), "w", encoding="utf-8", newline="") as f:
             f.write(text)
-        rules = sorted({r[1] for r in ch.check_text(text, "research", "spec")})
+        rules = oracle_rules(name, text)
         man.write(f"{fn}\t{','.join(rules) or '-'}\t{extra or '-'}\n")
-print(len(cases), "cases")
+print(len(cases), "cases,", result.testsRun, "oracle tests captured")

@@ -1,0 +1,1 @@
+AppKit flag 0x10 is documented
