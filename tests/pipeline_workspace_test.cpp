@@ -31,6 +31,15 @@ private slots:
         for (const QString &d : HandoffStore::Stages + QStringList{"handoff"}) QCOMPARE(mode(ws.root + '/' + d), 0700u);
         QVERIFY(make().root != ws.root);
     }
+    void baseIsUnlistableAndFinishedRunsClose() {
+        auto ws = make();
+        QCOMPARE(mode(base), 0300u);
+        QString closed; QCOMPARE(ws.close(&closed), QString()); QCOMPARE(mode(closed), 0u); QVERIFY(!QFileInfo::exists(ws.root)); QVERIFY(closed.startsWith(ws.root + ".closed-"));
+        QCOMPARE(PipelineWorkspace::recover(base), QStringList()); QCOMPARE(mode(closed), 0u); QCOMPARE(mode(base), 0300u); // closed runs stay closed
+        auto live = make(); QCOMPARE(live.lockFor("impl"), QString());
+        ::chmod(base.toLocal8Bit().constData(), 0700); // an agent makes the base listable
+        bool tampered = false; QCOMPARE(live.unlock(&tampered), QString()); QVERIFY(tampered); QCOMPARE(mode(base), 0300u);
+    }
     void lockShowsOnlyTheActiveStage() {
         auto ws = make(); QDir().mkdir(ws.root + "/spec.tainted");
         QCOMPARE(ws.lockFor("impl"), QString());
@@ -103,6 +112,14 @@ private slots:
         QVERIFY(PipelineWorkspace::processesUsing(ws.root).contains(p.processId()));
         p.kill(); p.waitForFinished();
         QVERIFY(!PipelineWorkspace::processesUsing(ws.root).contains(p.processId()));
+    }
+    void recoveryLeavesARunLockedWhileSomethingUsesIt() {
+        PipelineWorkspace ws = make(); QCOMPARE(ws.lockFor("impl"), QString());
+        QProcess agent; agent.setWorkingDirectory(ws.stageDir("impl")); agent.start("sleep", {"30"}); QVERIFY(agent.waitForStarted());
+        QCOMPARE(PipelineWorkspace::recover(base), QStringList());
+        QCOMPARE(mode(ws.root), 0100u); QCOMPARE(mode(ws.stageDir("research")), 0u);
+        agent.kill(); agent.waitForFinished();
+        QCOMPARE(PipelineWorkspace::recover(base), QStringList{ws.root});
     }
     void recoversRunsLeftLocked() {
         PipelineWorkspace ws = make(); QCOMPARE(ws.lockFor("spec"), QString());

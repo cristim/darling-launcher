@@ -32,9 +32,23 @@ bool hasMarker(qint64 pid, const QString &agentId) {
     QFile env(QString("/proc/%1/environ").arg(pid));
     return env.open(QIODevice::ReadOnly) && env.readAll().split('\0').contains(QByteArray(Marker) + '=' + agentId.toUtf8());
 }
+// Compliance rule ids hit by a stage's OUTPUT.md; an output too large to check is a taint reason.
+QStringList outputComplianceRules(const QString &path, QStringList *reasons) {
+    QFile f(path);
+    // Symlinks, FIFOs and other special files are tainted by the caller; never open them (a FIFO would block).
+    const QFileInfo info(path);
+    if (info.isSymLink() || !info.isFile() || !f.open(QIODevice::ReadOnly)) return {};
+    const QByteArray data = f.read(HandoffStore::MaxInput + 1);
+    if (data.size() > HandoffStore::MaxInput) { *reasons << "OUTPUT.md is too large to check"; return {}; }
+    QStringList rules;
+    for (const auto &h : HandoffCheck::checkTextStrict(QString::fromUtf8(data))) if (HandoffCheck::isComplianceRule(h)) rules << (h.inner.isEmpty() ? h.rule : h.inner);
+    rules.removeDuplicates(); rules.sort();
+    return rules;
+}
+// The process name only: command lines can carry secrets.
 QString command(qint64 pid) {
-    QFile f(QString("/proc/%1/cmdline").arg(pid));
-    return f.open(QIODevice::ReadOnly) ? QString::fromLocal8Bit(f.read(200).replace('\0', ' ')).trimmed() : QString("?");
+    QFile f(QString("/proc/%1/comm").arg(pid));
+    return f.open(QIODevice::ReadOnly) ? QString::fromLocal8Bit(f.read(64)).trimmed() : QString("?");
 }
 // CLI logs in JSON lines escape newlines; scan the decoded strings as well as the raw text.
 QString withJsonStrings(const QByteArray &data) {
@@ -69,12 +83,59 @@ QString scanFile(const QString &path) {
     return !buffer.isEmpty() && exposed(buffer) ? " contains disassembly or decompiler markers" : QString();
 }
 }
+namespace {
+QByteArray fileHash(const QString &path) {
+    QFile f(path);
+    if (!QFileInfo(path).isFile() || !f.open(QIODevice::ReadOnly)) return QFileInfo::exists(path) ? QByteArray("present") : QByteArray();
+    return QCryptographicHash::hash(f.read(16 * 1024 * 1024), QCryptographicHash::Sha256);
+}
+}
+AutoLoadedFiles AutoLoadedFiles::snapshot(const QString &runRoot) {
+    AutoLoadedFiles a;
+    static const QStringList names{"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".claude/settings.json", ".claude/settings.local.json", ".mcp.json", "opencode.json", "opencode.jsonc", ".opencode/opencode.json"};
+    for (QDir dir(QFileInfo(runRoot).absolutePath());; ) {
+        for (const QString &n : names) a.hashes.insert(dir.filePath(n), fileHash(dir.filePath(n)));
+        if (!dir.cdUp()) break;
+    }
+    const QString home = QDir::homePath();
+    for (const QString &n : {"/.claude/CLAUDE.md", "/.claude/settings.json", "/.config/opencode/opencode.json", "/.config/opencode/opencode.jsonc", "/.config/opencode/AGENTS.md", "/.codex/config.toml", "/.codex/AGENTS.md"})
+        a.hashes.insert(home + n, fileHash(home + n));
+    return a;
+}
+QString AutoLoadedFiles::changed() const {
+    for (auto it = hashes.begin(); it != hashes.end(); ++it) if (fileHash(it.key()) != it.value()) return it.key();
+    return {};
+}
 bool ReconcileTracker::shouldReconcile(const HandoffStore::Release &release, const QString &text) {
     // `Reconcile: <names>` (SKILL.md), names in the same grammar as the reconciler's `Absent:` line.
     static const QRegularExpression line("(?m)^Reconcile:\\s*[A-Za-z_$][\\w$.@]*(?:\\s*,\\s*[A-Za-z_$][\\w$.@]*)*\\s*$");
     if (release.from != "spec" || release.to != "impl" || !line.match(text).hasMatch() || reconciled.contains(release.sha256)) return false;
     reconciled.insert(release.sha256);
     return true;
+}
+// The prompt only points at BRIEF.md, so the brief never appears in a process listing.
+QStringList MissingSymbolPipeline::stageArguments(const QString &cli, const QString &dir) {
+    const QString prompt = "Read BRIEF.md in the current folder and follow it exactly.";
+    if (cli == "claude")
+        return {"--print", "--safe-mode", "--strict-mcp-config", "--no-session-persistence", "--permission-mode", "acceptEdits",
+                "--allowedTools", "Read,Edit,Write,Glob,Grep", "--disallowedTools", "Bash,WebFetch,WebSearch,Task", "--add-dir", dir, "--", prompt};
+    if (cli == "codex")
+        return {"exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "--config", "sandbox_workspace_write.network_access=false",
+                "--model", "gpt-6.1-sol", "--config", "model_reasoning_effort=\"low\"", "--json", prompt};
+    if (cli == "opencode") return {"run", "--pure", "--format", "json", prompt};
+    return {};
+}
+QProcessEnvironment MissingSymbolPipeline::stageEnvironment(const QProcessEnvironment &from, const QString &cli) {
+    // Only what a CLI needs to start and authenticate; no tokens for other services, agent sockets or loader overrides.
+    static const QStringList common{"HOME", "PATH", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LANGUAGE", "TZ", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"};
+    static const QHash<QString, QStringList> provider{
+        {"claude", {"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"}},
+        {"codex", {"OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME"}},
+        {"opencode", {"OPENCODE_CONFIG_DIR"}}};
+    QProcessEnvironment env;
+    for (const QString &name : from.keys())
+        if (common.contains(name) || name.startsWith("LC_") || provider.value(cli).contains(name)) env.insert(name, from.value(name));
+    return env;
 }
 QStringList MissingSymbolPipeline::defaultAgents(const QStringList &installed) {
     QStringList out;
@@ -101,7 +162,8 @@ MissingSymbolPipeline::~MissingSymbolPipeline() {
 }
 bool MissingSymbolPipeline::record(const QString &verdict, QJsonObject fields) {
     if (!anchor.isEmpty() && chainHead(ws.root) != anchor) { finish(State::Failed, "The audit log changed outside the launcher; the run is stopped."); return false; }
-    if (const QString error = HandoffStore::appendEvent(ws.root, verdict, fields); !error.isEmpty()) { finish(State::Failed, "Cannot write the audit log: " + error); return false; }
+    const auto append = opts.appendEvent ? opts.appendEvent : HandoffStore::appendEvent;
+    if (const QString error = append(ws.root, verdict, fields); !error.isEmpty()) { finish(State::Failed, "Cannot write the audit log: " + error); return false; }
     anchor = chainHead(ws.root);
     return true;
 }
@@ -111,6 +173,7 @@ void MissingSymbolPipeline::start() {
     runLock = ws.holdRunLock();
     if (runLock < 0) { finish(State::Failed, "Another launcher process is running this pipeline."); return; }
     if (opts.agents.size() != HandoffStore::Stages.size()) { finish(State::Failed, "Choose an agent for each stage."); return; }
+    autoLoaded = AutoLoadedFiles::snapshot(ws.root);
     if (!record("START", {{"run", ws.runId}, {"symbol", opts.symbol}, {"library", opts.library}, {"agents", QJsonArray::fromStringList(opts.agents)}})) return;
     if (const QString error = ws.importTrace(opts.trace); !error.isEmpty()) {
         record("TRACE_REFUSED", {{"reason", error}, {"report_to_compliance", error.contains("non-compliant")}});
@@ -166,16 +229,22 @@ void MissingSymbolPipeline::launch(const QString &stage) {
     QSaveFile briefFile(dir + "/BRIEF.md");
     if (!briefFile.open(QIODevice::WriteOnly) || briefFile.write(brief(stage).toUtf8()) < 0 || !briefFile.commit()) { finish(State::Failed, "Cannot write the " + stage + " brief."); return; }
     QDir().mkpath(dir + "/.tmp");
+    // Checked while the audit log is still readable, before the other folders are locked.
+    if (const QString changed = autoLoaded.changed(); !changed.isEmpty()) {
+        // An instruction or config file the CLIs load on their own changed during the run: it may carry another stage's material.
+        if (record("FAILED", {{"stage", stage}, {"reason", "auto-loaded file changed: " + changed}, {"report_to_compliance", true}}))
+            finish(State::Failed, "A file the agent CLIs load automatically changed during the run (" + changed + "); the run is stopped.");
+        return;
+    }
     if (!record("STAGE", {{"stage", stage}, {"agent", agentId}, {"cli", agentCli}, {"launch", launches[stage]}})) return;
     // Opened once: the agent can rename or replace AGENT.log but not redirect the launcher's writes.
     logFd = ::open(QFile::encodeName(dir + "/AGENT.log").constData(), O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (logFd < 0) { finish(State::Failed, "Cannot open the " + stage + " agent log."); return; }
     if (const QString error = ws.lockFor(stage); !error.isEmpty()) { finish(State::Failed, error); return; }
-    QStringList args = LauncherTroubleshooting::backgroundArguments(agentCli, brief(stage), {{dir}, {}});
-    if (agentCli == "claude") args.prepend("--no-session-persistence");
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    for (const QString &name : env.keys()) if (name.startsWith("DYLD_") || name.startsWith("DARLING_MISSING_SYMBOLS")) env.remove(name);
-    env.insert("TMPDIR", dir + "/.tmp"); env.insert(Marker, agentId);
+    const QStringList args = stageArguments(agentCli, dir);
+    QProcessEnvironment env = MissingSymbolPipeline::stageEnvironment(QProcessEnvironment::systemEnvironment(), agentCli);
+    env.insert("TMPDIR", dir + "/.tmp"); env.insert(Marker, agentId); env.insert(StageSupervisor::ParentEnv, QString::number(::getpid()));
+    if (agentCli == "opencode") env.insert("OPENCODE_CONFIG_CONTENT", OpencodePermissions);
     timedOut = false;
     process = new QProcess(this);
     process->setWorkingDirectory(dir); process->setProcessChannelMode(QProcess::MergedChannels); process->setProcessEnvironment(env);
@@ -198,12 +267,36 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
         if (hasMarker(pid, agentId)) { ::kill(pid_t(pid), SIGKILL); reasons << QString("process %1 of the agent still used the run folder").arg(pid); }
         else strays << QString("%1 (%2)").arg(pid).arg(command(pid));
     }
-    bool tampered = false;
-    if (const QString error = ws.unlock(&tampered); !error.isEmpty()) { finish(State::Failed, error); return; }
-    // An unmarked process may be the agent's (the marker is easy to drop), so the run never continues past it.
+    // An unmarked process may be the agent's (the marker is easy to drop). Everything stays locked so it cannot
+    // reach the other stages; the audit log is locked too, so the report goes to the launcher log.
     if (!strays.isEmpty()) {
-        if (record("STRAY", {{"stage", activeStage}, {"processes", QJsonArray::fromStringList(strays)}}))
-            finish(State::Failed, "These processes still use the pipeline folder: " + strays.join(", ") + ". Close them and start the pipeline again.");
+        QStringList outputReasons;
+        const QStringList rules = outputComplianceRules(ws.stageDir(activeStage) + "/OUTPUT.md", &outputReasons);
+        QString note = ws.runId + " " + activeStage + ": processes still in the run folder: " + strays.join(", ") + "; all folders left locked";
+        if (!rules.isEmpty()) {
+            note += "; REPORT-TO-COMPLIANCE: rule " + rules.join(", rule ");
+            emit statusChanged("REPORT-TO-COMPLIANCE: rule " + rules.join(", rule ") + " (" + activeStage + " stage)");
+            emit complianceReport(activeStage, rules);
+        }
+        LauncherLog::writeChecked("pipeline", note);
+        keepLocked = true;
+        finish(State::Failed, "These processes still use the pipeline folder: " + strays.join(", ") + ". The run folders stay locked; close them and start the pipeline again.");
+        return;
+    }
+    bool tampered = false;
+    if (const QString error = ws.unlock(&tampered); !error.isEmpty()) {
+        // The other folders cannot be inspected, so the stage counts as tainted and the run stops. Its own
+        // OUTPUT.md is still checked so compliance hits are reported with their rule ids.
+        QStringList ignored;
+        ::chmod(QFile::encodeName(ws.root).constData(), 0100); // traverse only, to reach this stage's own folder
+        const QStringList rules = outputComplianceRules(ws.stageDir(activeStage) + "/OUTPUT.md", &ignored);
+        if (!rules.isEmpty()) {
+            emit statusChanged("REPORT-TO-COMPLIANCE: rule " + rules.join(", rule ") + " (" + activeStage + " stage)");
+            emit complianceReport(activeStage, rules);
+            LauncherLog::writeChecked("pipeline", ws.runId + " " + activeStage + ": REPORT-TO-COMPLIANCE: rule " + rules.join(", rule "));
+        }
+        if (record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", "cannot unlock the run folder: " + error}, {"report_to_compliance", true}, {"compliance_rules", QJsonArray::fromStringList(rules)}}))
+            finish(State::Failed, error);
         return;
     }
     if (tampered) reasons << "a folder locked during the stage was changed";
@@ -216,27 +309,34 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
         if (const QString problem = scanFile(path); !problem.isEmpty()) reasons << rel + problem;
     }
     if (needsFirewall(activeStage)) reasons += ws.firewall(activeStage, names(delivered.value(activeStage)));
-    // A stage that saw disallowed material is tainted even when it was cancelled or timed out.
-    if (!reasons.isEmpty() && (cancelling || timedOut)) {
-        if (!record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", reasons.join("; ")}, {"moved_to", activeStage + ".tainted/" + agentId}, {"report_to_compliance", true}})) return;
-        if (const QString error = ws.taint(activeStage, agentId); !error.isEmpty()) { finish(State::Failed, error); return; }
+    // OUTPUT.md is checked here on every path (cancel, timeout, stray, bad verdict), not only when submitted.
+    struct stat outSt {};
+    if (::lstat(QFile::encodeName(dir + "/OUTPUT.md").constData(), &outSt) == 0 && (!S_ISREG(outSt.st_mode) || outSt.st_nlink != 1))
+        reasons << "OUTPUT.md is a symlink, hard link or special file";
+    const QStringList rules = outputComplianceRules(dir + "/OUTPUT.md", &reasons);
+    // On the normal path the store rejects it and submitted() reports it with the REJECT record; on every
+    // other path (cancel, timeout, stray, other taint reasons, validation reports) it is reported here.
+    const bool storeWillReport = reasons.isEmpty() && !cancelling && !timedOut && activeStage != "validate";
+    if (!rules.isEmpty() && !storeWillReport) {
+        QString report;
+        if (!reportCompliance(rules, &report)) return;
+        reasons.prepend(report);
     }
+    // A stage that saw disallowed material is tainted even when it was cancelled or timed out.
+    if (!reasons.isEmpty() && (cancelling || timedOut) && !discard(reasons.join("; "), rules)) return;
     if (cancelling) { if (record("CANCEL", {{"stage", activeStage}, {"agent", agentId}})) finish(State::Cancelled, "Cancelled."); return; }
     if (timedOut) { if (record("TIMEOUT", {{"stage", activeStage}, {"agent", agentId}})) finish(State::TimedOut, "The " + activeStage + " stage timed out."); return; }
-    if (!reasons.isEmpty()) { taint(reasons.join("; ")); return; }
+    if (!reasons.isEmpty()) { taint(reasons.join("; "), rules); return; }
     const QString output = dir + "/OUTPUT.md";
     struct stat st {};
     if (::lstat(QFile::encodeName(output).constData(), &st) != 0) { revise({QString("no OUTPUT.md was written (agent exit status %1)").arg(code)}); return; }
-    if (!S_ISREG(st.st_mode) || st.st_nlink != 1) { taint("OUTPUT.md is a symlink, hard link or special file"); return; }
     QString to = Next.value(activeStage);
     if (activeStage == "validate") {
         QFile f(output); f.open(QIODevice::ReadOnly);
         const QString body = QString::fromUtf8(f.read(HandoffStore::MaxInput)), verdict = body.section('\n', 0, 0).trimmed();
         if (verdict == "VERDICT: PASS") {
-            QStringList problems, rules;
-            for (const auto &h : HandoffCheck::checkTextStrict(body)) { problems << describe(h); if (HandoffCheck::isComplianceRule(h)) rules << (h.inner.isEmpty() ? h.rule : h.inner); }
-            rules.removeDuplicates(); rules.sort();
-            if (!rules.isEmpty()) { taint(reportCompliance(rules) + " (" + problems.join("; ") + ")", rules); return; }
+            QStringList problems;
+            for (const auto &h : HandoffCheck::checkTextStrict(body)) problems << describe(h);
             if (!problems.isEmpty()) { revise(problems); return; }
             const auto chain = HandoffStore::verifyChain(ws.root);
             if (chain.exitCode != 0) { finish(State::Failed, "The audit chain does not verify: " + chain.problems.join("; ")); return; }
@@ -250,29 +350,55 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
     }
     if (!anchor.isEmpty() && chainHead(ws.root) != anchor) { finish(State::Failed, "The audit log changed outside the launcher; the run is stopped."); return; }
     emit statusChanged("Checking the " + activeStage + " output before it is handed on…");
-    watcher.setFuture(QtConcurrent::run(HandoffStore::submit, ws.root, activeStage, to, output, agentId, names(inputs.value(activeStage))));
+    submittedRules = rules;
+    const auto submit = opts.submit ? opts.submit : HandoffStore::submit;
+    // Any exception in the check is a failed check, never a pass.
+    watcher.setFuture(QtConcurrent::run([submit, root = ws.root, from = activeStage, to, output, agent = agentId, cited = names(inputs.value(activeStage))] {
+        try { return submit(root, from, to, output, agent, cited); }
+        catch (const std::exception &e) { HandoffStore::Result r; r.error = QString("internal error: ") + e.what(); return r; }
+        catch (...) { HandoffStore::Result r; r.error = "internal error"; return r; }
+    }));
 }
-QString MissingSymbolPipeline::reportCompliance(const QStringList &rules) {
-    const QString report = "REPORT-TO-COMPLIANCE: rule " + rules.join(", rule ");
-    LauncherLog::write("pipeline", ws.runId + " " + activeStage + ": " + report);
-    emit statusChanged(report + " (" + activeStage + " stage)");
+bool MissingSymbolPipeline::discard(const QString &reason, const QStringList &complianceRules) {
+    const bool recorded = record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", reason}, {"moved_to", activeStage + ".tainted/" + agentId}, {"report_to_compliance", true}, {"compliance_rules", QJsonArray::fromStringList(complianceRules)}});
+    // Moved aside even when the record failed, so nothing of this stage can be handed on.
+    const QString error = ws.taint(activeStage, agentId);
+    if (!recorded) return false;
+    if (!error.isEmpty()) { finish(State::Failed, error); return false; }
+    return true;
+}
+bool MissingSymbolPipeline::reportCompliance(const QStringList &rules, QString *report) {
+    *report = "REPORT-TO-COMPLIANCE: rule " + rules.join(", rule ");
+    // The signal and status cannot fail; they go out first so the user always sees the report.
+    emit statusChanged(*report + " (" + activeStage + " stage)");
     emit complianceReport(activeStage, rules);
-    return report;
+    const auto log = opts.complianceLog ? opts.complianceLog : [](const QString &source, const QString &text) { return LauncherLog::writeChecked(source, text); };
+    const bool logged = log("pipeline", ws.runId + " " + activeStage + ": " + *report);
+    const bool audited = logged && record("COMPLIANCE_REPORT", {{"stage", activeStage}, {"agent", agentId}, {"compliance_rules", QJsonArray::fromStringList(rules)}, {"report_to_compliance", true}});
+    if (logged && audited) return true;
+    // The report could not be recorded: stop fail-closed, with the stage moved aside and nothing released.
+    const QString moveError = ws.taint(activeStage, agentId);
+    finish(State::Failed, *report + ", but it could not be " + (logged ? "added to the audit log" : "written to the launcher log") + "; "
+        + (moveError.isEmpty() ? "the stage was moved to " + activeStage + ".tainted/" + agentId : "the stage could NOT be moved aside (" + moveError + "); nothing was released") + " and the run stopped.");
+    return false;
 }
 void MissingSymbolPipeline::submitted(const HandoffStore::Result &result) {
     anchor = chainHead(ws.root);
     if (current != State::Running) return;
     QStringList reasons; for (const auto &h : result.reasons) reasons << describe(h);
     // A compliance hit is reported before anything else can end the run: cancel, store failure, taint limit.
-    const QString report = result.reportToCompliance ? reportCompliance(result.complianceRules) : QString();
-    if (result.status == HandoffStore::Status::Unsafe) { finish(State::Failed, "Cannot check the " + activeStage + " output: " + result.error); return; }
-    if (!report.isEmpty() && cancelling) {
-        if (!record("TAINT", {{"stage", activeStage}, {"agent", agentId}, {"reason", report}, {"moved_to", activeStage + ".tainted/" + agentId}, {"report_to_compliance", true}, {"compliance_rules", QJsonArray::fromStringList(result.complianceRules)}})) return;
-        if (const QString error = ws.taint(activeStage, agentId); !error.isEmpty()) { finish(State::Failed, error); return; }
+    // If the check itself failed (store error, exception), the hits found before submitting still count.
+    const QStringList rules = result.reportToCompliance ? result.complianceRules : result.status == HandoffStore::Status::Unsafe ? submittedRules : QStringList();
+    QString report;
+    if (!rules.isEmpty() && !reportCompliance(rules, &report)) return;
+    if (result.status == HandoffStore::Status::Unsafe) {
+        if (!report.isEmpty() && !discard(report, rules)) return;
+        finish(State::Failed, "Cannot check the " + activeStage + " output: " + result.error); return;
     }
+    if (!report.isEmpty() && cancelling && !discard(report, rules)) return;
     if (cancelling) { if (record("CANCEL", {{"stage", activeStage}})) finish(State::Cancelled, "Cancelled."); return; }
     if (result.status == HandoffStore::Status::Rejected) {
-        if (!report.isEmpty()) taint(report + " (" + reasons.join("; ") + ")", result.complianceRules);
+        if (!report.isEmpty()) taint(report + " (" + reasons.join("; ") + ")", rules);
         else revise(reasons);
         return;
     }
@@ -326,8 +452,7 @@ void MissingSymbolPipeline::revise(const QStringList &reasons) {
 }
 void MissingSymbolPipeline::taint(const QString &reason, const QStringList &complianceRules) {
     const QString stage = activeStage;
-    if (!record("TAINT", {{"stage", stage}, {"agent", agentId}, {"reason", reason}, {"moved_to", stage + ".tainted/" + agentId}, {"report_to_compliance", true}, {"compliance_rules", QJsonArray::fromStringList(complianceRules)}})) return;
-    if (const QString error = ws.taint(stage, agentId); !error.isEmpty()) { finish(State::Failed, error); return; }
+    if (!discard(reason, complianceRules)) return;
     emit statusChanged("The " + stage + " agent was tainted (" + reason + "). Its work is discarded; a fresh agent takes over.");
     if (++replacements[stage] > MaxReplacements) {
         finish(State::Failed, "Too many tainted " + stage + " agents; the last reason: " + reason);
@@ -345,8 +470,21 @@ void MissingSymbolPipeline::finish(State state, const QString &message) {
     current = state;
     timeout.stop();
     if (logFd >= 0) { ::close(logFd); logFd = -1; }
-    bool tampered = false; ws.unlock(&tampered); // no-op unless a launch failed after locking
-    if (state == State::Failed) HandoffStore::appendEvent(ws.root, "FAILED", {{"stage", activeStage}, {"reason", message}});
+    if (!keepLocked) { bool tampered = false; ws.unlock(&tampered); } // no-op unless a launch failed after locking
+    if (state == State::Failed && !keepLocked) HandoffStore::appendEvent(ws.root, "FAILED", {{"stage", activeStage}, {"reason", message}});
+    // The chain head at the end of the run, read-only, so a later rewrite of the log shows against it.
+    if (!keepLocked) {
+        const QByteArray head = (HandoffStore::verifyChain(ws.root, false).summary + '\n').toUtf8();
+        const int fd = ::open(QFile::encodeName(ws.root + "/AUDIT-HEAD.txt").constData(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0400);
+        if (fd >= 0) { if (::write(fd, head.constData(), size_t(head.size())) < 0) {} ::close(fd); }
+    }
+    // Closed once the current call chain (which may still move a stage aside) has returned.
+    QTimer::singleShot(0, this, [this] {
+        QString closed;
+        if (const QString error = ws.close(&closed); !error.isEmpty()) { emit statusChanged(error); return; }
+        closedRoot = closed;
+        emit statusChanged("The run folder was closed: chmod 700 " + closed + " to inspect it.");
+    });
     emit statusChanged(message);
     emit finished(state, message);
 }

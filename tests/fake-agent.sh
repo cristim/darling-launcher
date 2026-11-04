@@ -19,6 +19,21 @@ case $mode in
   reconcile) out; echo 'Reconcile: _CFFoo' >> OUTPUT.md ;;
   r10) printf 'Loaded from libsystem_kernel.dylib+0x1c2 (attempt %s)\n' "$n" > OUTPUT.md ;;
   passhit) printf 'VERDICT: PASS\nMatches the spec; the old code called sub_1A2B.\n' > OUTPUT.md ;;
+  r10sleep) printf 'Loaded from libsystem_kernel.dylib+0x1c2\n' > OUTPUT.md; sleep 600 ;;
+  badverdicthit) printf 'VERDICT: maybe\nThe old code called sub_1A2B.\n' > OUTPUT.md ;;
+  r10slow) printf 'Loaded from libsystem_kernel.dylib+0x1c2\n' > OUTPUT.md; sleep 2 ;;
+  fifosleep) mkfifo OUTPUT.md; sleep 600 ;;
+  crossrun)
+    base=$(dirname "$(dirname "$PWD")"); prev=$(cat "$F/prev-root")
+    { if ls "$base" > /dev/null 2>&1; then echo "READ list"; else echo "DENIED list"; fi
+      if cat "$prev/research/OUTPUT.md" > /dev/null 2>&1; then echo "READ read"; else echo "DENIED read"; fi
+      closed=$(cat "$F/closed-root")
+      if cat "$closed/research/OUTPUT.md" > /dev/null 2>&1; then echo "READ closed"; else echo "DENIED closed"; fi
+      if chmod 700 "$closed" 2>/dev/null; then echo "CHMOD closed"; chmod 000 "$closed"; else echo "NOCHMOD closed"; fi; } > "$F/crossrun"
+    out ;;
+  envdump) env | cut -d= -f1,1 | sort > "$F/env"; env | grep '^DARLING_PIPELINE_AGENT=' >> "$F/env"; out ;;
+  argdump) printf '%s\n' "$@" > "$F/args"; printf '%s' "$OPENCODE_CONFIG_CONTENT" > "$F/opencode-env"; out ;;
+  plant) echo 'planted' > "$(dirname "$(dirname "$(dirname "$PWD")")")/AGENTS.md"; out ;;
   badrecon) printf 'The function is absent and nobody calls it.\n' > OUTPUT.md ;;
   taint) printf 'Notes: the function calls sub_1A2B first.\n' > OUTPUT.md ;;
   revise) printf 'Loaded from /System/Library/Frameworks/Foo.framework (attempt %s)\n' "$n" > OUTPUT.md ;;

@@ -19,6 +19,9 @@ public:
     static QStringList recover(const QString &base);
     // Process ids (other than ours) with a cwd or open file under dir.
     static QList<qint64> processesUsing(const QString &dir);
+    static constexpr unsigned BaseMode = 0300; // create and traverse, never list
+    // Mode 000 once the run has finished.
+    QString close(QString *closedPath = nullptr) const;
     QString root, runId;
     bool valid() const { return !root.isEmpty(); }
     QString stageDir(const QString &stage) const { return root + '/' + stage; }
@@ -38,4 +41,5 @@ public:
 private:
     struct Locked { quint64 inode; qint64 ctimeSec, ctimeNsec; unsigned mode; };
     QHash<QString, Locked> locked;
+    quint64 baseInode = 0;
 };

@@ -17,6 +17,7 @@
 #include <QStandardPaths>
 #include <QtTest>
 #include <cstring>
+#include <stdexcept>
 #include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -37,19 +38,31 @@ class PipelineTest : public QObject {
     }
     QStringList verdicts(const PipelineWorkspace &ws) const { QStringList v; for (const auto &r : audit(ws)) v << r.value("verdict").toString(); return v; }
     struct Run { State state; QString message; PipelineWorkspace ws; };
-    Run run(const QStringList &agents = {"claude", "codex", "opencode", "claude", "codex"}, int timeoutSeconds = 60, std::function<void(MissingSymbolPipeline &)> during = {}) {
+    Run run(const QStringList &agents = {"claude", "codex", "opencode", "claude", "codex"}, int timeoutSeconds = 60, std::function<void(MissingSymbolPipeline &)> during = {}, std::function<void(MissingSymbolPipeline::Options &)> configure = {}) {
         QString error; const auto ws = PipelineWorkspace::create(base, &error);
-        MissingSymbolPipeline::Options o; o.agents = agents; o.trace = fake + "/trace.jsonl"; o.symbol = "_CFFoo"; o.library = "CoreFoundation"; o.stageTimeoutSeconds = timeoutSeconds;
+        if (prepare) { prepare(ws); prepare = {}; }
+        MissingSymbolPipeline::Options o; o.agents = agents; o.trace = fake + "/trace.jsonl"; o.symbol = "_CFFoo"; o.library = "CoreFoundation"; o.stageTimeoutSeconds = timeoutSeconds; if (configure) configure(o);
         MissingSymbolPipeline p(ws, o);
         QSignalSpy done(&p, &MissingSymbolPipeline::finished);
         p.start();
         if (during) during(p);
         if (done.isEmpty()) done.wait(120000);
         const QString message = done.isEmpty() ? QString("no finish") : done[0][1].toString();
+        QCoreApplication::processEvents(); QCoreApplication::processEvents();
+        // runs end closed (renamed, mode 000); the test moves it back and opens it like a user would
+        if (!p.closedRoot.isEmpty()) { ::chmod(p.closedRoot.toLocal8Bit().constData(), 0700); ::rename(p.closedRoot.toLocal8Bit().constData(), p.workspace().root.toLocal8Bit().constData()); }
         qInfo().noquote() << "pipeline finished:" << message;
         return {p.state(), message, p.workspace()};
     }
     QTemporaryDir home;
+    std::function<void(const PipelineWorkspace &)> prepare; // runs once on the next run's fresh workspace
+    void watchReports(MissingSymbolPipeline &p, QStringList *reported) {
+        connect(&p, &MissingSymbolPipeline::complianceReport, &p, [reported](const QString &stage, const QStringList &rules) { *reported << stage + ':' + rules.join(','); });
+    }
+    bool taintedWith(const PipelineWorkspace &ws, const QString &stage, const QString &rule) const {
+        const auto recs = audit(ws);
+        return std::any_of(recs.begin(), recs.end(), [&](const QJsonObject &o) { return o.value("verdict") == "TAINT" && o.value("stage") == stage && o.value("compliance_rules").toArray().contains(rule); });
+    }
 private slots:
     void initTestCase() { qRegisterMetaType<MissingSymbolPipeline::State>(); QVERIFY(home.isValid()); qputenv("HOME", home.path().toUtf8()); }
     void init() {
@@ -74,6 +87,8 @@ private slots:
         QCOMPARE(releases, QStringList({"01-research-to-spec.md", "02-spec-to-impl.md", "03-impl-to-validate.md"}));
         QCOMPARE(verdicts(r.ws).first(), QString("START")); QCOMPARE(verdicts(r.ws).last(), QString("DONE"));
         QCOMPARE(HandoffStore::verifyChain(r.ws.root).exitCode, 0);
+        QCOMPARE(read(r.ws.root + "/AUDIT-HEAD.txt").trimmed(), HandoffStore::verifyChain(r.ws.root, false).summary); // chain head saved read-only
+        QCOMPARE(QFileInfo(r.ws.root + "/AUDIT-HEAD.txt").permissions() & (QFile::WriteOwner | QFile::ReadGroup | QFile::ReadOther), QFileDevice::Permissions());
         QCOMPARE(read(fake + "/calls"), QString("claude research 1\ncodex spec 1\nopencode impl 1\nclaude validate 1\n"));
         QVERIFY(QFileInfo::exists(r.ws.stageDir("validate") + "/inputs/02-spec-to-impl.md")); // spec delivered, not cited
         for (const auto &rec : audit(r.ws)) if (rec.value("verdict") == "RELEASE" && rec.value("from") == "validate") QFAIL("validate released nothing");
@@ -175,7 +190,8 @@ private slots:
         const auto recs = audit(r.ws);
         QVERIFY(std::any_of(recs.begin(), recs.end(), [](const QJsonObject &o) { return o.value("verdict") == "REJECT" && o.value("report_to_compliance").toBool() && o.value("rules").toArray().contains("R10"); }));
         QVERIFY(std::any_of(recs.begin(), recs.end(), [](const QJsonObject &o) { return o.value("verdict") == "TAINT" && o.value("compliance_rules").toArray().contains("R10"); }));
-        QVERIFY(HandoffStore::verifyChain(r.ws.root).summary.contains("compliance_reports=2"));
+        QVERIFY(HandoffStore::verifyChain(r.ws.root).summary.contains("compliance_reports=3")); // REJECT, COMPLIANCE_REPORT, TAINT
+        QVERIFY(verdicts(r.ws).contains("COMPLIANCE_REPORT"));
         QVERIFY(read(LauncherLog::path()).contains("REPORT-TO-COMPLIANCE: rule R10"));
     }
     // Compliance review C2-1: cancel pressed while the check runs must not drop a compliance reject.
@@ -202,6 +218,187 @@ private slots:
         QCOMPARE(r.state, State::Done); QCOMPARE(reported, QStringList{"validate:R5"});
         const auto recs = audit(r.ws);
         QVERIFY(std::any_of(recs.begin(), recs.end(), [](const QJsonObject &o) { return o.value("verdict") == "TAINT" && o.value("stage") == "validate" && o.value("compliance_rules").toArray().contains("R5"); }));
+    }
+    // Fail-closed paths: a compliance hit in OUTPUT.md is reported and the stage tainted on every way a stage can end.
+    void complianceHitReportedWhenTheStageTimesOut() {
+        plan("spec 1 r10sleep\n"); QStringList reported;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 3, [&](MissingSymbolPipeline &p) { watchReports(p, &reported); });
+        QCOMPARE(r.state, State::TimedOut); QCOMPARE(reported, QStringList{"spec:R10"}); QVERIFY(taintedWith(r.ws, "spec", "R10"));
+        QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1);
+    }
+    void complianceHitReportedWhenTheStageIsCancelled() {
+        plan("spec 1 r10sleep\n"); QStringList reported;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) {
+            watchReports(p, &reported);
+            connect(&p, &MissingSymbolPipeline::statusChanged, &p, [&p](const QString &m) { if (m.contains("working on the spec stage")) QTimer::singleShot(1500, &p, &MissingSymbolPipeline::cancel); });
+        });
+        QCOMPARE(r.state, State::Cancelled); QCOMPARE(reported, QStringList{"spec:R10"}); QVERIFY(taintedWith(r.ws, "spec", "R10"));
+    }
+    void complianceHitReportedWithABadValidationVerdict() {
+        plan("validate 1 badverdicthit\n"); QStringList reported;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) { watchReports(p, &reported); });
+        QCOMPARE(r.state, State::Done); QCOMPARE(reported, QStringList{"validate:R5"}); QVERIFY(taintedWith(r.ws, "validate", "R5"));
+    }
+    void complianceHitReportedWhenAStrayProcessStopsTheRun() {
+        plan("research 1 r10slow\n"); QStringList reported; QProcess viewer;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) {
+            watchReports(p, &reported);
+            viewer.setWorkingDirectory(p.workspace().stageDir("research")); viewer.start("sleep", {"60"}); viewer.waitForStarted();
+        });
+        QCOMPARE(r.state, State::Failed); QCOMPARE(reported, QStringList{"research:R10"});
+        QVERIFY(read(LauncherLog::path()).contains("REPORT-TO-COMPLIANCE: rule R10"));
+        viewer.kill(); viewer.waitForFinished();
+    }
+    void storeFailureAfterAComplianceHitIsReported() {
+        plan("spec 1 r10\n"); QStringList reported;
+        const auto failing = [](const QString &root, const QString &from, const QString &to, const QString &file, const QString &agent, const QStringList &in) {
+            auto r = HandoffStore::submit(root, from, to, file, agent, in);
+            if (from != "spec") return r;
+            HandoffStore::Result unsafe; unsafe.error = "injected store failure"; unsafe.reasons = r.reasons; unsafe.reportToCompliance = r.reportToCompliance; unsafe.complianceRules = r.complianceRules;
+            return unsafe;
+        };
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) { watchReports(p, &reported); }, [&](MissingSymbolPipeline::Options &o) { o.submit = failing; });
+        QCOMPARE(r.state, State::Failed); QVERIFY(r.message.contains("injected store failure")); QCOMPARE(reported, QStringList{"spec:R10"});
+        // D2-1: the stage is moved aside and counted
+        QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1);
+        QVERIFY(HandoffStore::verifyChain(r.ws.root).summary.contains("tainted_stages=1 ")); QVERIFY(taintedWith(r.ws, "spec", "R10"));
+        QVERIFY(read(LauncherLog::path()).contains("REPORT-TO-COMPLIANCE: rule R10"));
+    }
+    void exceptionInTheCheckFailsTheRun() {
+        const auto throwing = [](const QString &root, const QString &from, const QString &to, const QString &file, const QString &agent, const QStringList &in) -> HandoffStore::Result {
+            if (from == "spec") throw std::runtime_error("injected");
+            return HandoffStore::submit(root, from, to, file, agent, in);
+        };
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, {}, [&](MissingSymbolPipeline::Options &o) { o.submit = throwing; });
+        QCOMPARE(r.state, State::Failed); QVERIFY(r.message.contains("internal error: injected"));
+        QVERIFY(!QFileInfo::exists(r.ws.root + "/handoff/02-spec-to-impl.md")); QVERIFY(!read(fake + "/calls").contains(" impl "));
+    }
+    // D2-2: an exception in the check keeps the rule ids found before submitting.
+    void exceptionAfterAComplianceHitKeepsTheRuleIds() {
+        plan("spec 1 r10\n"); QStringList reported;
+        const auto throwing = [](const QString &root, const QString &from, const QString &to, const QString &file, const QString &agent, const QStringList &in) -> HandoffStore::Result {
+            if (from == "spec") throw std::runtime_error("injected");
+            return HandoffStore::submit(root, from, to, file, agent, in);
+        };
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) { watchReports(p, &reported); }, [&](MissingSymbolPipeline::Options &o) { o.submit = throwing; });
+        QCOMPARE(r.state, State::Failed); QCOMPARE(reported, QStringList{"spec:R10"}); QVERIFY(taintedWith(r.ws, "spec", "R10"));
+        QVERIFY(verdicts(r.ws).contains("COMPLIANCE_REPORT"));
+    }
+    // D2-3: when the stage cannot be moved aside, the message says so (and nothing is released).
+    void reportingFailureSaysWhenTheMoveFailed() {
+        plan("spec 1 r10\n");
+        prepare = [](const PipelineWorkspace &ws) { QFile block(ws.root + "/spec.tainted"); QVERIFY(block.open(QIODevice::WriteOnly)); }; // a file where the taint dir must go
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, {}, [](MissingSymbolPipeline::Options &o) { o.complianceLog = [](const QString &, const QString &) { return false; }; });
+        QCOMPARE(r.state, State::Failed); QVERIFY2(r.message.contains("could NOT be moved aside"), qPrintable(r.message));
+        QVERIFY(!QFileInfo::exists(r.ws.root + "/handoff/02-spec-to-impl.md")); QVERIFY(!read(fake + "/calls").contains(" impl "));
+    }
+    // D2-4: a FIFO OUTPUT.md taints even when the stage times out.
+    void specialOutputTaintsOnTimeout() {
+        plan("spec 1 fifosleep\n");
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 3);
+        QCOMPARE(r.state, State::TimedOut); QVERIFY(verdicts(r.ws).contains("TAINT"));
+        QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1);
+    }
+    // The run folder is made unusable mid-stage: the launcher sees the lock tampering and still reports the hit.
+    void lockTamperingStillReportsComplianceHits() {
+        plan("research 1 r10slow\n"); QStringList reported;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) {
+            watchReports(p, &reported);
+            // once the agent has written its output (it then sleeps 2 s), make the run folder unusable
+            connect(&p, &MissingSymbolPipeline::statusChanged, &p, [&p](const QString &m) {
+                if (m.contains("working on the research stage")) QTimer::singleShot(700, &p, [&p] { ::chmod(p.workspace().root.toLocal8Bit().constData(), 0); });
+            });
+        });
+        QCOMPARE(reported, QStringList{"research:R10"}); QVERIFY(taintedWith(r.ws, "research", "R10"));
+    }
+    void unlockFailureStopsTheRun() {
+        plan("research 1 slow\n");
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [](MissingSymbolPipeline &p) {
+            QTimer::singleShot(800, &p, [&p] { ::chmod(p.workspace().root.toLocal8Bit().constData(), 0); });
+        });
+        ::chmod(r.ws.root.toLocal8Bit().constData(), 0700);
+        QCOMPARE(r.state, State::Failed); QVERIFY(!read(fake + "/calls").contains(" spec "));
+    }
+    // A report that cannot be recorded aborts the run fail-closed: stage moved aside, nothing released.
+    void reportingFailureAbortsTheRun_data() {
+        QTest::addColumn<QString>("sink"); QTest::addColumn<QString>("mode");
+        for (const char *sink : {"log", "audit"}) for (const char *mode : {"r10", "r10sleep-timeout"}) QTest::newRow(qPrintable(QString(sink) + "/" + mode)) << sink << mode;
+    }
+    void reportingFailureAbortsTheRun() {
+        QFETCH(QString, sink); QFETCH(QString, mode);
+        const bool timeoutPath = mode.endsWith("-timeout");
+        plan(timeoutPath ? "spec 1 r10sleep\n" : "spec 1 r10\n"); QStringList reported;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, timeoutPath ? 3 : 60, [&](MissingSymbolPipeline &p) { watchReports(p, &reported); }, [&](MissingSymbolPipeline::Options &o) {
+            if (sink == "log") o.complianceLog = [](const QString &, const QString &) { return false; };
+            else o.appendEvent = [](const QString &root, const QString &verdict, QJsonObject f) { return verdict == "COMPLIANCE_REPORT" ? QString("injected audit failure") : HandoffStore::appendEvent(root, verdict, f); };
+        });
+        QCOMPARE(r.state, State::Failed); QVERIFY2(r.message.contains(sink == "log" ? "could not be written to the launcher log" : "Cannot write the audit log: injected"), qPrintable(r.message));
+        QCOMPARE(reported, QStringList{"spec:R10"});
+        QCOMPARE(QDir(r.ws.root + "/spec.tainted").entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 1);
+        QVERIFY(!QFileInfo::exists(r.ws.root + "/handoff/02-spec-to-impl.md")); QVERIFY(!read(fake + "/calls").contains(" impl "));
+    }
+    // The signal goes out before any state change: the run is still running and nothing is moved yet.
+    void complianceSignalPrecedesStateChanges() {
+        plan("spec 1 r10\n"); bool running = false, stillThere = false;
+        const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&](MissingSymbolPipeline &p) {
+            connect(&p, &MissingSymbolPipeline::complianceReport, &p, [&](const QString &, const QStringList &) {
+                running = p.state() == State::Running; stillThere = QFileInfo::exists(p.workspace().stageDir("spec") + "/OUTPUT.md");
+            });
+        });
+        QCOMPARE(r.state, State::Done); QVERIFY(running); QVERIFY(stillThere);
+    }
+    // Finished runs are closed and the base folder cannot be listed, so a later run's agent cannot reach them.
+    void laterRunsCannotReadEarlierRuns() {
+        const auto first = run();
+        QCOMPARE(first.state, State::Done);
+        // close it again as finish() does, and tell the second run's agent both the old and the closed path
+        QString closed; QCOMPARE(first.ws.close(&closed), QString());
+        QFile prev(fake + "/prev-root"); QVERIFY(prev.open(QIODevice::WriteOnly)); prev.write(first.ws.root.toUtf8()); prev.close();
+        QFile known(fake + "/closed-root"); QVERIFY(known.open(QIODevice::WriteOnly)); known.write(closed.toUtf8()); known.close();
+        QFile::remove(fake + "/count-impl"); plan("impl 1 crossrun\n");
+        const auto second = run();
+        QCOMPARE(second.state, State::Done);
+        if (::geteuid() == 0) QSKIP("root ignores modes");
+        // Documented limit: an agent running as the user that knows the closed path CAN chmod it back.
+        QCOMPARE(read(fake + "/crossrun").trimmed(), QString("DENIED list\nDENIED read\nDENIED closed\nCHMOD closed"));
+    }
+    void stageAgentsGetAnAllowListedEnvironment() {
+        QProcessEnvironment user;
+        for (const char *n : {"HOME", "PATH", "LANG", "LC_ALL", "GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "LD_PRELOAD", "LD_LIBRARY_PATH", "DARLING_PREFIX", "DYLD_INSERT_LIBRARIES", "AWS_SECRET_ACCESS_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"}) user.insert(n, "v");
+        const auto claude = MissingSymbolPipeline::stageEnvironment(user, "claude"), codex = MissingSymbolPipeline::stageEnvironment(user, "codex"), opencode = MissingSymbolPipeline::stageEnvironment(user, "opencode");
+        for (const auto &env : {claude, codex, opencode}) {
+            for (const char *keep : {"HOME", "PATH", "LANG", "LC_ALL"}) QVERIFY2(env.contains(keep), keep);
+            for (const char *drop : {"GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "LD_PRELOAD", "LD_LIBRARY_PATH", "DARLING_PREFIX", "DYLD_INSERT_LIBRARIES", "AWS_SECRET_ACCESS_KEY"}) QVERIFY2(!env.contains(drop), drop);
+        }
+        QVERIFY(claude.contains("ANTHROPIC_API_KEY")); QVERIFY(!claude.contains("OPENAI_API_KEY"));
+        QVERIFY(codex.contains("OPENAI_API_KEY")); QVERIFY(!codex.contains("ANTHROPIC_API_KEY"));
+        QVERIFY(!opencode.contains("ANTHROPIC_API_KEY") && !opencode.contains("OPENAI_API_KEY"));
+        // and in a real run: the fake agent records what it received
+        qputenv("GH_TOKEN", "secret"); qputenv("SSH_AUTH_SOCK", "/run/agent");
+        auto restore = qScopeGuard([] { qunsetenv("GH_TOKEN"); qunsetenv("SSH_AUTH_SOCK"); });
+        plan("research 1 envdump\n");
+        QCOMPARE(run().state, State::Done);
+        const QString seen = read(fake + "/env");
+        QVERIFY2(!seen.contains("GH_TOKEN") && !seen.contains("SSH_AUTH_SOCK") && seen.contains("DARLING_PIPELINE_AGENT="), qPrintable(seen));
+    }
+    void stageAgentsRunWithStrictOptions() {
+        const auto claude = MissingSymbolPipeline::stageArguments("claude", "/s");
+        for (const char *a : {"--safe-mode", "--strict-mcp-config", "--no-session-persistence"}) QVERIFY2(claude.contains(a), a);
+        QCOMPARE(claude.at(claude.indexOf("--disallowedTools") + 1), QString("Bash,WebFetch,WebSearch,Task"));
+        QCOMPARE(claude.at(claude.indexOf("--add-dir") + 1), QString("/s"));
+        QVERIFY(MissingSymbolPipeline::stageArguments("codex", "/s").contains("sandbox_workspace_write.network_access=false"));
+        QVERIFY(MissingSymbolPipeline::stageArguments("opencode", "/s").contains("--pure"));
+        for (const char *cli : {"claude", "codex", "opencode"}) QVERIFY(MissingSymbolPipeline::stageArguments(cli, "/s").last().startsWith("Read BRIEF.md"));
+        plan("research 1 argdump\n");
+        QCOMPARE(run({"opencode", "codex", "opencode", "claude", "codex"}).state, State::Done);
+        QVERIFY(read(fake + "/opencode-env").contains("\"bash\":\"deny\""));
+        QVERIFY(!read(fake + "/args").contains("clean-room pipeline")); // the brief is not on the command line
+    }
+    void changedInstructionFileStopsTheRun() {
+        plan("research 1 plant\n");
+        const auto r = run();
+        QCOMPARE(r.state, State::Failed); QVERIFY2(r.message.contains("load automatically changed"), qPrintable(r.message));
+        QVERIFY(!read(fake + "/calls").contains(" spec "));
     }
     void rejectedOutputIsRevisedThenFails() {
         plan("research 1 revise\n");
@@ -260,9 +457,11 @@ private slots:
         const auto r = run({"claude", "codex", "opencode", "claude", "codex"}, 60, [&viewer](MissingSymbolPipeline &p) {
             viewer.setWorkingDirectory(p.workspace().stageDir("research")); viewer.start("sleep", {"60"}); viewer.waitForStarted();
         });
-        QCOMPARE(r.state, State::Failed); QVERIFY2(r.message.contains(QString::number(viewer.processId()) + " (") && r.message.contains("sleep 60)"), qPrintable(r.message));
+        QCOMPARE(r.state, State::Failed); QVERIFY2(r.message.contains(QString::number(viewer.processId()) + " (sleep)"), qPrintable(r.message));
         QCOMPARE(viewer.state(), QProcess::Running);
-        QVERIFY(verdicts(r.ws).contains("STRAY")); QVERIFY(!QFileInfo::exists(r.ws.root + "/research.tainted"));
+        // folders stay locked while the process lives, and only its name is recorded
+        struct stat st {}; ::stat(r.ws.stageDir("spec").toLocal8Bit().constData(), &st); QCOMPARE(unsigned(st.st_mode & 07777), 0u);
+        QVERIFY(read(LauncherLog::path()).contains("processes still in the run folder")); QVERIFY(!read(LauncherLog::path()).contains("sleep 60"));
         viewer.kill(); viewer.waitForFinished();
     }
     void timeoutStopsTheAgent() {

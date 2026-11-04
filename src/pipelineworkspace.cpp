@@ -114,10 +114,19 @@ QByteArray readPath(const QString &path, qint64 limit) {
     return data;
 }
 }
+QString PipelineWorkspace::close(QString *closedPath) const {
+    // A finished run is renamed to a random name in the unlistable base and set to mode 000, so a path an agent
+    // saw earlier (its brief, the launcher log) no longer leads to it. Same-uid agents can still chmod a path they know.
+    const QString target = root + ".closed-" + QUuid::createUuid().toString(QUuid::Id128);
+    if (::rename(local(root).constData(), local(target).constData()) != 0) return "cannot close " + root + ": " + sysError();
+    if (closedPath) *closedPath = target;
+    return ::chmod(local(target).constData(), 0) == 0 ? QString() : "cannot close " + target + ": " + sysError();
+}
 QString PipelineWorkspace::defaultBase() { return LauncherDiscovery::dataRoot() + "/missing-symbol"; }
 PipelineWorkspace PipelineWorkspace::create(const QString &base, QString *error) {
     PipelineWorkspace ws;
-    if (!QDir().mkpath(base) || !QFile::setPermissions(base, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner)) { *error = "cannot create " + base; return ws; }
+    // The base folder is never listable (0300), so a stage agent cannot find other runs' folders.
+    if (!QDir().mkpath(base) || ::chmod(local(base).constData(), BaseMode) != 0) { *error = "cannot create " + base; return ws; }
     const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces), root = base + '/' + id;
     if (::mkdir(local(root).constData(), 0700) != 0) { *error = "cannot create " + root + ": " + sysError(); return ws; }
     const int fd = openDir(root);
@@ -176,6 +185,9 @@ QString PipelineWorkspace::lockFor(const QString &stage) {
     for (const QString &name : lockable(rootFd)) if (name != stage) lock(name, 0);
     lock(".", 0100);
     ::close(rootFd);
+    struct stat st {};
+    if (::stat(local(QFileInfo(root).absolutePath()).constData(), &st) != 0) return "cannot check the base folder";
+    baseInode = quint64(st.st_ino);
     return error;
 }
 QString PipelineWorkspace::unlock(bool *tampered) {
@@ -192,6 +204,11 @@ QString PipelineWorkspace::unlock(bool *tampered) {
     }
     locked.clear();
     ::close(rootFd);
+    // The base folder must still be unlistable (other runs start concurrently, so its ctime is not compared).
+    const QByteArray base = local(QFileInfo(root).absolutePath());
+    struct stat st {};
+    if (baseInode && (::lstat(base.constData(), &st) != 0 || quint64(st.st_ino) != baseInode || (st.st_mode & 07777) != BaseMode)) { *tampered = true; ::chmod(base.constData(), BaseMode); }
+    baseInode = 0;
     return error;
 }
 QString PipelineWorkspace::taint(const QString &stage, const QString &agentId) const {
@@ -255,13 +272,18 @@ int PipelineWorkspace::holdRunLock() const {
 }
 QStringList PipelineWorkspace::recover(const QString &base) {
     QStringList restored;
-    for (const QFileInfo &run : QDir(base).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks)) {
+    if (::chmod(local(base).constData(), 0700) != 0) return restored; // listable only for this scan
+    const QFileInfoList runs = QDir(base).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
+    ::chmod(local(base).constData(), BaseMode);
+    for (const QFileInfo &run : runs) {
         struct stat st {};
         if (::lstat(local(run.filePath()).constData(), &st) != 0 || (st.st_mode & 07777) != 0100) continue;
         PipelineWorkspace probe; probe.root = run.filePath();
         const int lock = probe.holdRunLock(); // held by a live run, possibly in another launcher process
         if (lock < 0) continue;
         PipelineWorkspace ws; ws.root = run.filePath();
+        // A stage agent of a crashed launcher may still be running: leave that run locked.
+        if (!processesUsing(ws.root).isEmpty()) { ::close(lock); continue; }
         const int rootFd = openPath(ws.root);
         if (rootFd < 0) continue;
         ::fchmodat(rootFd, ".", 0700, 0);
