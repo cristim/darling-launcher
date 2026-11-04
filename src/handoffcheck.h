@@ -14,9 +14,11 @@ struct Hit {
     bool operator<(const Hit &o) const;
     bool operator==(const Hit &o) const { return line == o.line && rule == o.rule && description == o.description; }
 };
-constexpr int MaxHexWords = 4, AsmRun = 3, AsmBlock = 6, MaxJsonFailures = 2000, MaxLineLength = 4096;
+constexpr int MaxHexWords = 4, AsmRun = 3, AsmBlock = 6, MaxJsonFailures = 2000, MaxJsonScan = 5000000, MaxLineLength = 4096;
 // Oracle rules R1-R8, sorted and de-duplicated like check_text().
 QList<Hit> checkText(const QString &text);
+// checkText() with R7 (the JSON scan) optional.
+QList<Hit> checkTextImpl(const QString &text, bool scanJson);
 // checkText() plus launcher-only rules on decoded variants of the text: E1 look-alike letters folded,
 // E2 base64 blobs, E3 \x \u % &# escapes; E4 flags lines over MaxLineLength and re-checks them in short
 // windows (a window hit carries its rule as inner); E5 re-checks text with NUL/U+FFFD removed. Stricter than the oracle.

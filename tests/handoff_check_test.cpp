@@ -79,6 +79,18 @@ private slots:
         QVERIFY(std::any_of(hits.begin(), hits.end(), [](const auto &h) { return h.rule == "E4" && h.inner == "R5" && HandoffCheck::isComplianceRule(h); }));
         QVERIFY(!HandoffCheck::exposureMarkers(QString("x").repeated(20000) + " sub_1A2B\n").isEmpty()); // log scan past 4096 chars
     }
+    // Review finding 1: each unclosed opener parses to the end of the text, so 2000 failures alone were minutes of work.
+    void unclosedNestedOpenersFailClosedQuickly() {
+        const QString text = QString(R"({"a":[)").repeated(1000000 / 6 - 1);
+        QElapsedTimer timer; timer.start();
+        const auto hits = HandoffCheck::checkText(text);
+        QVERIFY2(timer.elapsed() < 10000, qPrintable(QString::number(timer.elapsed()) + " ms"));
+        QVERIFY(std::any_of(hits.begin(), hits.end(), [](const auto &h) { return h.rule == "R7" && h.line == 0; }));
+        timer.restart();
+        const auto strict = HandoffCheck::checkTextStrict(text);
+        QVERIFY2(timer.elapsed() < 20000, qPrintable(QString::number(timer.elapsed()) + " ms"));
+        QVERIFY(std::any_of(strict.begin(), strict.end(), [](const auto &h) { return h.rule == "R7" && h.line == 0; }));
+    }
     void manyBase64BlobsStayFast() {
         QString text; for (int i = 0; i < 20000; ++i) text += "aGVsbG8gd29ybGQgZm9vYmFy\n"; // printable base64 on every line
         QElapsedTimer t; t.start();
