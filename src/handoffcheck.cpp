@@ -194,13 +194,17 @@ struct JsonScan {
         }
     }
 };
+// Every failed attempt is charged the characters it read: nested openers that never close
+// make each candidate parse to the end of the text, so a failure count alone still allows quadratic work.
 QList<int> traceHits(const QString &text) {
     QList<int> hits; int fails = 0, line = 1;
-    qsizetype i = text.indexOf('{'), counted = 0;
+    qsizetype i = text.indexOf('{'), counted = 0, spent = 0;
     while (i != -1) {
         JsonScan scan{text, i}; bool trace = false;
-        if (!scan.value(trace)) {
-            if (++fails > HandoffCheck::MaxJsonFailures) return hits << 0;
+        const bool parsed = scan.value(trace);
+        if (!parsed) {
+            spent += scan.i - i + 1; // a success is never rescanned, so only failures can add up to quadratic work
+            if (spent > HandoffCheck::MaxJsonScan || ++fails > HandoffCheck::MaxJsonFailures) return hits << 0;
             i = text.indexOf('{', i + 1); continue;
         }
         if (trace) { line += int(QStringView(text).mid(counted, i - counted).count('\n')); counted = i; hits << line; }
@@ -259,7 +263,9 @@ bool HandoffCheck::Hit::operator<(const Hit &o) const {
     if (rule != o.rule) return rule < o.rule;
     return description < o.description;
 }
-QList<HandoffCheck::Hit> HandoffCheck::checkText(const QString &input) {
+QList<HandoffCheck::Hit> HandoffCheck::checkText(const QString &input) { return checkTextImpl(input, true); }
+// scanJson is off for the strict re-check of long-line windows: R7 is a whole-text rule, and each window would redo its scan.
+QList<HandoffCheck::Hit> HandoffCheck::checkTextImpl(const QString &input, bool scanJson) {
     const QString text = normalize(input);
     QStringList lines;
     for (QString l : text.split('\n')) {
@@ -280,7 +286,7 @@ QList<HandoffCheck::Hit> HandoffCheck::checkText(const QString &input) {
         if (LIB_OFFSET.match(ci[i]).hasMatch() || (PC_VALUE.match(ci[i]).hasMatch() && nearLibrary()))
             hits << Hit{i + 1, "R10", "address/offset inside an Apple library image (library+offset, pc/lr/frame value)"};
     }
-    for (int line : traceHits(text)) hits << Hit{line, "R7", line ? "raw trace (T0) JSON object" : "too many JSON candidates to scan"};
+    if (scanJson) for (int line : traceHits(text)) hits << Hit{line, "R7", line ? "raw trace (T0) JSON object" : "too many JSON candidates to scan"};
 
     QList<int> block, run;
     const QStringList r1Lines = lines + QStringList{""};
@@ -382,7 +388,7 @@ QList<HandoffCheck::Hit> HandoffCheck::checkTextStrict(const QString &input) {
         // Re-check the long line in short windows, so a match-limit error can never hide a compliance hit.
         QSet<QString> seen;
         for (const QString &window : windows(lines[i]))
-            for (const Hit &h : checkText(window))
+            for (const Hit &h : checkTextImpl(window, false))
                 if (!seen.contains(h.rule)) { seen.insert(h.rule); hits << Hit{i + 1, "E4", "long line, a window matches " + h.rule + " (" + h.description + ")", h.rule}; }
     }
     return sortedUnique(hits);
