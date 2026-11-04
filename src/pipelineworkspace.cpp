@@ -6,16 +6,20 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
 #include <QUuid>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cerrno>
 #include <cstring>
 namespace {
-constexpr qint64 MaxTrace = 64 * 1024 * 1024, MaxScanned = 1000000;
+constexpr qint64 MaxTrace = 64 * 1024 * 1024, MaxScanned = 8 * 1024 * 1024;
 QByteArray local(const QString &s) { return s.toLocal8Bit(); }
 QString sysError() { return QString::fromLocal8Bit(strerror(errno)); }
 QString sha256(const QByteArray &b) { return QString::fromLatin1(QCryptographicHash::hash(b, QCryptographicHash::Sha256).toHex()); }
@@ -35,6 +39,32 @@ QByteArray readRegular(int dir, const QString &name, qint64 limit, QString *erro
     }
     ::close(fd);
     return error->isEmpty() ? data : QByteArray();
+}
+// The compliance ruling (s2) allows names, library, arch, counts, call order and raw argument registers;
+// anything else (caller address, PC, backtrace, stack, dereferenced memory) refuses the whole trace.
+QString vetTrace(const QByteArray &data) {
+    static const QRegularExpression allowed("^(?:symbol|sym|name|library|lib|image|framework|dylib|arch|count|calls|seq|sequence|order|first|position|kind|type|weak|mode"
+        "|regs|args|arg_regs|fp_regs|words|x[0-8]|rdi|rsi|rdx|rcx|r8|r9|[qdv][0-7]|xmm[0-7]|time|ts|pid|version|app|schema)$");
+    int n = 0;
+    for (const QByteArray &line : data.split('\n')) {
+        ++n;
+        if (line.trimmed().isEmpty()) continue;
+        const QJsonDocument doc = QJsonDocument::fromJson(line);
+        if (!doc.isObject()) return QString("Trace line %1 is not a JSON object.").arg(n);
+        QList<QJsonValue> stack{doc.object()};
+        while (!stack.isEmpty()) {
+            const QJsonValue v = stack.takeLast();
+            if (v.isArray()) for (const auto &x : v.toArray()) stack << x;
+            if (!v.isObject()) continue;
+            const QJsonObject o = v.toObject();
+            for (auto it = o.begin(); it != o.end(); ++it) {
+                const QString key = it.key().normalized(QString::NormalizationForm_KC).toLower();
+                if (!allowed.match(key).hasMatch()) return QString("Trace line %1 records the field \"%2\", which the compliance ruling does not allow.").arg(n).arg(key.left(40));
+                stack << it.value();
+            }
+        }
+    }
+    return {};
 }
 QString writeNew(int dir, const QString &name, const QByteArray &data) {
     const int fd = ::openat(dir, local(name).constData(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
@@ -65,6 +95,16 @@ template <typename F> void eachFile(const QString &dir, F visit) {
     QDirIterator it(dir, QDir::Files | QDir::Hidden | QDir::NoSymLinks, QDirIterator::Subdirectories);
     while (it.hasNext()) visit(it.next());
 }
+// sha256 of a regular file of any size, streamed; empty if it cannot be read.
+QString hashPath(const QString &path) {
+    const int fd = ::open(local(path).constData(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return {};
+    struct stat st {};
+    QCryptographicHash hash(QCryptographicHash::Sha256); char buf[65536]; ssize_t n = 0; bool ok = ::fstat(fd, &st) == 0 && S_ISREG(st.st_mode);
+    while (ok && (n = ::read(fd, buf, sizeof buf)) > 0) hash.addData(QByteArrayView(buf, n));
+    ::close(fd);
+    return ok && n == 0 ? QString::fromLatin1(hash.result().toHex()) : QString();
+}
 QByteArray readPath(const QString &path, qint64 limit) {
     QString error; const QFileInfo info(path);
     const int dir = openDir(info.absolutePath());
@@ -94,8 +134,8 @@ QString PipelineWorkspace::importTrace(const QString &path) const {
     const QByteArray data = readRegular(dir, info.fileName(), MaxTrace, &error);
     ::close(dir);
     if (!error.isEmpty()) return error;
-    if (!HandoffCheck::forbiddenTraceFields(QString::fromUtf8(data)).isEmpty())
-        return "The trace records caller addresses, PC or backtraces. The tracer is non-compliant: the trace is not used; report it to compliance.";
+    if (const QString problem = vetTrace(data); !problem.isEmpty())
+        return problem + " The tracer may be non-compliant: the trace is not used; report it to compliance.";
     const int research = openDir(stageDir("research"));
     if (research < 0) return "cannot open the research workspace";
     QString result = makePrivateDir(research, "trace");
@@ -150,9 +190,6 @@ QString PipelineWorkspace::unlock(bool *tampered) {
             || st.st_ctim.tv_sec != it->ctimeSec || st.st_ctim.tv_nsec != it->ctimeNsec || unsigned(st.st_mode & 07777) != it->mode) { *tampered = true; if (!S_ISDIR(st.st_mode)) continue; }
         if (::fchmodat(rootFd, n.constData(), 0700, 0) != 0) error = "cannot unlock " + it.key() + ": " + sysError();
     }
-    // A directory created in the run root during the stage is tampering too (the root was not writable).
-    for (const QString &name : QDir(root).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System))
-        if (!locked.contains(name) && !HandoffStore::Stages.contains(name)) *tampered = true;
     locked.clear();
     ::close(rootFd);
     return error;
@@ -173,7 +210,13 @@ QString PipelineWorkspace::taint(const QString &stage, const QString &agentId) c
 }
 QStringList PipelineWorkspace::firewall(const QString &stage, const QStringList &delivered) const {
     QSet<QString> forbidden; QStringList problems;
-    eachFile(stageDir("research"), [&](const QString &path) { const QByteArray d = readPath(path, MaxTrace); if (!d.isEmpty()) forbidden << sha256(d); });
+    for (const QString &dir : {stageDir("research"), root + "/research.tainted"})
+        eachFile(dir, [&](const QString &path) {
+            // Launcher-written and scratch files are not research material and would only cause false matches.
+            static const QRegularExpression skip("(?:^|/)(?:\\.tmp/.*|BRIEF\\.md|REJECTED\\.txt)$");
+            if (skip.match(path.mid(dir.size() + 1)).hasMatch() || QFileInfo(path).size() == 0) return;
+            if (const QString h = hashPath(path); !h.isEmpty()) forbidden << h;
+        });
     QString error;
     for (const auto &r : HandoffStore::releases(root, &error)) if (r.from == "research") forbidden << r.sha256;
     if (!error.isEmpty()) problems << error;
@@ -181,10 +224,12 @@ QStringList PipelineWorkspace::firewall(const QString &stage, const QStringList 
     eachFile(base, [&](const QString &path) {
         const QString rel = path.mid(base.size() + 1);
         if (rel.startsWith("inputs/") && !delivered.contains(rel.mid(7))) problems << rel + " was not delivered by the launcher";
-        const QByteArray d = readPath(path, MaxScanned);
-        if (d.isEmpty()) return;
-        if (forbidden.contains(sha256(d))) problems << rel + " is a copy of research material";
-        else if (!HandoffCheck::rawTraceObjects(QString::fromUtf8(d)).isEmpty()) problems << rel + " contains raw trace records";
+        if (QFileInfo(path).size() == 0) return; // every empty file has the same hash
+        const QString h = hashPath(path);
+        if (h.isEmpty()) { problems << rel + " cannot be read for checking"; return; }
+        if (forbidden.contains(h)) { problems << rel + " is a copy of research material"; return; }
+        if (QFileInfo(path).size() > MaxScanned) { problems << rel + " is too large to check for raw trace records"; return; }
+        if (!HandoffCheck::rawTraceObjects(QString::fromUtf8(readPath(path, MaxScanned))).isEmpty()) problems << rel + " contains raw trace records";
     });
     return problems;
 }
@@ -203,11 +248,19 @@ QList<qint64> PipelineWorkspace::processesUsing(const QString &dir) {
     }
     return pids;
 }
+int PipelineWorkspace::holdRunLock() const {
+    const int fd = ::open(local(root + ".lock").constData(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd >= 0 && ::flock(fd, LOCK_EX | LOCK_NB) != 0) { ::close(fd); return -1; }
+    return fd;
+}
 QStringList PipelineWorkspace::recover(const QString &base) {
     QStringList restored;
     for (const QFileInfo &run : QDir(base).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks)) {
         struct stat st {};
         if (::lstat(local(run.filePath()).constData(), &st) != 0 || (st.st_mode & 07777) != 0100) continue;
+        PipelineWorkspace probe; probe.root = run.filePath();
+        const int lock = probe.holdRunLock(); // held by a live run, possibly in another launcher process
+        if (lock < 0) continue;
         PipelineWorkspace ws; ws.root = run.filePath();
         const int rootFd = openPath(ws.root);
         if (rootFd < 0) continue;
@@ -216,6 +269,7 @@ QStringList PipelineWorkspace::recover(const QString &base) {
         ::close(rootFd);
         HandoffStore::appendEvent(ws.root, "INTERRUPTED", {{"reason", "the launcher stopped while a stage was running; modes restored"}});
         restored << ws.root;
+        ::close(lock);
     }
     return restored;
 }

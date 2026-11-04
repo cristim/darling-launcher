@@ -11,9 +11,29 @@
 // Rule tables mirror check_handoff.py one to one; the parity test compares both on tests/handoff-corpus.
 namespace {
 using RX = QRegularExpression;
+// Python's \w is letters, numbers and '_'; PCRE2 >= 10.43 with UCP also counts combining marks (Mn)
+// and connector punctuation (Pc), which would hide a boundary Python sees. Spell \w and \b out.
+QString pythonWordClasses(const QString &pattern) {
+    const QString word = R"(\p{L}\p{N}_)", boundary = "(?:(?<=[" + word + "])(?![" + word + "])|(?<![" + word + "])(?=[" + word + "]))";
+    QString out; bool inClass = false;
+    for (qsizetype i = 0; i < pattern.size(); ++i) {
+        const QChar c = pattern[i];
+        if (c == '\\' && i + 1 < pattern.size()) {
+            const QChar e = pattern[++i];
+            if (e == 'w') out += inClass ? word : "[" + word + "]";
+            else if (e == 'b' && !inClass) out += boundary;
+            else out += QString(c) + e;
+            continue;
+        }
+        if (c == '[' && !inClass) inClass = true;
+        else if (c == ']' && inClass && !out.endsWith('[') && !out.endsWith("[^")) inClass = false;
+        out += c;
+    }
+    return out;
+}
 RX rx(const QString &pattern, bool caseless = false) {
-    // (*LF): only \n ends a line, like Python's '.' and '$'. UCP: Unicode \w \d \s \b, like Python str patterns.
-    return RX("(*LF)" + pattern, RX::UseUnicodePropertiesOption | (caseless ? RX::CaseInsensitiveOption : RX::NoPatternOption));
+    // (*LF): only \n ends a line, like Python's '.' and '$'. UCP: Unicode \d \s and case folding, like Python str patterns.
+    return RX("(*LF)" + pythonWordClasses(pattern), RX::UseUnicodePropertiesOption | (caseless ? RX::CaseInsensitiveOption : RX::NoPatternOption));
 }
 const QString H = "[0-9a-fA-F]";
 const QString REG = R"(%?(?:[xw](?:[0-9]|[12][0-9]|30)|sp|lr|fp|xzr|wzr|[qdsvb][0-9]{1,2}(?:\.\w+)?|[re]?(?:ax|bx|cx|dx|si|di|bp|sp|ip)|[abcd][lh]|r(?:[89]|1[0-5])[dwb]?|xmm[0-9]+))";
@@ -311,11 +331,6 @@ QList<HandoffCheck::Hit> HandoffCheck::exposureMarkers(const QString &input) {
 QList<HandoffCheck::Hit> HandoffCheck::rawTraceObjects(const QString &text) {
     QList<Hit> hits;
     for (int line : traceHits(normalize(text))) hits << Hit{line, "R7", line ? "raw trace (T0) JSON object" : "too many JSON candidates to scan"};
-    return hits;
-}
-QList<HandoffCheck::Hit> HandoffCheck::forbiddenTraceFields(const QString &text) {
-    QList<Hit> hits; const QStringList lines = text.split('\n');
-    for (int i = 0; i < lines.size(); ++i) if (LINE_RULES[5].pattern.match(lines[i].left(MaxLineLength)).hasMatch()) hits << Hit{i + 1, "R8", LINE_RULES[5].description};
     return hits;
 }
 bool HandoffCheck::isComplianceRule(const Hit &hit) {
