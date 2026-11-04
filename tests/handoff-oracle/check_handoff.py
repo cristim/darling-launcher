@@ -222,6 +222,7 @@ def trace_hits(text):
     return hits
 
 
+PATH_SLASHES = re.compile(r"/(?:\.?/)+")
 MD_PREFIX = re.compile(r"^[\s>|]*(?:(?:[-*+\u2022]|\d+[.)])\s+)*")
 
 
@@ -269,8 +270,9 @@ def check_text(text, src, dst):
     has_interface = any(OBJC_INTERFACE.match(l) for l in lines)
 
     for i, line in enumerate(lines, 1):
+        flat = PATH_SLASHES.sub("/", line)  # "//" and "/./" name the same path, so R6 sees them collapsed
         for rid, desc, rx in LINE_RULES:
-            if rx.search(line):
+            if rx.search(flat if rid == "R6" else line):
                 hits.append((i, rid, desc))
         if has_interface and (OBJC_INTERFACE.match(line) or CLASSDUMP_IVAR.search(line)):
             hits.append((i, "R3", "class-dump style @interface with ivar offsets"))

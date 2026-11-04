@@ -97,6 +97,10 @@ add("r1-near-short-words", "We not rev neg the sar value\nbic and mvn are words,
 add("md-r5", "- `sub_1A2B`")
 add("md-r6", "1. /System/Applications/Foo.app")
 add("case-r6", "/system/library/Frameworks/x")
+add("r6-double-slash", "/System//Library/Frameworks/Foo.framework/Foo")
+add("r6-dot-segment", "/System/./Library/Frameworks/Foo.framework/Foo")
+add("r6-mixed-slashes", "/Volumes/Mac//./System/x and /usr/lib/system//./libsystem_c.dylib")
+add("r6-near-url-slashes", "see https://example.com//docs/./index.html and a//b/./c\n")
 for i, t in enumerate(("_foo + 0x1c", "_foo+0X1C", "foo+ 0x10", "_foo+28")):
     add(f"r2-ident-{i}", t)
 add("r2-near-ident", "n + 1 and a+b and 1+2\n")

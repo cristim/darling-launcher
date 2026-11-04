@@ -111,6 +111,10 @@ r1-near-short-words.txt	-	-
 md-r5.txt	R5	-
 md-r6.txt	R6	-
 case-r6.txt	R6	-
+r6-double-slash.txt	R6	-
+r6-dot-segment.txt	R6	-
+r6-mixed-slashes.txt	R6	-
+r6-near-url-slashes.txt	-	-
 r2-ident-0.txt	R2	-
 r2-ident-1.txt	R2	-
 r2-ident-2.txt	R2	-
