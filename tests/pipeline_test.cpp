@@ -430,6 +430,20 @@ private slots:
         QVERIFY(verdicts(r.ws).contains("REVISE")); QVERIFY(read(fake + "/calls").contains("spec 2"));
         QVERIFY(QFileInfo::exists(r.ws.stageDir("spec") + "/.previous-OUTPUT-1.md"));
     }
+    // Review finding 4: a stale OUTPUT.md that cannot be moved aside stops the run instead of being resubmitted.
+    void unmovablePreviousOutputStopsTheRun() {
+        plan("spec 1 blockrename\n");
+        const auto r = run(); QCOMPARE(r.state, State::Failed); QVERIFY2(r.message.contains("previous spec output"), qPrintable(r.message));
+        QVERIFY(!read(fake + "/calls").contains("spec 2"));
+    }
+    // Review finding 6: R9 applies to a validation PASS report like any other release.
+    void validationReportWithNulOrBadUtf8IsRevised_data() { QTest::addColumn<QString>("mode"); QTest::newRow("nul") << "passnul"; QTest::newRow("utf8") << "passbadutf8"; }
+    void validationReportWithNulOrBadUtf8IsRevised() {
+        QFETCH(QString, mode);
+        plan("validate 1 " + mode + "\n");
+        const auto r = run(); QCOMPARE(r.state, State::Done);
+        QVERIFY(verdicts(r.ws).contains("REVISE")); QVERIFY(read(fake + "/calls").contains("validate 2"));
+    }
     void agentStdinIsClosed() {
         plan("research 1 stdin\n");
         QCOMPARE(run().state, State::Done); QCOMPARE(read(fake + "/stdin").trimmed(), QString("eof"));

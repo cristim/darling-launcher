@@ -19,6 +19,9 @@ case $mode in
   reconcile) out; echo 'Reconcile: _CFFoo' >> OUTPUT.md ;;
   r10) printf 'Loaded from libsystem_kernel.dylib+0x1c2 (attempt %s)\n' "$n" > OUTPUT.md ;;
   passhit) printf 'VERDICT: PASS\nMatches the spec; the old code called sub_1A2B.\n' > OUTPUT.md ;;
+  passnul) printf 'VERDICT: PASS\nclean text\000more\n' > OUTPUT.md ;;
+  passbadutf8) printf 'VERDICT: PASS\nclean \377\376 text\n' > OUTPUT.md ;;
+  blockrename) mkdir ".previous-OUTPUT-$n.md"; out; exit 4 ;;
   r10sleep) printf 'Loaded from libsystem_kernel.dylib+0x1c2\n' > OUTPUT.md; sleep 600 ;;
   badverdicthit) printf 'VERDICT: maybe\nThe old code called sub_1A2B.\n' > OUTPUT.md ;;
   r10slow) printf 'Loaded from libsystem_kernel.dylib+0x1c2\n' > OUTPUT.md; sleep 2 ;;

@@ -13,6 +13,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QStringDecoder>
 #include <QUuid>
 #include <QtConcurrent>
 #include <fcntl.h>
@@ -261,7 +262,9 @@ void MissingSymbolPipeline::launch(const QString &stage) {
     if (::lstat(QFile::encodeName(dir + "/.tmp").constData(), &tmpSt) != 0 || !S_ISDIR(tmpSt.st_mode)) { finish(State::Failed, "The " + stage + " temporary folder is not a folder."); return; }
     // G7: a previous OUTPUT.md is moved aside, so a crashing agent cannot resubmit stale or partial output.
     if (QFileInfo::exists(dir + "/OUTPUT.md") || QFileInfo(dir + "/OUTPUT.md").isSymLink())
-        ::rename(QFile::encodeName(dir + "/OUTPUT.md").constData(), QFile::encodeName(dir + "/.previous-OUTPUT-" + QString::number(launches[stage] - 1) + ".md").constData());
+        if (::rename(QFile::encodeName(dir + "/OUTPUT.md").constData(), QFile::encodeName(dir + "/.previous-OUTPUT-" + QString::number(launches[stage] - 1) + ".md").constData()) != 0) {
+            finish(State::Failed, "Cannot move the previous " + stage + " output aside; the run is stopped."); return;
+        }
     // Checked while the audit log is still readable, before the other folders are locked.
     if (const QString changed = autoLoaded.changed(); !changed.isEmpty()) {
         // An instruction or config file the CLIs load on their own changed during the run: it may carry another stage's material.
@@ -377,9 +380,15 @@ void MissingSymbolPipeline::stageExited(int code, QProcess::ExitStatus) {
     QString to = Next.value(activeStage);
     if (activeStage == "validate") {
         QFile f(output); f.open(QIODevice::ReadOnly);
-        const QString body = QString::fromUtf8(f.read(HandoffStore::MaxInput)), verdict = body.section('\n', 0, 0).trimmed();
+        const QByteArray raw = f.read(HandoffStore::MaxInput);
+        const QString body = QString::fromUtf8(raw), verdict = body.section('\n', 0, 0).trimmed();
         if (verdict == "VERDICT: PASS") {
             QStringList problems;
+            // R9, as the store applies it to every other release: the decode above replaces invalid bytes.
+            QStringDecoder utf8(QStringDecoder::Utf8, QStringDecoder::Flag::Stateless);
+            const QString decoded = utf8.decode(raw); Q_UNUSED(decoded)
+            if (raw.contains('\0')) problems << "R9: binary content (NUL byte)";
+            if (utf8.hasError()) problems << "R9: input is not valid UTF-8";
             for (const auto &h : HandoffCheck::checkTextStrict(body)) problems << describe(h);
             if (!problems.isEmpty()) { revise(problems); return; }
             const auto chain = HandoffStore::verifyChain(ws.root);
