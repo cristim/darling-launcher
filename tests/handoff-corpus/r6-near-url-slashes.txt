@@ -1,0 +1,1 @@
+see https://example.com//docs/./index.html and a//b/./c
