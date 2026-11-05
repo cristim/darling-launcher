@@ -23,6 +23,7 @@ class AutoLoadedFiles {
 public:
     static AutoLoadedFiles snapshot(const QString &runRoot);
     QString changed() const; // first changed path, or empty
+    QString oversized() const; // first watched tree too large to hash fully, or empty
 private:
     QHash<QString, QByteArray> hashes; // path -> sha256, empty when absent
 };
