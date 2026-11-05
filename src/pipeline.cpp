@@ -120,16 +120,17 @@ QByteArray fileHash(const QString &path) {
 // Directories an agent CLI loads instructions, skills or hooks from: hash every entry's relative path, permissions and contents, following directory symlinks (each real directory once) and recording symlink targets, so an added, removed, retargeted, chmod-ed or edited entry changes the result. A tree too large or too deep to hash fully hashes to a fixed marker and is reported by AutoLoadedFiles::oversized(), so a run is refused up front rather than left unwatched.
 namespace {
 constexpr int MaxTreeEntries = 16384, MaxTreeDepth = 16;
+constexpr qint64 MaxTreeBytes = 256 * 1024 * 1024;
 // Every field is a type tag plus a length, so no two different trees feed the hash the same bytes.
 void frame(QCryptographicHash &h, char tag, const QByteArray &data) { h.addData(QByteArray(1, tag)); h.addData(QByteArray::number(data.size()) + ":"); h.addData(data); }
-bool hashDir(const QString &dirPath, const QString &rel, int depth, bool skipSystem, QSet<QString> &seen, int &count, QCryptographicHash &all) {
+bool hashDir(const QString &dirPath, const QString &rel, int depth, bool skipSystem, QSet<QString> &seen, int &count, qint64 &bytes, QCryptographicHash &all) {
     if (depth > MaxTreeDepth) return false;
     const QFileInfo self(dirPath);
     if (!self.isReadable() || !self.isExecutable()) return false;  // cannot be listed, so cannot be watched
     seen.insert(self.canonicalFilePath());
     const QFileInfoList entries = QDir(dirPath).entryInfoList(QDir::AllEntries | QDir::System | QDir::Hidden | QDir::NoDotAndDotDot, QDir::Name);
     for (const QFileInfo &info : entries) {
-        if (skipSystem && rel.isEmpty() && info.fileName() == ".system") continue;  // codex rewrites its bundled skills there itself
+        if (skipSystem && info.fileName() == ".system") continue;  // codex rewrites its bundled skills there itself
         if (++count > MaxTreeEntries) return false;
         const QString name = rel.isEmpty() ? info.fileName() : rel + "/" + info.fileName();
         frame(all, 'N', name.toUtf8());
@@ -138,9 +139,10 @@ bool hashDir(const QString &dirPath, const QString &rel, int depth, bool skipSys
         if (info.isDir()) {
             if (seen.contains(info.canonicalFilePath())) { frame(all, 'A', {}); continue; }  // also ends link loops
             frame(all, '{', {});
-            if (!hashDir(info.absoluteFilePath(), name, depth + 1, false, seen, count, all)) return false;
+            if (!hashDir(info.absoluteFilePath(), name, depth + 1, false, seen, count, bytes, all)) return false;
             frame(all, '}', {});
         } else if (info.isFile()) {
+            if ((bytes += info.size()) > MaxTreeBytes) return false;
             const QByteArray h = fileHash(info.absoluteFilePath());
             if (h == OversizedTree) return false;
             frame(all, 'F', h);
@@ -156,9 +158,10 @@ QByteArray treeHash(const QString &root) {
     QCryptographicHash all(QCryptographicHash::Sha256);
     QSet<QString> seen;
     int count = 0;
+    qint64 bytes = 0;
     const QString codexSkills = QProcessEnvironment::systemEnvironment().value("CODEX_HOME", QDir::homePath() + "/.codex") + "/skills";
     const bool skipSystem = QFileInfo(root).canonicalFilePath() == QFileInfo(codexSkills).canonicalFilePath();
-    return hashDir(root, {}, 0, skipSystem, seen, count, all) ? all.result() : OversizedTree;
+    return hashDir(root, {}, 0, skipSystem, seen, count, bytes, all) ? all.result() : OversizedTree;
 }
 }
 QByteArray pathHash(const QString &path) { return QFileInfo(path).isDir() ? treeHash(path) : fileHash(path); }
