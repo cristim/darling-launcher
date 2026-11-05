@@ -1,0 +1,5 @@
+Agent: r
+Inputs: 02-spec-to-impl.md aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Absent:_A
+Branch: mCommit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+Callers exist:no

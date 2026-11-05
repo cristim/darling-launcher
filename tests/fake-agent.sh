@@ -19,6 +19,9 @@ case $mode in
   reconcile) out; echo 'Reconcile: _CFFoo' >> OUTPUT.md ;;
   r10) printf 'Loaded from libsystem_kernel.dylib+0x1c2 (attempt %s)\n' "$n" > OUTPUT.md ;;
   passhit) printf 'VERDICT: PASS\nMatches the spec; the old code called sub_1A2B.\n' > OUTPUT.md ;;
+  passnul) printf 'VERDICT: PASS\nclean text\000more\n' > OUTPUT.md ;;
+  passbadutf8) printf 'VERDICT: PASS\nclean \377\376 text\n' > OUTPUT.md ;;
+  blockrename) mkdir ".previous-OUTPUT-$n.md"; out; exit 4 ;;
   r10sleep) printf 'Loaded from libsystem_kernel.dylib+0x1c2\n' > OUTPUT.md; sleep 600 ;;
   badverdicthit) printf 'VERDICT: maybe\nThe old code called sub_1A2B.\n' > OUTPUT.md ;;
   r10slow) printf 'Loaded from libsystem_kernel.dylib+0x1c2\n' > OUTPUT.md; sleep 2 ;;
@@ -34,6 +37,11 @@ case $mode in
   envdump) env | cut -d= -f1,1 | sort > "$F/env"; env | grep '^DARLING_PIPELINE_AGENT=' >> "$F/env"; out ;;
   argdump) printf '%s\n' "$@" > "$F/args"; printf '%s' "$OPENCODE_CONFIG_CONTENT" > "$F/opencode-env"; out ;;
   plant) echo 'planted' > "$(dirname "$(dirname "$(dirname "$PWD")")")/AGENTS.md"; out ;;
+  hidden) out; mkdir -p .tmp hide; echo 'calls sub_1A2B' > .tmp/note.txt ;;
+  lockedsub) out; mkdir -p hide; cp OUTPUT.md hide/copy.md; chmod 000 hide ;;
+  linkbrief) printf 'Loaded from /System/Library/Foo\n' > OUTPUT.md; rm -f BRIEF.md; ln -s "$F/victim" BRIEF.md; ln -s "$F/victim" REJECTED.txt ;;
+  crash) out; exit 4 ;;
+  stdin) if read line; then echo got > "$F/stdin"; else echo eof > "$F/stdin"; fi; out ;;
   badrecon) printf 'The function is absent and nobody calls it.\n' > OUTPUT.md ;;
   taint) printf 'Notes: the function calls sub_1A2B first.\n' > OUTPUT.md ;;
   revise) printf 'Loaded from /System/Library/Frameworks/Foo.framework (attempt %s)\n' "$n" > OUTPUT.md ;;

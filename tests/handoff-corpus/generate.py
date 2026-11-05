@@ -74,6 +74,10 @@ add("r1-atomics", "ldaxr x0, [x1]\nstlxr w2, x0, [x1]\nfmov d0, d1")
 add("md-r5", "- `sub_1A2B`")
 add("md-r6", "1. /System/Applications/Foo.app")
 add("case-r6", "/system/library/Frameworks/x")
+add("r6-double-slash", "/System//Library/Frameworks/Foo.framework/Foo")
+add("r6-dot-segment", "/System/./Library/Frameworks/Foo.framework/Foo")
+add("r6-mixed-slashes", "/Volumes/Mac//./System/x and /usr/lib/system//./libsystem_c.dylib")
+add("r6-near-url-slashes", "see https://example.com//docs/./index.html and a//b/./c\n")
 for i, t in enumerate(("_foo + 0x1c", "_foo+0X1C", "foo+ 0x10", "_foo+28")):
     add(f"r2-ident-{i}", t)
 add("r2-near-ident", "n + 1 and a+b and 1+2\n")
@@ -125,6 +129,9 @@ add("r7-key-kelvin", '{"sym": "_f", "x0": 1, "\u212aey": 2}\n')
 add("e5-nul-in-sub", "see su\x00b_1A2B here\n", "E5")
 add("e5-fffd-in-sub", "see su\ufffdb_1A2B here\n", "E5")
 
+# --- QA G2: U+001C..U+001F in headers and recon lines (python \s) ---
+add("recon-unit-separators", "Agent: r\n\x1cInputs: 02-spec-to-impl.md " + "a" * 64 + "\nAbsent:\x1c_A\nBranch: m\x1dCommit: " + "b" * 40 + "\nCallers exist:\x1eno\n")
+
 # --- json raw_decode details (parity) ---
 add("json-dup-key-last-wins", '{"a": {"symbol": "_f", "regs": []}, "a": 1}\n')
 add("json-dup-key-trace-last", '{"a": 1, "a": {"symbol": "_f", "regs": []}}\n')
@@ -137,6 +144,12 @@ add("json-int-4300-digits", '{"symbol": "_f", "regs": [' + "1" * 4300 + ']}\n', 
 add("json-rescan-after-failure", '{bad {"symbol": "_f", "regs": []}\n')
 add("json-continue-after-success", '{"ok": {"x": 1}} {"symbol": "_f", "regs": []}\n')
 add("json-nested-200", "[" * 200 + '{"symbol": "_f", "regs": []}' + "]" * 200 + "\n")
+# QA G1: python's json parses any depth; a trace object with deep padding must still hit R7
+for depth in (1001, 5000, 20000):
+    long = "E4" if depth * 2 > 4096 else ""
+    add(f"json-padded-{depth}", '{"symbol": "_CFFoo", "regs": ["0x1"], "j": ' + "[" * depth + "]" * depth + "}\n", long)
+    add(f"json-wrapped-{depth}", "[" * depth + '{"symbol": "_f", "regs": []}' + "]" * depth + "\n", long)
+add("json-padded-multiline-1001", '{"symbol": "_CFFoo",\n"regs": ["0x1"],\n"j": ' + "[\n" * 1001 + "]\n" * 1001 + "}\n")
 add("json-nan-infinity", '{"symbol": "_f", "regs": [NaN, -Infinity, 1.5e10, -0.0]}\n')
 add("json-trailing-comma", '{"symbol": "_f", "regs": [1,]}\n')
 add("json-leading-zero", '{"symbol": "_f", "regs": [01]}\n')

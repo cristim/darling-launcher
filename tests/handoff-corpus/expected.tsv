@@ -76,6 +76,10 @@ r1-atomics.txt	R1	-
 md-r5.txt	R5	-
 md-r6.txt	R6	-
 case-r6.txt	R6	-
+r6-double-slash.txt	R6	-
+r6-dot-segment.txt	R6	-
+r6-mixed-slashes.txt	R6	-
+r6-near-url-slashes.txt	-	-
 r2-ident-0.txt	R2	-
 r2-ident-1.txt	R2	-
 r2-ident-2.txt	R2	-
@@ -116,6 +120,7 @@ r7-key-upper.txt	R7	-
 r7-key-kelvin.txt	R7	-
 e5-nul-in-sub.txt	-	E5
 e5-fffd-in-sub.txt	-	E5
+recon-unit-separators.txt	-	-
 json-dup-key-last-wins.txt	-	-
 json-dup-key-trace-last.txt	R7	-
 json-tab-in-string.txt	-	-
@@ -127,6 +132,13 @@ json-int-4300-digits.txt	R7	E4
 json-rescan-after-failure.txt	R7	-
 json-continue-after-success.txt	R7	-
 json-nested-200.txt	R7	-
+json-padded-1001.txt	R7	-
+json-wrapped-1001.txt	R7	-
+json-padded-5000.txt	R7	E4
+json-wrapped-5000.txt	R7	E4
+json-padded-20000.txt	R7	E4
+json-wrapped-20000.txt	R7	E4
+json-padded-multiline-1001.txt	R7	-
 json-nan-infinity.txt	R7	-
 json-trailing-comma.txt	-	-
 json-leading-zero.txt	-	-

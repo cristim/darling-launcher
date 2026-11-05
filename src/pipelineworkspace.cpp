@@ -42,26 +42,78 @@ QByteArray readRegular(int dir, const QString &name, qint64 limit, QString *erro
 }
 // The compliance ruling (s2) allows names, library, arch, counts, call order and raw argument registers;
 // anything else (caller address, PC, backtrace, stack, dereferenced memory) refuses the whole trace.
+// Per-key schema of a trace record (compliance ruling F1). Only the ruling's fields: names, library, arch,
+// count, order of first calls and raw argument registers; app/version/kind/weak as short metadata.
+// Anything else, including image, offset, position or time fields, refuses the whole trace.
+QString vetValue(const QString &key, const QJsonValue &v, int depth) {
+    static const QRegularExpression word("^0x[0-9a-f]{1,16}$"), wide("^0x[0-9a-f]{1,32}$"), intReg("^(?:x[0-8]|rdi|rsi|rdx|rcx|r8|r9)$"), fpReg("^(?:[qdv][0-7]|xmm[0-7])$");
+    auto text = [&](int max) { const QString s = v.toString(); return v.isString() && !s.isEmpty() && s.size() <= max && std::none_of(s.begin(), s.end(), [](QChar c) { return c.category() == QChar::Other_Control || c.category() == QChar::Other_Format; }); };
+    auto integer = [&] { return v.isDouble() && v.toDouble() >= 0 && v.toDouble() == double(qint64(v.toDouble())); };
+    auto regWord = [&](const QJsonValue &x) { return (x.isDouble() && x.toDouble() == double(qint64(x.toDouble()))) || (x.isString() && word.match(x.toString()).hasMatch()); };
+    if (key == "symbol" || key == "sym" || key == "name" || key == "library" || key == "lib" || key == "framework" || key == "dylib" || key == "app") return text(512) ? QString() : "a name of at most 512 characters";
+    if (key == "arch" || key == "version" || key == "kind") return text(32) ? QString() : "a short string";
+    if (key == "count" || key == "calls" || key == "seq" || key == "sequence" || key == "order") return integer() ? QString() : "a non-negative integer";
+    if (key == "weak") return v.isBool() ? QString() : "true or false";
+    if (intReg.match(key).hasMatch()) return regWord(v) ? QString() : "an integer or 0x hex word";
+    if (fpReg.match(key).hasMatch()) return v.isString() && wide.match(v.toString()).hasMatch() ? QString() : "0x hex of at most 32 digits";
+    if (key == "regs" || key == "args" || key == "arg_regs" || key == "fp_regs") {
+        const bool fp = key == "fp_regs";
+        if (v.isObject() && depth == 0) {
+            const QJsonObject o = v.toObject();
+            if (o.size() > 9) return "at most 9 registers";
+            for (auto it = o.begin(); it != o.end(); ++it) {
+                const QString inner = it.key().normalized(QString::NormalizationForm_KC).toLower();
+                if (!(fp ? fpReg : intReg).match(inner).hasMatch()) return "register names only";
+                if (const QString e = vetValue(inner, it.value(), depth + 1); !e.isEmpty()) return e;
+            }
+            return {};
+        }
+        if (!v.isArray() || v.toArray().size() > (fp ? 8 : 9)) return fp ? "an array of at most 8 values" : "an array of at most 9 values";
+        for (const auto &x : v.toArray()) if (fp ? !(x.isString() && wide.match(x.toString()).hasMatch()) : !regWord(x)) return "raw register words only";
+        return {};
+    }
+    return "a field the compliance ruling does not allow";
+}
+// QJsonObject keeps only the last of a repeated key, so vetting the parsed object would not cover the raw bytes
+// that get imported. Returns the first key repeated within one object at any depth; the line must already be valid JSON.
+QString duplicateKey(const QByteArray &line) {
+    struct Frame { bool object; bool expectKey; QSet<QString> keys; };
+    QList<Frame> stack;
+    for (qsizetype i = 0; i < line.size(); ++i) {
+        const char c = line.at(i);
+        if (c == '{' || c == '[') { stack.append({c == '{', c == '{', {}}); continue; }
+        if (c == '}' || c == ']') { if (!stack.isEmpty()) stack.removeLast(); continue; }
+        if (c == ',' && !stack.isEmpty()) { stack.last().expectKey = stack.last().object; continue; }
+        if (c != '"') continue;
+        qsizetype end = i + 1;
+        while (end < line.size() && line.at(end) != '"') end += line.at(end) == '\\' ? 2 : 1;
+        if (!stack.isEmpty() && stack.last().expectKey) {
+            const QJsonArray wrapped = QJsonDocument::fromJson("[" + line.mid(i, end - i + 1) + "]").array();
+            const QString key = wrapped.isEmpty() ? QString() : wrapped.first().toString();
+            if (stack.last().keys.contains(key)) return key;
+            stack.last().keys.insert(key);
+            stack.last().expectKey = false;
+        }
+        i = end;
+    }
+    return {};
+}
 QString vetTrace(const QByteArray &data) {
-    static const QRegularExpression allowed("^(?:symbol|sym|name|library|lib|image|framework|dylib|arch|count|calls|seq|sequence|order|first|position|kind|type|weak|mode"
-        "|regs|args|arg_regs|fp_regs|words|x[0-8]|rdi|rsi|rdx|rcx|r8|r9|[qdv][0-7]|xmm[0-7]|time|ts|pid|version|app|schema)$");
+    constexpr int MaxLine = 64 * 1024;
     int n = 0;
     for (const QByteArray &line : data.split('\n')) {
         ++n;
         if (line.trimmed().isEmpty()) continue;
+        if (line.size() > MaxLine) return QString("Trace line %1 is longer than %2 bytes.").arg(n).arg(MaxLine);
         const QJsonDocument doc = QJsonDocument::fromJson(line);
         if (!doc.isObject()) return QString("Trace line %1 is not a JSON object.").arg(n);
-        QList<QJsonValue> stack{doc.object()};
-        while (!stack.isEmpty()) {
-            const QJsonValue v = stack.takeLast();
-            if (v.isArray()) for (const auto &x : v.toArray()) stack << x;
-            if (!v.isObject()) continue;
-            const QJsonObject o = v.toObject();
-            for (auto it = o.begin(); it != o.end(); ++it) {
-                const QString key = it.key().normalized(QString::NormalizationForm_KC).toLower();
-                if (!allowed.match(key).hasMatch()) return QString("Trace line %1 records the field \"%2\", which the compliance ruling does not allow.").arg(n).arg(key.left(40));
-                stack << it.value();
-            }
+        if (const QString dup = duplicateKey(line); !dup.isEmpty())
+            return QString("Trace line %1 repeats the key \"%2\".").arg(n).arg(dup.left(40));
+        const QJsonObject o = doc.object();
+        for (auto it = o.begin(); it != o.end(); ++it) {
+            const QString key = it.key().normalized(QString::NormalizationForm_KC).toLower();
+            if (const QString e = vetValue(key, it.value(), 0); !e.isEmpty())
+                return QString("Trace line %1, field \"%2\": the compliance ruling allows only %3 here.").arg(n).arg(key.left(40), e);
         }
     }
     return {};
