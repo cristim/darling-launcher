@@ -74,6 +74,10 @@ ASM_LINE = re.compile(
 BARE_LINE = re.compile(rf"^\s*(?:(?:0x)?[0-9a-f]{{4,16}}:\s*)?(?:{'|'.join(MNEM_BARE)})\s*(?:(?:;|//).*)?$", re.I)
 _STRICT_OP = re.compile(rf"^(?:{_REG}|{_MEM}|[#$]-?(?:0x[0-9a-f]+|[0-9]+)|-?0x[0-9a-f]+)$", re.I)
 
+# Ghidra decompiler names: FUN_/DAT_/LAB_/UNK_ addresses, param_N, local_N, xVarN, CONCATnn, undefinedN.
+GHIDRA_MARKERS = (r"\b(?:FUN|DAT|LAB|UNK)_[0-9A-Fa-f]{4,}\b|\b(?:param_\d+|local_[0-9A-Fa-f]+)\b"
+                  r"|\b[a-z]{1,3}Var\d+\b|\bCONCAT\d{2}\b|\bundefined[1-8]\b")
+
 # ---- line-level rule tables: (rule id, description, regex) ------------------
 _H = r"[0-9a-fA-F]"
 LINE_RULES = [
@@ -89,7 +93,7 @@ LINE_RULES = [
     ("R5", "decompiler pseudocode marker", re.compile(
         r"\b(?:sub|loc)_[0-9A-Fa-f]+\b|\b(?:LOBYTE|HIBYTE|LOWORD|HIWORD|LODWORD|HIDWORD)\s*\("
         r"|(?<![\w.])v\d+\s*=(?!=)|\b__int(?:8|16|32|64)\b|\b_(?:QWORD|DWORD|WORD|BYTE)\b"
-        r"|\b__(?:fastcall|cdecl|stdcall|usercall)\b")),
+        r"|\b__(?:fastcall|cdecl|stdcall|usercall)\b|" + GHIDRA_MARKERS)),
     ("R6", "path into Apple system image, install volume or shared cache", re.compile(
         r"/System/(?:Library|Volumes|Cryptexes|Applications)|/Library/Apple\b"
         r"|/Volumes/[^/\s]+/(?:System|Library|usr|Applications)\b"

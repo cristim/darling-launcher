@@ -38,6 +38,10 @@ add("r4-near-sep", "0x00007ffe00000001\ntext\n0x00007ffe00000002\n" * 3)
 add("r4-near-sha", "sha " + "a" * 64 + "\nflag 0xff 0x10\n")
 for i, t in enumerate(("calls sub_1A2B", "goto loc_401000", "x = LODWORD(y)", "v12 = a1", "__int64 f", "_QWORD *p")):
     add(f"r5-{i}", t)
+for i, t in enumerate(("calls FUN_00101a2b", "uVar1 = param_1 + 4;", "*(int *)(local_28 + 8) = 0;", "iVar1 = foo();",
+                       "x = DAT_00104000;", "y = CONCAT44(a, b);", "undefined8 foo(void)", "puVar3 = LAB_00101000;")):
+    add(f"r5-ghidra-{i}", t)
+add("r5-near-ghidra", "The function is undefined, the local variable param is unnamed; a data file DAT holds it.\nlocal_name and param_x and funny_ones\n")
 add("r5-near", "the sub_system loc is vague; v == 3; version = 2\n")
 for i, t in enumerate(("/System/Library/Frameworks/Foo.framework/Foo", "/Volumes/MacintoshHD/System/x",
                        "dyld_shared_cache_arm64e", "libfoo.dyld", "/usr/lib/system/libsystem_c.dylib", "/Library/Apple/usr/bin")):

@@ -126,6 +126,31 @@ private slots:
             QVERIFY2(ids(hits, false).contains("R1") == flagged, qPrintable(describe(hits)));
         }
     }
+    // R5 must cover Ghidra decompiler output as well as IDA.
+    void r5_data() {
+        QTest::addColumn<QString>("text"); QTest::addColumn<bool>("flagged");
+        QTest::newRow("FUN") << QString("calls FUN_00101a2b here") << true;
+        QTest::newRow("param") << QString("uVar1 = param_1 + 4;") << true;
+        QTest::newRow("local") << QString("*(int *)(local_28 + 8) = 0;") << true;
+        QTest::newRow("iVar") << QString("iVar1 = foo();") << true;
+        QTest::newRow("DAT") << QString("x = DAT_00104000;") << true;
+        QTest::newRow("CONCAT") << QString("y = CONCAT44(a, b);") << true;
+        QTest::newRow("undefined8") << QString("undefined8 foo(void)") << true;
+        QTest::newRow("near-prose") << QString("The function is undefined, the local variable param is unnamed; a data file DAT holds it.\n") << false;
+        QTest::newRow("near-identifiers") << QString("local_name and param_x and funny_ones and variable1\n") << false;
+    }
+    void r5() {
+        QFETCH(QString, text); QFETCH(bool, flagged);
+        for (bool strict : {false, true}) {
+            const auto hits = strict ? HandoffCheck::checkTextStrict(text) : HandoffCheck::checkText(text);
+            QVERIFY2(ids(hits, false).contains("R5") == flagged, qPrintable(describe(hits)));
+        }
+    }
+    void exposureMarkersGhidra() {
+        for (const char *t : {"FUN_00101a2b called", "uVar2 = param_1;", "local_28 = 0;", "x = DAT_00104000;", "CONCAT44(a, b)", "undefined8 f()"})
+            QCOMPARE(HandoffCheck::exposureMarkers(t).size(), 1);
+        QVERIFY(HandoffCheck::exposureMarkers("The function is undefined; local variable param.\n").isEmpty());
+    }
     // C++ vs python on the same corpus, plus mechanical variants of it, so the port cannot drift.
     void parityWithPythonOracle() {
         const QString python = QStandardPaths::findExecutable("python3");
