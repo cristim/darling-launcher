@@ -40,12 +40,25 @@ MANIFEST = "MANIFEST.txt"
 # ---- R1 tables --------------------------------------------------------------
 MNEM_ARM = ("mov movz movk movn ldr ldp ldur ldrb ldrh ldrsw str stp stur strb strh add adds sub subs "
             "adrp adr cmp cmn tst cbz cbnz tbz tbnz bl blr br csel cset orr and eor lsl lsr asr svc "
-            "mul madd ubfx sbfx ldar ldaxr stlr stlxr fmov casal cas ldxr stxr").split()
+            "b mul madd ubfx sbfx ldar ldaxr stlr stlxr fmov casal cas ldxr stxr "
+            "fadd fsub fmul fdiv fsqrt fabs fneg fcmp fcvt fcvtzs fcvtzu scvtf ucvtf fmadd fmsub fmax fmin fcsel "
+            "bic bics orn eon mvn neg negs ngc adc adcs sbc sbcs sxtb sxth sxtw uxtb uxth uxtw clz cls rbit "
+            "rev rev16 rev32 sdiv udiv smull umull smulh umulh msub mneg ror extr bfi bfxil bfm ubfm sbfm ubfiz sbfiz "
+            "csinc csinv csneg cinc cinv cneg ccmp ccmn ldrsb ldrsh ldnp stnp ldtr sttr ldursw ldurb ldurh sturb sturh "
+            "ldpsw ldrsw ldaxp stxp stlxp ldarb ldarh stlrb stlrh ldxrb ldxrh stxrb stxrh ldadd ldclr ldeor ldset swp "
+            "ld1 st1 movi dup umov prfm msr mrs dmb dsb isb brk").split()
+_X86_BASE = "add sub and or xor cmp test shl shr sar neg not inc dec imul lea mov adc sbb mul div idiv".split()
+_X86_CC = "e ne z nz a ae b be g ge l le s ns o no p np c nc".split()
 MNEM_X86 = ("mov movq movl movzx movsx push pop call lea jmp je jne jz jnz ja jb jg jl jle jge "
-            "cmp test xor add sub and or imul shl shr inc dec").split()
-MNEM_BARE = ("ret retq leave nop cltq cqto hlt int3").split()
+            "cmp test xor add sub and or imul shl shr inc dec "
+            "sar sal rol ror rcl rcr not neg xchg adc sbb mul div idiv movabs movsxd movzbl movzwl movsbl movswl movslq "
+            "cmpxchg xadd bt bts btr btc bsf bsr tzcnt lzcnt popcnt bswap pushq popq pushf popf callq jmpq "
+            "jae jna jnae jnb jnbe jng jnge jnl jnle jc jnc jo jno js jns jp jnp jcxz jecxz jrcxz loop").split()
+MNEM_X86 += [b + x for b in _X86_BASE for x in "bwlq"]
+MNEM_X86 += ["set" + c for c in _X86_CC] + ["cmov" + c for c in _X86_CC]
+MNEM_BARE = ("ret retq leave nop cltq cqto hlt int3 cdq cqo cwde cdqe cltd cwtl cbtw syscall sysenter ud2 eret wfi wfe").split()
 # Only these may take a bare label/address operand ("call _foo").
-MNEM_BRANCH = set("bl blr br call jmp je jne jz jnz ja jb jg jl jle jge cbz cbnz".split())
+MNEM_BRANCH = set("b bl blr br call callq jmp jmpq je jne jz jnz ja jb jg jl jle jge jae jbe jna jnae jnb jnbe jng jnge jnl jnle jc jnc jo jno js jns jp jnp jcxz jecxz jrcxz loop cbz cbnz".split())
 
 _REG = (r"%?(?:[xw](?:[0-9]|[12][0-9]|30)|sp|lr|fp|xzr|wzr|[qdsvb][0-9]{1,2}(?:\.\w+)?"
         r"|[re]?(?:ax|bx|cx|dx|si|di|bp|sp|ip)|[abcd][lh]|r(?:[89]|1[0-5])[dwb]?|xmm[0-9]+)")
@@ -160,6 +173,14 @@ def asm_like(line):
     return any(_STRICT_OP.match(o) and not re.fullmatch(r"-?[0-9]+", o) for o in ops)
 
 
+def asm_weight(line):
+    """Instruction lines this line stands for: a line of `;`-joined instructions counts each one."""
+    segs = [x for x in (p.strip() for p in line.split(";")) if x]
+    if len(segs) >= 2 and all(asm_like(x) for x in segs):
+        return len(segs)
+    return 1 if asm_like(line) else 0
+
+
 def check_text(text, src, dst):
     """Return sorted [(line_no, rule_id, description)]. src/dst are kept for the
     signature; every rule applies on every transition."""
@@ -185,10 +206,11 @@ def check_text(text, src, dst):
                 hits.append((block[0], "R1", f"{len(block)} instruction-like lines in one block"))
             block, run = [], []
             continue
-        if asm_like(line):
-            block.append(i)
-            run.append(i)
-            if len(run) == ASM_RUN:
+        weight = asm_weight(line)
+        if weight:
+            block += [i] * weight
+            run += [i] * weight
+            if len(run) >= ASM_RUN > len(run) - weight:
                 hits.append((run[0], "R1", f"{ASM_RUN}+ consecutive instruction-like lines"))
         else:
             run = []

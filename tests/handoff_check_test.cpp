@@ -100,6 +100,32 @@ private slots:
         QCOMPARE(HandoffCheck::forbiddenTraceFields("{\"symbol\": \"_f\", \"lr\": 1}\n").size(), 1);
         QCOMPARE(HandoffCheck::rawTraceObjects("{\"symbol\": \"_f\", \"x0\": 1}\n").size(), 1);
     }
+    // R1 must cover the common AArch64 and x86 instruction families, not a fixed sample.
+    void r1_data() {
+        QTest::addColumn<QString>("text"); QTest::addColumn<bool>("flagged");
+        auto block = [](const QStringList &l) { return l.join('\n') + '\n'; };
+        QTest::newRow("a64-float") << block({"fadd d0, d1, d2", "fsub d3, d4, d5", "fmul d6, d7, d8"}) << true;
+        QTest::newRow("a64-logic") << block({"bic x0, x1, x2", "mvn x3, x4", "neg x5, x6"}) << true;
+        QTest::newRow("a64-ext") << block({"sxtw x0, w1", "uxtb w2, w3", "clz x4, x5", "rev x6, x7"}) << true;
+        QTest::newRow("x86-shift") << block({"sar eax, 1", "not rbx", "xchg rax, rbx"}) << true;
+        QTest::newRow("x86-jcc") << block({"jbe 0x10", "cmp eax, ebx", "sete al", "cmovne rax, rbx"}) << true;
+        QTest::newRow("x86-bare") << block({"cdq", "syscall", "ret"}) << true;
+        QTest::newRow("x86-att") << block({"addq $8, %rsp", "movl $1, %eax", "xorl %eax, %eax"}) << true;
+        QTest::newRow("plain-b") << block({"b label", "b label2", "b .L3"}) << true;
+        QTest::newRow("semicolon-joined") << QString("mov x0, x1; ldr x2, [sp, #8]; bl _foo\n") << true;
+        QTest::newRow("semicolon-joined-x86") << QString("push rbp; mov rbp, rsp; sub rsp, 16\n") << true;
+        QTest::newRow("prose-short-words") << block({"We not rev neg the sar value", "Option b is chosen; not c", "bic and mvn are words, as is clz"}) << false;
+        QTest::newRow("prose-one-word-lines") << block({"not", "neg", "rev", "syscall is a word"}) << false;
+        QTest::newRow("prose-b-sentence") << QString("b is a variable; call foo; push the button\n") << false;
+        QTest::newRow("prose-numbers") << block({"neg 5", "not 3", "sar 2", "rev 1", "fadd 7"}) << false;
+    }
+    void r1() {
+        QFETCH(QString, text); QFETCH(bool, flagged);
+        for (bool strict : {false, true}) {
+            const auto hits = strict ? HandoffCheck::checkTextStrict(text) : HandoffCheck::checkText(text);
+            QVERIFY2(ids(hits, false).contains("R1") == flagged, qPrintable(describe(hits)));
+        }
+    }
     // C++ vs python on the same corpus, plus mechanical variants of it, so the port cannot drift.
     void parityWithPythonOracle() {
         const QString python = QStandardPaths::findExecutable("python3");

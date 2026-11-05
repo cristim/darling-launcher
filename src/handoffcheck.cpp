@@ -21,19 +21,40 @@ const QString IMM = R"((?:[#$]-?(?:0x[0-9a-f]+|[0-9]+)|-?0x[0-9a-f]+|-?[0-9]+))"
 const QString MEM = R"((?:(?:[a-z]+\s+ptr\s+)?(?:[a-z]s:)?\[[^\]\n]{1,40}\]!?|-?(?:0x[0-9a-f]+|[0-9]+)?\(%[a-z0-9]+[^)\n]{0,20}\)))";
 const QString LABEL = R"(\*?[A-Za-z_.$][\w.$@]*)";
 const QString OPS = "(?:" + REG + "|" + IMM + "|" + MEM + "|" + LABEL + ")";
+QStringList x86Mnemonics() {
+    QStringList all = QString("mov movq movl movzx movsx push pop call lea jmp je jne jz jnz ja jb jg jl jle jge "
+        "cmp test xor add sub and or imul shl shr inc dec "
+        "sar sal rol ror rcl rcr not neg xchg adc sbb mul div idiv movabs movsxd movzbl movzwl movsbl movswl movslq "
+        "cmpxchg xadd bt bts btr btc bsf bsr tzcnt lzcnt popcnt bswap pushq popq pushf popf callq jmpq "
+        "jae jna jnae jnb jnbe jng jnge jnl jnle jc jnc jo jno js jns jp jnp jcxz jecxz jrcxz loop").split(' ', Qt::SkipEmptyParts);
+    for (const QString &base : QString("add sub and or xor cmp test shl shr sar neg not inc dec imul lea mov adc sbb mul div idiv").split(' '))
+        for (const QChar suffix : QString("bwlq")) all << base + suffix;
+    for (const QString &cc : QString("e ne z nz a ae b be g ge l le s ns o no p np c nc").split(' ')) all << "set" + cc << "cmov" + cc;
+    return all;
+}
 QString mnemonics() {
     QStringList all = QString("mov movz movk movn ldr ldp ldur ldrb ldrh ldrsw str stp stur strb strh add adds sub subs "
         "adrp adr cmp cmn tst cbz cbnz tbz tbnz bl blr br csel cset orr and eor lsl lsr asr svc "
-        "mul madd ubfx sbfx ldar ldaxr stlr stlxr fmov casal cas ldxr stxr "
-        "mov movq movl movzx movsx push pop call lea jmp je jne jz jnz ja jb jg jl jle jge "
-        "cmp test xor add sub and or imul shl shr inc dec").split(' ', Qt::SkipEmptyParts);
+        "b mul madd ubfx sbfx ldar ldaxr stlr stlxr fmov casal cas ldxr stxr "
+        "fadd fsub fmul fdiv fsqrt fabs fneg fcmp fcvt fcvtzs fcvtzu scvtf ucvtf fmadd fmsub fmax fmin fcsel "
+        "bic bics orn eon mvn neg negs ngc adc adcs sbc sbcs sxtb sxth sxtw uxtb uxth uxtw clz cls rbit "
+        "rev rev16 rev32 sdiv udiv smull umull smulh umulh msub mneg ror extr bfi bfxil bfm ubfm sbfm ubfiz sbfiz "
+        "csinc csinv csneg cinc cinv cneg ccmp ccmn ldrsb ldrsh ldnp stnp ldtr sttr ldursw ldurb ldurh sturb sturh "
+        "ldpsw ldrsw ldaxp stxp stlxp ldarb ldarh stlrb stlrh ldxrb ldxrh stxrb stxrh ldadd ldclr ldeor ldset swp "
+        "ld1 st1 movi dup umov prfm msr mrs dmb dsb isb brk").split(' ', Qt::SkipEmptyParts);
+    all += x86Mnemonics();
     all.removeDuplicates();
     std::stable_sort(all.begin(), all.end(), [](const QString &a, const QString &b) { return a.size() > b.size(); });
     return all.join('|');
 }
-const QSet<QString> BRANCH{"bl", "blr", "br", "call", "jmp", "je", "jne", "jz", "jnz", "ja", "jb", "jg", "jl", "jle", "jge", "cbz", "cbnz"};
+const QSet<QString> BRANCH = [] {
+    QSet<QString> s;
+    for (const QString &m : QString("b bl blr br call callq jmp jmpq je jne jz jnz ja jb jg jl jle jge jae jbe jna jnae jnb jnbe jng jnge "
+        "jnl jnle jc jnc jo jno js jns jp jnp jcxz jecxz jrcxz loop cbz cbnz").split(' ')) s.insert(m);
+    return s;
+}();
 const RX ASM_LINE = rx(R"(^\s*(?:(?:0x)?[0-9a-f]{4,16}:\s*)?(?<m>)" + mnemonics() + R"(|b\.[a-z]{2})(?<ops>\s+)" + OPS + R"((?:\s*,\s*)" + OPS + R"(){0,3})\s*(?:(?:;|//|@).*)?$)", true);
-const RX BARE_LINE = rx(R"(^\s*(?:(?:0x)?[0-9a-f]{4,16}:\s*)?(?:ret|retq|leave|nop|cltq|cqto|hlt|int3)\s*(?:(?:;|//).*)?$)", true);
+const RX BARE_LINE = rx(R"(^\s*(?:(?:0x)?[0-9a-f]{4,16}:\s*)?(?:ret|retq|leave|nop|cltq|cqto|hlt|int3|cdq|cqo|cwde|cdqe|cltd|cwtl|cbtw|syscall|sysenter|ud2|eret|wfi|wfe)\s*(?:(?:;|//).*)?$)", true);
 const RX STRICT_OP = rx("^(?:" + REG + "|" + MEM + R"(|[#$]-?(?:0x[0-9a-f]+|[0-9]+)|-?0x[0-9a-f]+)$)", true);
 const RX DECIMAL = rx(R"(^-?[0-9]+\z)");
 struct LineRule { QString id, description; RX pattern; };
@@ -76,6 +97,14 @@ bool asmLike(const QString &line) {
         if (STRICT_OP.match(o).hasMatch() && !DECIMAL.match(o).hasMatch()) return true;
     }
     return false;
+}
+
+// Instruction lines this line stands for: a line of `;`-joined instructions counts each one.
+int asmWeight(const QString &line) {
+    QStringList segs;
+    for (const QString &part : line.split(';')) { const QString t = pyStrip(part); if (!t.isEmpty()) segs << t; }
+    if (segs.size() >= 2 && std::all_of(segs.begin(), segs.end(), [](const QString &x) { return asmLike(x); })) return int(segs.size());
+    return asmLike(line) ? 1 : 0;
 }
 
 // Mirrors json.JSONDecoder.raw_decode: one value from a position, Python's grammar (NaN/Infinity,
@@ -213,9 +242,9 @@ QList<HandoffCheck::Hit> HandoffCheck::checkText(const QString &input) {
             if (block.size() >= AsmBlock) hits << Hit{block[0], "R1", QString::number(block.size()) + " instruction-like lines in one block"};
             block.clear(); run.clear(); continue;
         }
-        if (asmLike(line)) {
-            block << i; run << i;
-            if (run.size() == AsmRun) hits << Hit{run[0], "R1", QString::number(AsmRun) + "+ consecutive instruction-like lines"};
+        if (const int weight = asmWeight(line)) {
+            for (int w = 0; w < weight; ++w) { block << i; run << i; }
+            if (run.size() >= AsmRun && run.size() - weight < AsmRun) hits << Hit{run[0], "R1", QString::number(AsmRun) + "+ consecutive instruction-like lines"};
         } else run.clear();
     }
 

@@ -1,0 +1,8 @@
+fadd d0, d1, d2
+bic x0, x1, x2
+mvn x3, x4
+neg x5, x6
+sxtw x7, w8
+uxtb w9, w10
+clz x11, x12
+rev x13, x14
