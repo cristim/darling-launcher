@@ -61,12 +61,12 @@ MNEM_X86 += [b + x for b in _X86_BASE for x in "bwlq"]
 MNEM_X86 += ["set" + c for c in _X86_CC] + ["cmov" + c for c in _X86_CC]
 MNEM_BARE = ("ret retq leave nop cltq cqto hlt int3 cdq cqo cwde cdqe cltd cwtl cbtw syscall sysenter ud2 eret wfi wfe").split()
 # Only these may take a bare label/address operand ("call _foo").
-MNEM_BRANCH = set("bl blr br bx blx beq bne blt bgt ble bge bhi bls bcs bcc bmi bpl call callq jmp jmpq je jne jz jnz ja jb jg jl jle jge "
+MNEM_BRANCH = set("bl blr br bx blx call callq jmp jmpq je jne jz jnz ja jb jg jl jle jge "
                   "jae jbe jna jnae jnb jnbe jng jnge jnl jnle jnc jno jns jnp jcxz jecxz jrcxz cbz cbnz".split())
 # Short or word-like: a bare label operand only counts if it looks like a symbol or address ("b main" is prose).
-MNEM_WEAK_BRANCH = set("b loop js jo jc jp".split())
-# A lone "#N" immediate is only instruction-shaped for these.
-MNEM_IMM_ONLY = set("svc brk hvc smc int push pushq".split())
+MNEM_WEAK_BRANCH = set("b loop js jo jc jp beq bne blt bgt ble bge bhi bls bcs bcc bmi bpl".split())
+# Word-like mnemonics: "fix #12" and "neg #14" are prose, so a lone #N or $N immediate does not make them instructions.
+MNEM_PROSE_IMM = set("fix rev rev16 rev32 neg negs not swp dup bic orn eon mvn ror cas cls clz sar sal".split())
 
 _REG = (r"%?(?:[xw](?:[0-9]|[12][0-9]|30)|sp|lr|fp|xzr|wzr|[qdsvb][0-9]{1,2}(?:\.\w+)?"
         r"|[re]?(?:ax|bx|cx|dx|si|di|bp|sp|ip)|[abcd][lh]|r(?:[89]|1[0-5])[dwb]?|xmm[0-9]+)")
@@ -80,12 +80,13 @@ ASM_LINE = re.compile(
     rf"^\s*(?:(?:0x)?[0-9a-f]{{4,16}}:\s*)?(?P<m>{_MNEM}|b\.[a-z]{{2}})(?P<ops>\s+{_OPS}(?:\s*,\s*{_OPS}){{0,3}})"
     r"\s*(?:(?:;|//|@).*)?$", re.I)
 BARE_LINE = re.compile(rf"^\s*(?:(?:0x)?[0-9a-f]{{4,16}}:\s*)?(?:{'|'.join(MNEM_BARE)})\s*(?:(?:;|//).*)?$", re.I)
-_STRICT_OP = re.compile(rf"^(?:{_REG}|{_MEM}|-?0x[0-9a-f]+)$", re.I)
+_REGMEM_OP = re.compile(rf"^(?:{_REG}|{_MEM}|-?0x[0-9a-f]+)$", re.I)
 _IMM_OP = re.compile(r"^[#$]-?(?:0x[0-9a-f]+|[0-9]+)$", re.I)
-_SYMBOL_OP = re.compile(r"[_.:]|^-?0x[0-9a-f]+$", re.I)
+_STRICT_OP = re.compile(rf"^(?:{_REG}|{_MEM}|[#$]-?(?:0x[0-9a-f]+|[0-9]+)|-?0x[0-9a-f]+)$", re.I)
+_SYMBOL_OP = re.compile(r"[_.:]|^[#$]?-?0x[0-9a-f]+$", re.I)
 
 # Ghidra decompiler names. Strong signatures are decisive alone; weak names (param_1, iVar1, short DAT_) are
-# ordinary identifiers and only count when two different kinds appear in the same text.
+# ordinary identifiers and only count when undefinedN and another weak kind share a block.
 _NB = r"(?<![A-Za-z0-9])"
 GHIDRA_STRONG = (rf"{_NB}(?:FUN|DAT|LAB|UNK)_[0-9A-Fa-f]{{8,}}\b|{_NB}S?CONCAT\d{{2}}\(|{_NB}SUB\d{{2}}\("
                  rf"|{_NB}[SZ]EXT\d{{2,3}}\b|{_NB}in_stack_[0-9A-Fa-f]{{4,}}\b|{_NB}(?:unaff|extraout)_[A-Za-z]\w*"
@@ -95,8 +96,27 @@ GHIDRA_WEAK = [re.compile(x) for x in (
     rf"{_NB}(?:FUN|DAT|LAB|UNK)_[0-9A-Fa-f]{{4,7}}\b", rf"{_NB}undefined[1-8]\b", rf"{_NB}in_[A-Z]{{2,5}}[0-9]?\b")]
 
 
+GHIDRA_UNDEFINED = 4  # index of the undefinedN pattern in GHIDRA_WEAK
+
+
 def ghidra_weak_kinds(line):
     return {i for i, rx in enumerate(GHIDRA_WEAK) if rx.search(line)}
+
+
+def corroborated_ghidra_lines(lines):
+    """1-based lines with a weak Ghidra name, in blocks (runs of non-blank lines) that also hold undefinedN."""
+    out, block, kinds = [], [], set()
+    for i, line in enumerate(lines + [""], 1):
+        if line.strip():
+            k = ghidra_weak_kinds(line)
+            if k:
+                block.append(i)
+                kinds |= k
+            continue
+        if GHIDRA_UNDEFINED in kinds and len(kinds) >= 2:
+            out += block
+        block, kinds = [], set()
+    return out
 
 
 # ---- line-level rule tables: (rule id, description, regex) ------------------
@@ -196,11 +216,10 @@ def asm_like(line):
     if mnem in MNEM_BRANCH:
         return True
     if mnem in MNEM_WEAK_BRANCH:
-        return any(_STRICT_OP.match(o) or _SYMBOL_OP.search(o) for o in ops)
-    # Without a register, memory operand or hex address, "add 5" and "fix #12" are prose.
-    if any(_STRICT_OP.match(o) and not re.fullmatch(r"-?[0-9]+", o) for o in ops):
-        return True
-    return mnem in MNEM_IMM_ONLY and any(_IMM_OP.match(o) for o in ops)
+        return any(_REGMEM_OP.match(o) or _SYMBOL_OP.search(o) for o in ops)
+    # Without a register, memory operand, hex address or immediate, "add 5" is prose.
+    prose_imm = mnem in MNEM_PROSE_IMM
+    return any(_STRICT_OP.match(o) and not re.fullmatch(r"-?[0-9]+", o) and not (prose_imm and _IMM_OP.match(o)) for o in ops)
 
 
 def asm_weight(line):
@@ -225,9 +244,8 @@ def check_text(text, src, dst):
                 hits.append((i, rid, desc))
         if has_interface and (OBJC_INTERFACE.match(line) or CLASSDUMP_IVAR.search(line)):
             hits.append((i, "R3", "class-dump style @interface with ivar offsets"))
-    weak = [ghidra_weak_kinds(line) for line in lines]
-    if len(set().union(*weak)) >= 2:
-        hits.extend((i, "R5", LINE_RULES[3][1]) for i, kinds in enumerate(weak, 1) if kinds)
+    for i in corroborated_ghidra_lines(lines):
+        hits.append((i, "R5", LINE_RULES[3][1]))
     for ln in trace_hits(text):
         hits.append((ln, "R7", "raw trace (T0) JSON object" if ln else "too many JSON candidates to scan"))
 

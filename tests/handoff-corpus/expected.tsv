@@ -48,6 +48,10 @@ r5-near-ghidra-weak-3.txt	-	-
 r5-near-ghidra-weak-4.txt	-	-
 r5-near-ghidra-weak-5.txt	-	-
 r5-near-ghidra-weak-6.txt	-	-
+r5-near-ghidra-weak-mix.txt	-	-
+r5-near-ghidra-blocks.txt	-	-
+r1-near-arm32-words.txt	-	-
+r1-armv7-imm.txt	R1	-
 r5-near-ghidra.txt	-	-
 r5-near.txt	-	-
 r6-0.txt	R6	-

@@ -1,0 +1,4 @@
+def f(param_1):
+    local_1 = param_1
+    iVar1 = local_1
+The spec names param_1 and envVar1.

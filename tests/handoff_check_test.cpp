@@ -112,7 +112,10 @@ private slots:
         QTest::newRow("x86-bare") << block({"cdq", "syscall", "ret"}) << true;
         QTest::newRow("x86-att") << block({"addq $8, %rsp", "movl $1, %eax", "xorl %eax, %eax"}) << true;
         QTest::newRow("plain-b") << block({"b .L3", "b _foo", "b 0x1000"}) << true;
-        QTest::newRow("armv7-branches") << block({"bx lr", "beq label", "blx r3", "bne _loop"}) << true;
+        QTest::newRow("armv7-branches") << block({"bx lr", "beq _label", "blx r3", "bne _loop"}) << true;
+        QTest::newRow("armv7-imm") << block({"mov r0, #1", "mov r1, #2", "cmp r0, #0"}) << true;
+        QTest::newRow("att-imm") << block({"movl $1, 4", "b #0x100", "movl $2, 8"}) << true;
+        QTest::newRow("prose-arm32-branches") << block({"bne tomorrow", "beq today", "bge soon", "blt later"}) << false;
         QTest::newRow("sse") << block({"movss xmm0, xmm1", "movaps xmm2, xmm3", "pxor xmm4, xmm4"}) << true;
         QTest::newRow("semicolon-plus-prose") << QString("mov x0, x1; ldr x2, [sp, #8]; then we return; bl _foo\n") << true;
         QTest::newRow("pipe-joined") << QString("mov x0, x1 | ldr x2, [sp, #8] | bl _foo\n") << true;
@@ -151,9 +154,10 @@ private slots:
         QTest::newRow("unaff") << QString("x = unaff_RBX;") << true;
         QTest::newRow("extraout") << QString("x = extraout_RAX;") << true;
         QTest::newRow("local_res") << QString("x = local_res8;") << true;
-        QTest::newRow("two-weak-same-line") << QString("uVar1 = param_1 + 4;") << true;
-        QTest::newRow("two-weak-apart") << QString("iVar1 = foo();\n\nprose here\n*(int *)(local_28 + 8) = 0;\n") << true;
-        QTest::newRow("pppuVar") << QString("pppuVar1 = in_RDI;") << true;
+        QTest::newRow("undefined-plus-weak-block") << QString("undefined4 uVar1;\nuVar1 = param_1 + 4;") << true;
+        QTest::newRow("undefined-weak-different-blocks") << QString("undefined4 x;\n\nuVar1 = param_1 + 4;") << false;
+        QTest::newRow("python-weak-trio") << QString("def f(param_1):\n    local_1 = param_1\n    iVar1 = local_1\n") << false;
+        QTest::newRow("spec-weak-pair") << QString("The spec names param_1 and envVar1 as inputs.\n") << false;
         QTest::newRow("undefined8-local") << QString("undefined8 foo(void)\nlocal_28 = 0;") << true;
         for (const char *t : {"envVar1", "newVar2", "param_1", "param_2", "local_cafe", "local_1", "DAT_1234", "undefined2", "in_RDI"})
             QTest::newRow(qPrintable(QString("weak-alone-") + t)) << QString("see %1 here").arg(t) << false;
@@ -168,7 +172,7 @@ private slots:
         }
     }
     void exposureMarkersGhidra() {
-        for (const char *t : {"FUN_00101a2b called", "uVar2 = param_1;", "x = _DAT_100008000;", "CONCAT44(a, b)", "undefined8 f()\nlocal_28 = 0;"})
+        for (const char *t : {"FUN_00101a2b called", "x = _DAT_100008000;", "CONCAT44(a, b)", "undefined8 f()\nlocal_28 = 0;"})
             QVERIFY2(!HandoffCheck::exposureMarkers(t).isEmpty(), t);
         QVERIFY(HandoffCheck::exposureMarkers("The function is undefined; local variable param.\n").isEmpty());
         QVERIFY(HandoffCheck::exposureMarkers("iVar1 = foo();\n").isEmpty());
