@@ -78,6 +78,22 @@ private slots:
             QVERIFY2(other.importTrace(temp->path() + "/t.jsonl").contains("line 2"), line.constData());
         }
     }
+    void importTraceRejectsDuplicateKeys() {
+        for (const QByteArray &line : {QByteArray("{\"symbol\": \"s\", \"count\": \"0x7ffd12345678 backtrace stuff\", \"count\": 1}"),
+                                       QByteArray("{\"symbol\": \"s\", \"regs\": {\"x0\": \"zzz\", \"x0\": 1}}"),
+                                       QByteArray("{\"symbol\": \"s\", \"cou\\u006et\": \"payload\", \"count\": 1}"),
+                                       QByteArray("{\"symbol\": \"s\", \"regs\": [{\"x0\": 1, \"x0\": 2}]}")}) {
+            const auto ws = make(); put(temp->path() + "/dup.jsonl", "{\"symbol\": \"_ok\", \"count\": 2}\n" + line + "\n");
+            const QString error = ws.importTrace(temp->path() + "/dup.jsonl");
+            QVERIFY2(error.contains("line 2") && error.contains("repeats the key"), line.constData());
+            QVERIFY(!QFileInfo::exists(ws.stageDir("research") + "/trace/T0.jsonl"));
+        }
+    }
+    void importTraceKeepsNormalTraces() {
+        const auto ws = make();
+        put(temp->path() + "/ok.jsonl", "{\"symbol\": \"_a\", \"regs\": {\"rdi\": 1}, \"fp_regs\": [\"0x3ff0000000000000\"]}\n{\"symbol\": \"_b\", \"count\": 1}\n");
+        QCOMPARE(ws.importTrace(temp->path() + "/ok.jsonl"), QString());
+    }
     void deliverChecksHashAndNeverFollowsLinks() {
         const auto ws = make(); const auto r = release(ws, "facts\n");
         QCOMPARE(ws.deliver(r, "spec"), QString());
