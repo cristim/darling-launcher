@@ -38,12 +38,16 @@ add("r4-near-sep", "0x00007ffe00000001\ntext\n0x00007ffe00000002\n" * 3)
 add("r4-near-sha", "sha " + "a" * 64 + "\nflag 0xff 0x10\n")
 for i, t in enumerate(("calls sub_1A2B", "goto loc_401000", "x = LODWORD(y)", "v12 = a1", "__int64 f", "_QWORD *p")):
     add(f"r5-{i}", t)
-for i, t in enumerate(("calls FUN_00101a2b", "uVar1 = param_1 + 4;", "iVar1 = foo();\n*(int *)(local_28 + 8) = 0;", "x = PTR_FUN_00401000;",
+for i, t in enumerate(("calls FUN_00101a2b", "undefined4 uVar1;\nuVar1 = param_1 + 4;", "undefined8 iVar1;\n*(int *)(local_28 + 8) = 0;", "x = PTR_FUN_00401000;",
                        "x = _DAT_100008000;", "y = CONCAT44(a, b);", "undefined8 foo(void)\nlocal_28 = 0;", "puVar3 = LAB_00101000;",
-                       "pppuVar1 = in_RDI;", "x = in_stack_ffffffe8; y = unaff_RBX; z = extraout_RAX;", "y = SUB84(a, 0); w = ZEXT416(a);")):
+                       "undefined8 pppuVar1 = in_RDI;", "x = in_stack_ffffffe8; y = unaff_RBX; z = extraout_RAX;", "y = SUB84(a, 0); w = ZEXT416(a);")):
     add(f"r5-ghidra-{i}", t)
 for i, t in enumerate(("envVar1", "newVar2", "param_1", "local_cafe", "DAT_1234", "undefined2", "in_RDI")):
     add(f"r5-near-ghidra-weak-{i}", f"see {t} here\n")
+add("r5-near-ghidra-weak-mix", "def f(param_1):\n    local_1 = param_1\n    iVar1 = local_1\nThe spec names param_1 and envVar1.\n")
+add("r5-near-ghidra-blocks", "undefined4 x;\n\nuVar1 = param_1 + 4;\n")
+add("r1-near-arm32-words", "bne tomorrow\nbeq today\nbge soon\nblt later\n")
+add("r1-armv7-imm", "mov r0, #1\nmov r1, #2\ncmp r0, #0\nmovl $1, 4\nb #0x100\n")
 add("r5-near-ghidra", "The function is undefined, the local variable param is unnamed; a data file DAT holds it.\nlocal_name and param_x and funny_ones\n")
 add("r5-near", "the sub_system loc is vague; v == 3; version = 2\n")
 for i, t in enumerate(("/System/Library/Frameworks/Foo.framework/Foo", "/Volumes/MacintoshHD/System/x",

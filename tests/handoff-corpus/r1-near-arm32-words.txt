@@ -1,0 +1,4 @@
+bne tomorrow
+beq today
+bge soon
+blt later

@@ -1,0 +1,3 @@
+undefined4 x;
+
+uVar1 = param_1 + 4;

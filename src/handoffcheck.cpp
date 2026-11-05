@@ -51,21 +51,22 @@ QString mnemonics() {
     return all.join('|');
 }
 QSet<QString> wordSet(const char *words) { const QStringList l = QString(words).split(' '); return QSet<QString>(l.begin(), l.end()); }
-const QSet<QString> BRANCH = wordSet("bl blr br bx blx beq bne blt bgt ble bge bhi bls bcs bcc bmi bpl call callq jmp jmpq je jne jz jnz ja jb jg jl jle jge "
+const QSet<QString> BRANCH = wordSet("bl blr br bx blx call callq jmp jmpq je jne jz jnz ja jb jg jl jle jge "
     "jae jbe jna jnae jnb jnbe jng jnge jnl jnle jnc jno jns jnp jcxz jecxz jrcxz cbz cbnz");
 // Short or word-like: a bare label operand only counts if it looks like a symbol or address ("b main" is prose).
-const QSet<QString> WEAK_BRANCH = wordSet("b loop js jo jc jp");
-// A lone "#N" immediate is only instruction-shaped for these.
-const QSet<QString> IMM_ONLY = wordSet("svc brk hvc smc int push pushq");
+const QSet<QString> WEAK_BRANCH = wordSet("b loop js jo jc jp beq bne blt bgt ble bge bhi bls bcs bcc bmi bpl");
+// Word-like mnemonics: "fix #12" and "neg #14" are prose, so a lone #N or $N immediate does not make them instructions.
+const QSet<QString> PROSE_IMM = wordSet("fix rev rev16 rev32 neg negs not swp dup bic orn eon mvn ror cas cls clz sar sal");
 const RX ASM_LINE = rx(R"(^\s*(?:(?:0x)?[0-9a-f]{4,16}:\s*)?(?<m>)" + mnemonics() + R"(|b\.[a-z]{2})(?<ops>\s+)" + OPS + R"((?:\s*,\s*)" + OPS + R"(){0,3})\s*(?:(?:;|//|@).*)?$)", true);
 const RX BARE_LINE = rx(R"(^\s*(?:(?:0x)?[0-9a-f]{4,16}:\s*)?(?:ret|retq|leave|nop|cltq|cqto|hlt|int3|cdq|cqo|cwde|cdqe|cltd|cwtl|cbtw|syscall|sysenter|ud2|eret|wfi|wfe)\s*(?:(?:;|//).*)?$)", true);
-const RX STRICT_OP = rx("^(?:" + REG + "|" + MEM + R"(|-?0x[0-9a-f]+)$)", true);
+const RX REGMEM_OP = rx("^(?:" + REG + "|" + MEM + R"(|-?0x[0-9a-f]+)$)", true);
+const RX STRICT_OP = rx("^(?:" + REG + "|" + MEM + R"(|[#$]-?(?:0x[0-9a-f]+|[0-9]+)|-?0x[0-9a-f]+)$)", true);
 const RX IMM_OP = rx(R"(^[#$]-?(?:0x[0-9a-f]+|[0-9]+)$)", true);
-const RX SYMBOL_OP = rx(R"([_.:]|^-?0x[0-9a-f]+$)", true);
+const RX SYMBOL_OP = rx(R"([_.:]|^[#$]?-?0x[0-9a-f]+$)", true);
 const RX DECIMAL = rx(R"(^-?[0-9]+\z)");
 struct LineRule { QString id, description; RX pattern; };
 // Ghidra decompiler names. Strong signatures are decisive alone; weak names (param_1, iVar1, short DAT_)
-// are ordinary identifiers and only count when two different kinds appear in the same text.
+// are ordinary identifiers and only count when undefinedN and another weak kind share a block.
 const QString NB = R"((?<![A-Za-z0-9]))";
 const QString GHIDRA_STRONG = NB + R"((?:FUN|DAT|LAB|UNK)_[0-9A-Fa-f]{8,}\b|)" + NB + R"(S?CONCAT\d{2}\(|)" + NB + R"(SUB\d{2}\(|)"
     + NB + R"([SZ]EXT\d{2,3}\b|)" + NB + R"(in_stack_[0-9A-Fa-f]{4,}\b|)" + NB + R"((?:unaff|extraout)_[A-Za-z]\w*|)" + NB + R"(local_res[0-9A-Fa-f]+\b)";
@@ -76,12 +77,6 @@ QSet<int> ghidraWeakKinds(const QString &line) {
     QSet<int> kinds;
     for (int k = 0; k < GHIDRA_WEAK.size(); ++k) if (GHIDRA_WEAK[k].match(line).hasMatch()) kinds << k;
     return kinds;
-}
-// Lines carrying a weak Ghidra name, but only when the text holds two different kinds of them.
-QList<int> corroboratedGhidraLines(const QStringList &lines) {
-    QList<int> hitLines; QSet<int> all;
-    for (int i = 0; i < lines.size(); ++i) { const QSet<int> k = ghidraWeakKinds(lines[i]); if (!k.isEmpty()) { hitLines << i; all.unite(k); } }
-    return all.size() >= 2 ? hitLines : QList<int>();
 }
 const QList<LineRule> LINE_RULES{
     {"R2", "address+offset notation", rx(R"(<\+\d+>|<[\w.$]+\+(?:0x)" + H + R"(+|\d+)>|^\s*(?:=>\s*)?0x)" + H + R"({8,16}\s*:|\b[A-Za-z_]\w*\s*\+\s*0x)" + H + R"(+\b|\b_[A-Za-z]\w*\+\d+\b)", true)},
@@ -105,6 +100,22 @@ QString pyStrip(const QString &s, const std::function<bool(QChar)> &drop = pySpa
     while (e > b && drop(s[e - 1])) --e;
     return s.mid(b, e - b);
 }
+// Lines with a weak Ghidra name, in blocks (runs of non-blank lines) that also hold undefinedN.
+QList<int> corroboratedGhidraLines(const QStringList &lines) {
+    constexpr int Undefined = 4;  // index of the undefinedN pattern in GHIDRA_WEAK
+    QList<int> out, block; QSet<int> kinds;
+    for (int i = 0; i <= lines.size(); ++i) {
+        const QString line = i < lines.size() ? lines[i] : QString();
+        if (!pyStrip(line).isEmpty()) {
+            const QSet<int> k = ghidraWeakKinds(line);
+            if (!k.isEmpty()) { block << i; kinds.unite(k); }
+            continue;
+        }
+        if (kinds.contains(Undefined) && kinds.size() >= 2) out += block;
+        block.clear(); kinds.clear();
+    }
+    return out;
+}
 QString stripMd(const QString &line) {
     QString s = line; const auto m = MD_PREFIX.match(s);
     if (m.hasMatch()) s.remove(0, m.capturedLength());
@@ -119,16 +130,15 @@ bool asmLike(const QString &line) {
     if (BRANCH.contains(mnem)) return true;
     const QStringList ops = m.captured("ops").split(',');
     if (WEAK_BRANCH.contains(mnem)) {
-        for (const QString &op : ops) { const QString o = pyStrip(op); if (STRICT_OP.match(o).hasMatch() || SYMBOL_OP.match(o).hasMatch()) return true; }
+        for (const QString &op : ops) { const QString o = pyStrip(op); if (REGMEM_OP.match(o).hasMatch() || SYMBOL_OP.match(o).hasMatch()) return true; }
         return false;
     }
-    // Without a register, memory operand or hex address, "add 5" and "fix #12" are prose.
+    // Without a register, memory operand, hex address or immediate, "add 5" is prose.
+    const bool proseImm = PROSE_IMM.contains(mnem);
     for (const QString &op : ops) {
         const QString o = pyStrip(op);
-        if (STRICT_OP.match(o).hasMatch() && !DECIMAL.match(o).hasMatch()) return true;
+        if (STRICT_OP.match(o).hasMatch() && !DECIMAL.match(o).hasMatch() && !(proseImm && IMM_OP.match(o).hasMatch())) return true;
     }
-    if (IMM_ONLY.contains(mnem))
-        for (const QString &op : ops) if (IMM_OP.match(pyStrip(op)).hasMatch()) return true;
     return false;
 }
 
