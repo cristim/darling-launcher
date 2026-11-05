@@ -73,6 +73,13 @@ md-prefix-5.txt	R1	-
 unicode-nbsp.txt	R1	-
 unicode-fullwidth.txt	R1	-
 r1-atomics.txt	R1	-
+r1-a64-families.txt	R1	-
+r1-x86-families.txt	R1	-
+r1-x86-att-suffix.txt	R1	-
+r1-plain-b.txt	R1	-
+r1-semicolon-joined.txt	R1	-
+r1-near-semicolon-prose.txt	-	-
+r1-near-short-words.txt	-	-
 md-r5.txt	R5	-
 md-r6.txt	R6	-
 case-r6.txt	R6	-

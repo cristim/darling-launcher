@@ -1,0 +1,5 @@
+We not rev neg the sar value
+bic and mvn are words, as is clz
+not
+neg
+syscall is a word
