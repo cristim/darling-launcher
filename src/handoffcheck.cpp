@@ -58,11 +58,13 @@ const RX BARE_LINE = rx(R"(^\s*(?:(?:0x)?[0-9a-f]{4,16}:\s*)?(?:ret|retq|leave|n
 const RX STRICT_OP = rx("^(?:" + REG + "|" + MEM + R"(|[#$]-?(?:0x[0-9a-f]+|[0-9]+)|-?0x[0-9a-f]+)$)", true);
 const RX DECIMAL = rx(R"(^-?[0-9]+\z)");
 struct LineRule { QString id, description; RX pattern; };
+// Ghidra decompiler names: FUN_/DAT_/LAB_/UNK_ addresses, param_N, local_N, xVarN, CONCATnn, undefinedN.
+const QString GHIDRA = R"(\b(?:FUN|DAT|LAB|UNK)_[0-9A-Fa-f]{4,}\b|\b(?:param_\d+|local_[0-9A-Fa-f]+)\b|\b[a-z]{1,3}Var\d+\b|\bCONCAT\d{2}\b|\bundefined[1-8]\b)";
 const QList<LineRule> LINE_RULES{
     {"R2", "address+offset notation", rx(R"(<\+\d+>|<[\w.$]+\+(?:0x)" + H + R"(+|\d+)>|^\s*(?:=>\s*)?0x)" + H + R"({8,16}\s*:|\b[A-Za-z_]\w*\s*\+\s*0x)" + H + R"(+\b|\b_[A-Za-z]\w*\+\d+\b)", true)},
     {"R3", "disassembler/dump tool output signature", rx(R"(Contents of \(__\w+,__\w+\)|\(__[A-Z]+,__\w+\)\s+section|file format\s+(?:mach-?o|elf\d*)|^\s*cmd\s+LC_\w+|^\s*Idx\s+Name\s+Size\s+VMA|^\s*(?:rebase|lazy bind|weak bind|bind|export) information)", true)},
     {"R4", "hex-dump line", rx(R"(^\s*(?:0x)?)" + H + R"({4,16}:?\s+(?:)" + H + R"({2}\s+){8,}|^\s*)" + H + R"({6,16}:\s+(?:)" + H + R"({4}\s+){4,})")},
-    {"R5", "decompiler pseudocode marker", rx(R"(\b(?:sub|loc)_[0-9A-Fa-f]+\b|\b(?:LOBYTE|HIBYTE|LOWORD|HIWORD|LODWORD|HIDWORD)\s*\(|(?<![\w.])v\d+\s*=(?!=)|\b__int(?:8|16|32|64)\b|\b_(?:QWORD|DWORD|WORD|BYTE)\b|\b__(?:fastcall|cdecl|stdcall|usercall)\b)")},
+    {"R5", "decompiler pseudocode marker", rx(R"(\b(?:sub|loc)_[0-9A-Fa-f]+\b|\b(?:LOBYTE|HIBYTE|LOWORD|HIWORD|LODWORD|HIDWORD)\s*\(|(?<![\w.])v\d+\s*=(?!=)|\b__int(?:8|16|32|64)\b|\b_(?:QWORD|DWORD|WORD|BYTE)\b|\b__(?:fastcall|cdecl|stdcall|usercall)\b|)" + GHIDRA)},
     {"R6", "path into Apple system image, install volume or shared cache", rx(R"(/System/(?:Library|Volumes|Cryptexes|Applications)|/Library/Apple\b|/Volumes/[^/\s]+/(?:System|Library|usr|Applications)\b|dyld_shared_cache|\.dyld\b|/usr/lib/system/\S*\.dylib)", true)},
     {"R8", "forbidden trace field as key", rx(R"(["'](?:lr|pc|backtrace|image_offset|return_address)["']\s*:|(?<![\w.])(?:lr|pc)\s*[:=]\s*0x[0-9a-f]+|(?<![\w.])(?:backtrace|image_offset|return_address)\s*[:=]\s*(?:0x[0-9a-f]+|\[|\{|\d))", true)},
 };
@@ -327,7 +329,7 @@ QList<HandoffCheck::Hit> HandoffCheck::checkTextStrict(const QString &input) {
     return sortedUnique(hits);
 }
 QList<HandoffCheck::Hit> HandoffCheck::exposureMarkers(const QString &input) {
-    static const RX markers = rx(R"(\b(?:sub|loc)_[0-9A-Fa-f]+\b|\b(?:LOBYTE|HIBYTE|LOWORD|HIWORD|LODWORD|HIDWORD)\s*\()");
+    static const RX markers = rx(R"(\b(?:sub|loc)_[0-9A-Fa-f]+\b|\b(?:LOBYTE|HIBYTE|LOWORD|HIWORD|LODWORD|HIDWORD)\s*\(|)" + GHIDRA);
     const QStringList lines = foldLookalikes(normalize(input)).split('\n');
     QList<Hit> hits;
     for (int i = 0; i < lines.size(); ++i) {

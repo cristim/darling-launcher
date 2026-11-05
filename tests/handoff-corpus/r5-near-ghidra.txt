@@ -1,0 +1,2 @@
+The function is undefined, the local variable param is unnamed; a data file DAT holds it.
+local_name and param_x and funny_ones
