@@ -10,6 +10,7 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
+#include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
@@ -105,57 +106,85 @@ QString scanFile(const QString &path) {
 }
 }
 namespace {
+const QByteArray OversizedTree = "oversized";
 QByteArray fileHash(const QString &path) {
     QFile f(path);
-    if (!QFileInfo(path).isFile() || !f.open(QIODevice::ReadOnly)) return QFileInfo::exists(path) ? QByteArray("present") : QByteArray();
-    return QCryptographicHash::hash(f.read(16 * 1024 * 1024), QCryptographicHash::Sha256);
+    if (!QFileInfo(path).isFile() || !f.open(QIODevice::ReadOnly)) {
+        if (QFileInfo(path).isSymLink()) return "link:" + QFileInfo(path).symLinkTarget().toUtf8();  // dangling or non-file target
+        return QFileInfo::exists(path) ? QByteArray("present") : QByteArray();
+    }
+    constexpr qint64 MaxFileBytes = 16 * 1024 * 1024;
+    const QByteArray body = f.read(MaxFileBytes + 1);
+    return body.size() > MaxFileBytes ? OversizedTree : QCryptographicHash::hash(body, QCryptographicHash::Sha256);
 }
 // Directories an agent CLI loads instructions, skills or hooks from: hash every entry's relative path, permissions and contents, following directory symlinks (each real directory once) and recording symlink targets, so an added, removed, retargeted, chmod-ed or edited entry changes the result. A tree too large or too deep to hash fully hashes to a fixed marker and is reported by AutoLoadedFiles::oversized(), so a run is refused up front rather than left unwatched.
 namespace {
 constexpr int MaxTreeEntries = 16384, MaxTreeDepth = 16;
-const QByteArray OversizedTree = "oversized";
-bool hashDir(const QString &dirPath, const QString &rel, int depth, QSet<QString> &seen, int &count, QCryptographicHash &all) {
+// Every field is a type tag plus a length, so no two different trees feed the hash the same bytes.
+void frame(QCryptographicHash &h, char tag, const QByteArray &data) { h.addData(QByteArray(1, tag)); h.addData(QByteArray::number(data.size()) + ":"); h.addData(data); }
+bool hashDir(const QString &dirPath, const QString &rel, int depth, bool skipSystem, QSet<QString> &seen, int &count, QCryptographicHash &all) {
     if (depth > MaxTreeDepth) return false;
-    seen.insert(QFileInfo(dirPath).canonicalFilePath());
+    const QFileInfo self(dirPath);
+    if (!self.isReadable() || !self.isExecutable()) return false;  // cannot be listed, so cannot be watched
+    seen.insert(self.canonicalFilePath());
     const QFileInfoList entries = QDir(dirPath).entryInfoList(QDir::AllEntries | QDir::System | QDir::Hidden | QDir::NoDotAndDotDot, QDir::Name);
     for (const QFileInfo &info : entries) {
-        if (info.fileName() == ".system") continue;  // codex rewrites its bundled skills there itself
+        if (skipSystem && rel.isEmpty() && info.fileName() == ".system") continue;  // codex rewrites its bundled skills there itself
         if (++count > MaxTreeEntries) return false;
         const QString name = rel.isEmpty() ? info.fileName() : rel + "/" + info.fileName();
-        all.addData(name.toUtf8());
-        all.addData(QByteArray::number(int(info.permissions())));
-        if (info.isSymLink()) { all.addData("L"); all.addData(info.symLinkTarget().toUtf8()); }
+        frame(all, 'N', name.toUtf8());
+        frame(all, 'P', QByteArray::number(int(info.permissions())));
+        if (info.isSymLink()) frame(all, 'L', info.symLinkTarget().toUtf8());
         if (info.isDir()) {
-            if (seen.contains(info.canonicalFilePath())) { all.addData("again"); continue; }  // also ends link loops
-            if (!hashDir(info.absoluteFilePath(), name, depth + 1, seen, count, all)) return false;
-        } else if (info.isFile()) all.addData(fileHash(info.absoluteFilePath()));
+            if (seen.contains(info.canonicalFilePath())) { frame(all, 'A', {}); continue; }  // also ends link loops
+            frame(all, '{', {});
+            if (!hashDir(info.absoluteFilePath(), name, depth + 1, false, seen, count, all)) return false;
+            frame(all, '}', {});
+        } else if (info.isFile()) {
+            const QByteArray h = fileHash(info.absoluteFilePath());
+            if (h == OversizedTree) return false;
+            frame(all, 'F', h);
+        }
     }
     return true;
 }
 QByteArray treeHash(const QString &root) {
-    if (!QFileInfo(root).isDir()) return QFileInfo::exists(root) ? QByteArray("present") : QByteArray();
+    if (!QFileInfo(root).isDir()) {
+        if (QFileInfo(root).isSymLink()) return "link:" + QFileInfo(root).symLinkTarget().toUtf8();
+        return QFileInfo::exists(root) ? QByteArray("present") : QByteArray();
+    }
     QCryptographicHash all(QCryptographicHash::Sha256);
     QSet<QString> seen;
     int count = 0;
-    return hashDir(root, {}, 0, seen, count, all) ? all.result() : OversizedTree;
+    const QString codexSkills = QProcessEnvironment::systemEnvironment().value("CODEX_HOME", QDir::homePath() + "/.codex") + "/skills";
+    const bool skipSystem = QFileInfo(root).canonicalFilePath() == QFileInfo(codexSkills).canonicalFilePath();
+    return hashDir(root, {}, 0, skipSystem, seen, count, all) ? all.result() : OversizedTree;
 }
 }
 QByteArray pathHash(const QString &path) { return QFileInfo(path).isDir() ? treeHash(path) : fileHash(path); }
 }
 AutoLoadedFiles AutoLoadedFiles::snapshot(const QString &runRoot) {
     AutoLoadedFiles a;
-    static const QStringList names{"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "AGENTS.override.md", ".claude/settings.json", ".claude/settings.local.json", ".mcp.json", "opencode.json", "opencode.jsonc", ".opencode/opencode.json"};
-    static const QStringList trees{".claude/skills", ".claude/agents", ".claude/commands", ".claude/hooks", ".claude/rules", ".claude/output-styles", ".opencode/agent", ".opencode/agents", ".opencode/command", ".opencode/commands", ".opencode/plugin", ".opencode/plugins", ".opencode/tool", ".opencode/tools", ".opencode/mode", ".opencode/modes", ".opencode/skill", ".opencode/skills", ".codex/prompts", ".codex/skills"};
+    static const QStringList names{"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "AGENTS.override.md", ".claude/settings.json", ".claude/settings.local.json", ".mcp.json", "opencode.json", "opencode.jsonc", ".opencode/opencode.json", ".opencode/opencode.jsonc", ".codex/config.toml"};
+    static const QStringList trees{".claude/skills", ".claude/agents", ".claude/commands", ".claude/hooks", ".claude/rules", ".claude/output-styles", ".opencode/agent", ".opencode/agents", ".opencode/command", ".opencode/commands", ".opencode/plugin", ".opencode/plugins", ".opencode/tool", ".opencode/tools", ".opencode/mode", ".opencode/modes", ".opencode/skill", ".opencode/skills", ".codex/prompts", ".codex/skills", ".agents/skills"};
     for (QDir dir(QFileInfo(runRoot).absolutePath());; ) {
         for (const QString &n : names) a.hashes.insert(dir.filePath(n), pathHash(dir.filePath(n)));
         for (const QString &n : trees) a.hashes.insert(dir.filePath(n), pathHash(dir.filePath(n)));
         if (!dir.cdUp()) break;
     }
     const QString home = QDir::homePath();
+    // Config roots as the agents see them: CODEX_HOME, XDG_CONFIG_HOME and OPENCODE_CONFIG_DIR override the defaults.
+    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QString codexHome = env.value("CODEX_HOME", home + "/.codex"), xdg = env.value("XDG_CONFIG_HOME", home + "/.config");
+    for (const QString &root : {codexHome, xdg + "/opencode", env.value("OPENCODE_CONFIG_DIR")}) {
+        if (root.isEmpty()) continue;
+        for (const QString &n : {"/config.toml", "/AGENTS.md", "/AGENTS.override.md", "/opencode.json", "/opencode.jsonc"}) a.hashes.insert(root + n, pathHash(root + n));
+        for (const QString &n : {"/prompts", "/skills", "/agent", "/agents", "/command", "/commands", "/plugin", "/plugins", "/tool", "/tools", "/mode", "/modes", "/skill"}) a.hashes.insert(root + n, pathHash(root + n));
+    }
     for (const QString &n : {"/.claude/CLAUDE.md", "/.claude/settings.json", "/.config/opencode/opencode.json", "/.config/opencode/opencode.jsonc", "/.config/opencode/AGENTS.md", "/.codex/config.toml", "/.codex/AGENTS.md", "/.codex/AGENTS.override.md"})
         a.hashes.insert(home + n, pathHash(home + n));
     // Not ~/.claude.json or plugin state: the CLIs rewrite those themselves during a run.
-    for (const QString &n : {"/.claude/skills", "/.claude/agents", "/.claude/commands", "/.claude/hooks", "/.claude/rules", "/.claude/output-styles", "/.config/opencode/agent", "/.config/opencode/agents", "/.config/opencode/command", "/.config/opencode/commands", "/.config/opencode/plugin", "/.config/opencode/plugins", "/.config/opencode/tool", "/.config/opencode/tools", "/.config/opencode/mode", "/.config/opencode/modes", "/.config/opencode/skill", "/.config/opencode/skills", "/.codex/prompts", "/.codex/skills"})
+    for (const QString &n : {"/.claude/skills", "/.claude/agents", "/.claude/commands", "/.claude/hooks", "/.claude/rules", "/.claude/output-styles", "/.config/opencode/agent", "/.config/opencode/agents", "/.config/opencode/command", "/.config/opencode/commands", "/.config/opencode/plugin", "/.config/opencode/plugins", "/.config/opencode/tool", "/.config/opencode/tools", "/.config/opencode/mode", "/.config/opencode/modes", "/.config/opencode/skill", "/.config/opencode/skills", "/.codex/prompts", "/.codex/skills", "/.agents/skills"})
         a.hashes.insert(home + n, pathHash(home + n));
     return a;
 }
@@ -244,7 +273,7 @@ void MissingSymbolPipeline::start() {
     if (const QString problem = checkNames(opts.symbol, opts.library); !problem.isEmpty()) { finish(State::Failed, problem); return; }
     autoLoaded = AutoLoadedFiles::snapshot(ws.root);
     if (const QString tree = autoLoaded.oversized(); !tree.isEmpty()) {
-        finish(State::Failed, "The agent CLIs load " + tree + " automatically and it has too many files for the pipeline to watch for changes; trim it or run from another directory.");
+        finish(State::Failed, "The agent CLIs load " + tree + " automatically and the pipeline cannot watch all of it for changes (too many files, too deeply nested, or not readable); fix that or run from another directory.");
         return;
     }
     if (!record("START", {{"run", ws.runId}, {"symbol", opts.symbol}, {"library", opts.library}, {"agents", QJsonArray::fromStringList(opts.agents)}})) return;
