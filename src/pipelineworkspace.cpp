@@ -74,6 +74,30 @@ QString vetValue(const QString &key, const QJsonValue &v, int depth) {
     }
     return "a field the compliance ruling does not allow";
 }
+// QJsonObject keeps only the last of a repeated key, so vetting the parsed object would not cover the raw bytes
+// that get imported. Returns the first key repeated within one object at any depth; the line must already be valid JSON.
+QString duplicateKey(const QByteArray &line) {
+    struct Frame { bool object; bool expectKey; QSet<QString> keys; };
+    QList<Frame> stack;
+    for (qsizetype i = 0; i < line.size(); ++i) {
+        const char c = line.at(i);
+        if (c == '{' || c == '[') { stack.append({c == '{', c == '{', {}}); continue; }
+        if (c == '}' || c == ']') { if (!stack.isEmpty()) stack.removeLast(); continue; }
+        if (c == ',' && !stack.isEmpty()) { stack.last().expectKey = stack.last().object; continue; }
+        if (c != '"') continue;
+        qsizetype end = i + 1;
+        while (end < line.size() && line.at(end) != '"') end += line.at(end) == '\\' ? 2 : 1;
+        if (!stack.isEmpty() && stack.last().expectKey) {
+            const QJsonArray wrapped = QJsonDocument::fromJson("[" + line.mid(i, end - i + 1) + "]").array();
+            const QString key = wrapped.isEmpty() ? QString() : wrapped.first().toString();
+            if (stack.last().keys.contains(key)) return key;
+            stack.last().keys.insert(key);
+            stack.last().expectKey = false;
+        }
+        i = end;
+    }
+    return {};
+}
 QString vetTrace(const QByteArray &data) {
     constexpr int MaxLine = 64 * 1024;
     int n = 0;
@@ -83,6 +107,8 @@ QString vetTrace(const QByteArray &data) {
         if (line.size() > MaxLine) return QString("Trace line %1 is longer than %2 bytes.").arg(n).arg(MaxLine);
         const QJsonDocument doc = QJsonDocument::fromJson(line);
         if (!doc.isObject()) return QString("Trace line %1 is not a JSON object.").arg(n);
+        if (const QString dup = duplicateKey(line); !dup.isEmpty())
+            return QString("Trace line %1 repeats the key \"%2\".").arg(n).arg(dup.left(40));
         const QJsonObject o = doc.object();
         for (auto it = o.begin(); it != o.end(); ++it) {
             const QString key = it.key().normalized(QString::NormalizationForm_KC).toLower();
