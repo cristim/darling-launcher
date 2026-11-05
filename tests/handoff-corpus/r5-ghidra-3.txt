@@ -1,1 +1,1 @@
-iVar1 = foo();
+x = PTR_FUN_00401000;

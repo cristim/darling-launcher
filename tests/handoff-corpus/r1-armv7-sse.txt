@@ -1,0 +1,6 @@
+bx lr
+beq label
+blx r3
+movss xmm0, xmm1
+movaps xmm2, xmm3
+pxor xmm4, xmm4

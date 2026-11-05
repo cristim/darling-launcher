@@ -38,6 +38,7 @@ AUDIT = "AUDIT.jsonl"
 MANIFEST = "MANIFEST.txt"
 
 # ---- R1 tables --------------------------------------------------------------
+# Best-effort: a fixed list of common AArch64/x86 mnemonics, not a disassembler (ARMv7 r0-r7, x87, string ops are not covered).
 MNEM_ARM = ("mov movz movk movn ldr ldp ldur ldrb ldrh ldrsw str stp stur strb strh add adds sub subs "
             "adrp adr cmp cmn tst cbz cbnz tbz tbnz bl blr br csel cset orr and eor lsl lsr asr svc "
             "b mul madd ubfx sbfx ldar ldaxr stlr stlxr fmov casal cas ldxr stxr "
@@ -46,19 +47,26 @@ MNEM_ARM = ("mov movz movk movn ldr ldp ldur ldrb ldrh ldrsw str stp stur strb s
             "rev rev16 rev32 sdiv udiv smull umull smulh umulh msub mneg ror extr bfi bfxil bfm ubfm sbfm ubfiz sbfiz "
             "csinc csinv csneg cinc cinv cneg ccmp ccmn ldrsb ldrsh ldnp stnp ldtr sttr ldursw ldurb ldurh sturb sturh "
             "ldpsw ldrsw ldaxp stxp stlxp ldarb ldarh stlrb stlrh ldxrb ldxrh stxrb stxrh ldadd ldclr ldeor ldset swp "
-            "ld1 st1 movi dup umov prfm msr mrs dmb dsb isb brk").split()
+            "ld1 st1 movi dup umov prfm msr mrs dmb dsb isb brk bx blx beq bne blt bgt ble bge bhi bls bcs bcc bmi bpl").split()
 _X86_BASE = "add sub and or xor cmp test shl shr sar neg not inc dec imul lea mov adc sbb mul div idiv".split()
 _X86_CC = "e ne z nz a ae b be g ge l le s ns o no p np c nc".split()
 MNEM_X86 = ("mov movq movl movzx movsx push pop call lea jmp je jne jz jnz ja jb jg jl jle jge "
             "cmp test xor add sub and or imul shl shr inc dec "
             "sar sal rol ror rcl rcr not neg xchg adc sbb mul div idiv movabs movsxd movzbl movzwl movsbl movswl movslq "
             "cmpxchg xadd bt bts btr btc bsf bsr tzcnt lzcnt popcnt bswap pushq popq pushf popf callq jmpq "
-            "jae jna jnae jnb jnbe jng jnge jnl jnle jc jnc jo jno js jns jp jnp jcxz jecxz jrcxz loop").split()
+            "jae jna jnae jnb jnbe jng jnge jnl jnle jc jnc jo jno js jns jp jnp jcxz jecxz jrcxz loop "
+            "movss movsd movaps movups movapd movdqa movdqu pxor xorps xorpd addss addsd subss subsd mulss mulsd divss divsd "
+            "ucomiss ucomisd cvtsi2sd cvtsi2ss").split()
 MNEM_X86 += [b + x for b in _X86_BASE for x in "bwlq"]
 MNEM_X86 += ["set" + c for c in _X86_CC] + ["cmov" + c for c in _X86_CC]
 MNEM_BARE = ("ret retq leave nop cltq cqto hlt int3 cdq cqo cwde cdqe cltd cwtl cbtw syscall sysenter ud2 eret wfi wfe").split()
 # Only these may take a bare label/address operand ("call _foo").
-MNEM_BRANCH = set("b bl blr br call callq jmp jmpq je jne jz jnz ja jb jg jl jle jge jae jbe jna jnae jnb jnbe jng jnge jnl jnle jc jnc jo jno js jns jp jnp jcxz jecxz jrcxz loop cbz cbnz".split())
+MNEM_BRANCH = set("bl blr br bx blx beq bne blt bgt ble bge bhi bls bcs bcc bmi bpl call callq jmp jmpq je jne jz jnz ja jb jg jl jle jge "
+                  "jae jbe jna jnae jnb jnbe jng jnge jnl jnle jnc jno jns jnp jcxz jecxz jrcxz cbz cbnz".split())
+# Short or word-like: a bare label operand only counts if it looks like a symbol or address ("b main" is prose).
+MNEM_WEAK_BRANCH = set("b loop js jo jc jp".split())
+# A lone "#N" immediate is only instruction-shaped for these.
+MNEM_IMM_ONLY = set("svc brk hvc smc int push pushq".split())
 
 _REG = (r"%?(?:[xw](?:[0-9]|[12][0-9]|30)|sp|lr|fp|xzr|wzr|[qdsvb][0-9]{1,2}(?:\.\w+)?"
         r"|[re]?(?:ax|bx|cx|dx|si|di|bp|sp|ip)|[abcd][lh]|r(?:[89]|1[0-5])[dwb]?|xmm[0-9]+)")
@@ -72,11 +80,24 @@ ASM_LINE = re.compile(
     rf"^\s*(?:(?:0x)?[0-9a-f]{{4,16}}:\s*)?(?P<m>{_MNEM}|b\.[a-z]{{2}})(?P<ops>\s+{_OPS}(?:\s*,\s*{_OPS}){{0,3}})"
     r"\s*(?:(?:;|//|@).*)?$", re.I)
 BARE_LINE = re.compile(rf"^\s*(?:(?:0x)?[0-9a-f]{{4,16}}:\s*)?(?:{'|'.join(MNEM_BARE)})\s*(?:(?:;|//).*)?$", re.I)
-_STRICT_OP = re.compile(rf"^(?:{_REG}|{_MEM}|[#$]-?(?:0x[0-9a-f]+|[0-9]+)|-?0x[0-9a-f]+)$", re.I)
+_STRICT_OP = re.compile(rf"^(?:{_REG}|{_MEM}|-?0x[0-9a-f]+)$", re.I)
+_IMM_OP = re.compile(r"^[#$]-?(?:0x[0-9a-f]+|[0-9]+)$", re.I)
+_SYMBOL_OP = re.compile(r"[_.:]|^-?0x[0-9a-f]+$", re.I)
 
-# Ghidra decompiler names: FUN_/DAT_/LAB_/UNK_ addresses, param_N, local_N, xVarN, CONCATnn, undefinedN.
-GHIDRA_MARKERS = (r"\b(?:FUN|DAT|LAB|UNK)_[0-9A-Fa-f]{4,}\b|\b(?:param_\d+|local_[0-9A-Fa-f]+)\b"
-                  r"|\b[a-z]{1,3}Var\d+\b|\bCONCAT\d{2}\b|\bundefined[1-8]\b")
+# Ghidra decompiler names. Strong signatures are decisive alone; weak names (param_1, iVar1, short DAT_) are
+# ordinary identifiers and only count when two different kinds appear in the same text.
+_NB = r"(?<![A-Za-z0-9])"
+GHIDRA_STRONG = (rf"{_NB}(?:FUN|DAT|LAB|UNK)_[0-9A-Fa-f]{{8,}}\b|{_NB}S?CONCAT\d{{2}}\(|{_NB}SUB\d{{2}}\("
+                 rf"|{_NB}[SZ]EXT\d{{2,3}}\b|{_NB}in_stack_[0-9A-Fa-f]{{4,}}\b|{_NB}(?:unaff|extraout)_[A-Za-z]\w*"
+                 rf"|{_NB}local_res[0-9A-Fa-f]+\b")
+GHIDRA_WEAK = [re.compile(x) for x in (
+    rf"{_NB}[a-z]{{1,6}}Var\d+\b", rf"{_NB}param_\d+\b", rf"{_NB}local_[0-9A-Fa-f]+\b",
+    rf"{_NB}(?:FUN|DAT|LAB|UNK)_[0-9A-Fa-f]{{4,7}}\b", rf"{_NB}undefined[1-8]\b", rf"{_NB}in_[A-Z]{{2,5}}[0-9]?\b")]
+
+
+def ghidra_weak_kinds(line):
+    return {i for i, rx in enumerate(GHIDRA_WEAK) if rx.search(line)}
+
 
 # ---- line-level rule tables: (rule id, description, regex) ------------------
 _H = r"[0-9a-fA-F]"
@@ -93,7 +114,7 @@ LINE_RULES = [
     ("R5", "decompiler pseudocode marker", re.compile(
         r"\b(?:sub|loc)_[0-9A-Fa-f]+\b|\b(?:LOBYTE|HIBYTE|LOWORD|HIWORD|LODWORD|HIDWORD)\s*\("
         r"|(?<![\w.])v\d+\s*=(?!=)|\b__int(?:8|16|32|64)\b|\b_(?:QWORD|DWORD|WORD|BYTE)\b"
-        r"|\b__(?:fastcall|cdecl|stdcall|usercall)\b|" + GHIDRA_MARKERS)),
+        r"|\b__(?:fastcall|cdecl|stdcall|usercall)\b|" + GHIDRA_STRONG)),
     ("R6", "path into Apple system image, install volume or shared cache", re.compile(
         r"/System/(?:Library|Volumes|Cryptexes|Applications)|/Library/Apple\b"
         r"|/Volumes/[^/\s]+/(?:System|Library|usr|Applications)\b"
@@ -171,17 +192,22 @@ def asm_like(line):
     if not m:
         return False
     ops = [o.strip() for o in m.group("ops").split(",")]
-    if m.group("m").lower() in MNEM_BRANCH:
+    mnem = m.group("m").lower()
+    if mnem in MNEM_BRANCH:
         return True
-    # Without a register, memory operand or prefixed immediate, "add 5" is prose.
-    return any(_STRICT_OP.match(o) and not re.fullmatch(r"-?[0-9]+", o) for o in ops)
+    if mnem in MNEM_WEAK_BRANCH:
+        return any(_STRICT_OP.match(o) or _SYMBOL_OP.search(o) for o in ops)
+    # Without a register, memory operand or hex address, "add 5" and "fix #12" are prose.
+    if any(_STRICT_OP.match(o) and not re.fullmatch(r"-?[0-9]+", o) for o in ops):
+        return True
+    return mnem in MNEM_IMM_ONLY and any(_IMM_OP.match(o) for o in ops)
 
 
 def asm_weight(line):
-    """Instruction lines this line stands for: a line of `;`-joined instructions counts each one."""
-    segs = [x for x in (p.strip() for p in line.split(";")) if x]
-    if len(segs) >= 2 and all(asm_like(x) for x in segs):
-        return len(segs)
+    """Instruction lines this line stands for: each instruction-like `;` or `|` segment counts once."""
+    segs = [x for x in (p.strip() for p in re.split(r"[;|]", line)) if x]
+    if len(segs) >= 2:
+        return sum(1 for x in segs if asm_like(x))
     return 1 if asm_like(line) else 0
 
 
@@ -199,6 +225,9 @@ def check_text(text, src, dst):
                 hits.append((i, rid, desc))
         if has_interface and (OBJC_INTERFACE.match(line) or CLASSDUMP_IVAR.search(line)):
             hits.append((i, "R3", "class-dump style @interface with ivar offsets"))
+    weak = [ghidra_weak_kinds(line) for line in lines]
+    if len(set().union(*weak)) >= 2:
+        hits.extend((i, "R5", LINE_RULES[3][1]) for i, kinds in enumerate(weak, 1) if kinds)
     for ln in trace_hits(text):
         hits.append((ln, "R7", "raw trace (T0) JSON object" if ln else "too many JSON candidates to scan"))
 

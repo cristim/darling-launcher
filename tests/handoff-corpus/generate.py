@@ -38,9 +38,12 @@ add("r4-near-sep", "0x00007ffe00000001\ntext\n0x00007ffe00000002\n" * 3)
 add("r4-near-sha", "sha " + "a" * 64 + "\nflag 0xff 0x10\n")
 for i, t in enumerate(("calls sub_1A2B", "goto loc_401000", "x = LODWORD(y)", "v12 = a1", "__int64 f", "_QWORD *p")):
     add(f"r5-{i}", t)
-for i, t in enumerate(("calls FUN_00101a2b", "uVar1 = param_1 + 4;", "*(int *)(local_28 + 8) = 0;", "iVar1 = foo();",
-                       "x = DAT_00104000;", "y = CONCAT44(a, b);", "undefined8 foo(void)", "puVar3 = LAB_00101000;")):
+for i, t in enumerate(("calls FUN_00101a2b", "uVar1 = param_1 + 4;", "iVar1 = foo();\n*(int *)(local_28 + 8) = 0;", "x = PTR_FUN_00401000;",
+                       "x = _DAT_100008000;", "y = CONCAT44(a, b);", "undefined8 foo(void)\nlocal_28 = 0;", "puVar3 = LAB_00101000;",
+                       "pppuVar1 = in_RDI;", "x = in_stack_ffffffe8; y = unaff_RBX; z = extraout_RAX;", "y = SUB84(a, 0); w = ZEXT416(a);")):
     add(f"r5-ghidra-{i}", t)
+for i, t in enumerate(("envVar1", "newVar2", "param_1", "local_cafe", "DAT_1234", "undefined2", "in_RDI")):
+    add(f"r5-near-ghidra-weak-{i}", f"see {t} here\n")
 add("r5-near-ghidra", "The function is undefined, the local variable param is unnamed; a data file DAT holds it.\nlocal_name and param_x and funny_ones\n")
 add("r5-near", "the sub_system loc is vague; v == 3; version = 2\n")
 for i, t in enumerate(("/System/Library/Frameworks/Foo.framework/Foo", "/Volumes/MacintoshHD/System/x",
@@ -74,7 +77,12 @@ add("r1-atomics", "ldaxr x0, [x1]\nstlxr w2, x0, [x1]\nfmov d0, d1")
 add("r1-a64-families", "fadd d0, d1, d2\nbic x0, x1, x2\nmvn x3, x4\nneg x5, x6\nsxtw x7, w8\nuxtb w9, w10\nclz x11, x12\nrev x13, x14\n")
 add("r1-x86-families", "sar eax, 1\nnot rbx\nxchg rax, rbx\njbe 0x10\nsete al\ncmovne rax, rbx\ncdq\nsyscall\n")
 add("r1-x86-att-suffix", "addq $8, %rsp\nmovl $1, %eax\nxorl %eax, %eax\n")
-add("r1-plain-b", "b label\nb label2\nb .L3\n")
+add("r1-plain-b", "b .L3\nb _foo\nb 0x1000\n")
+add("r1-near-bare-branches", "- b main\nb 12\njs foo\njo bar\njc baz\njp qux\nb label\nloop again\nLoop forward/back/end\n")
+add("r1-near-hash-numbers", "fix #12\nrev #13\nneg #14\nnot #15\n")
+add("r1-armv7-sse", "bx lr\nbeq label\nblx r3\nmovss xmm0, xmm1\nmovaps xmm2, xmm3\npxor xmm4, xmm4\n")
+add("r1-pipe-joined", "mov x0, x1 | ldr x2, [sp, #8] | bl _foo\n")
+add("r1-semicolon-plus-prose", "mov x0, x1; ldr x2, [sp, #8]; then we return; bl _foo\n")
 add("r1-semicolon-joined", "mov x0, x1; ldr x2, [sp, #8]; bl _foo\n")
 add("r1-near-semicolon-prose", "push the button; call foo; mov x0, x1\nb is a variable; not c; neg 5\n")
 add("r1-near-short-words", "We not rev neg the sar value\nbic and mvn are words, as is clz\nnot\nneg\nsyscall is a word\n")

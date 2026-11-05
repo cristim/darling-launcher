@@ -1,0 +1,9 @@
+- b main
+b 12
+js foo
+jo bar
+jc baz
+jp qux
+b label
+loop again
+Loop forward/back/end
