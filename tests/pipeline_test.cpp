@@ -469,6 +469,51 @@ private slots:
         QVERIFY2(snap.oversized().isEmpty(), "10000 files behind two links are 10000 entries, not 20000");
         QVERIFY(snap.changed().isEmpty());
     }
+    void environmentRootsAndOddPathsAreWatched() {
+        qputenv("HOME", (temp->path() + "/home4").toUtf8());
+        const QString runRoot = temp->path() + "/env/runs/one", codex = temp->path() + "/elsewhere/codex";
+        QVERIFY(QDir().mkpath(runRoot)); QVERIFY(QDir().mkpath(codex + "/skills"));
+        qputenv("CODEX_HOME", codex.toUtf8());
+        auto write = [](const QString &path, const QByteArray &body) { QFile f(path); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(body); };
+        const AutoLoadedFiles snap = AutoLoadedFiles::snapshot(runRoot);
+        write(codex + "/skills/s.md", "x");
+        QVERIFY2(snap.changed().contains("elsewhere"), "CODEX_HOME must be watched where the agent reads it");
+        qunsetenv("CODEX_HOME");
+        // a dangling symlink at a watched path is recorded, and retargeting it is a change
+        const QString skills = temp->path() + "/env/.claude/skills";
+        QVERIFY(QDir().mkpath(QFileInfo(skills).absolutePath()));
+        QVERIFY(QFile::link("/nonexistent/one", skills));
+        const AutoLoadedFiles dangling = AutoLoadedFiles::snapshot(runRoot);
+        QVERIFY(dangling.changed().isEmpty());
+        QVERIFY(QFile::remove(skills)); QVERIFY(QFile::link("/nonexistent/two", skills));
+        QVERIFY2(dangling.changed().contains("skills"), qPrintable(dangling.changed()));
+        QVERIFY(QFile::remove(skills));
+        // a watched directory that cannot be listed is reported, not hashed as empty
+        QVERIFY(QDir().mkpath(skills + "/x"));
+        QVERIFY(QFile::setPermissions(skills, QFileDevice::WriteOwner));
+        const AutoLoadedFiles unreadable = AutoLoadedFiles::snapshot(runRoot);
+        const QString reported = unreadable.oversized();
+        QVERIFY(QFile::setPermissions(skills, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        QVERIFY2(reported.contains("skills"), "an unreadable watched directory must be reported");
+    }
+    void agentsSkillsAndHugeFilesAreWatched() {
+        qputenv("HOME", (temp->path() + "/home5").toUtf8());
+        const QString runRoot = temp->path() + "/agents/runs/one", skills = temp->path() + "/agents/.agents/skills/s";
+        QVERIFY(QDir().mkpath(runRoot)); QVERIFY(QDir().mkpath(skills));
+        QFile f(skills + "/SKILL.md"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("a"); f.close();
+        const AutoLoadedFiles snap = AutoLoadedFiles::snapshot(runRoot);
+        QVERIFY(f.open(QIODevice::WriteOnly)); f.write("b"); f.close();
+        QVERIFY2(snap.changed().contains(".agents/skills"), qPrintable(snap.changed()));
+        // a file past the hash limit is refused, not partly watched
+        QVERIFY(f.open(QIODevice::WriteOnly)); f.resize(16 * 1024 * 1024 + 2); f.close();
+        QVERIFY2(AutoLoadedFiles::snapshot(runRoot).oversized().contains(".agents/skills"), "oversized file must be reported");
+        // .system is skipped only at the top of the codex skills tree
+        QVERIFY(QDir().mkpath(temp->path() + "/agents/.claude/skills/.system"));
+        QFile g(temp->path() + "/agents/.claude/skills/.system/x"); QVERIFY(g.open(QIODevice::WriteOnly)); g.write("1"); g.close();
+        const AutoLoadedFiles other = AutoLoadedFiles::snapshot(runRoot);
+        QVERIFY(g.open(QIODevice::WriteOnly)); g.write("2"); g.close();
+        QVERIFY2(other.changed().contains(".claude/skills"), "a .system dir outside codex skills must be watched");
+    }
     void codexBundledSkillsAreNotWatched() {
         qputenv("HOME", (temp->path() + "/home3").toUtf8());
         const QString runRoot = temp->path() + "/codex/runs/one", system = temp->path() + "/home3/.codex/skills/.system";
