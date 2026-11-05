@@ -514,6 +514,32 @@ private slots:
         QVERIFY(g.open(QIODevice::WriteOnly)); g.write("2"); g.close();
         QVERIFY2(other.changed().contains(".claude/skills"), "a .system dir outside codex skills must be watched");
     }
+    void nestedSystemDirsAndXdgRootAreWatched() {
+        qputenv("HOME", (temp->path() + "/home6").toUtf8());
+        const QString runRoot = temp->path() + "/nest/runs/one", xdg = temp->path() + "/xdgroot", codex = temp->path() + "/home6/.codex/skills";
+        QVERIFY(QDir().mkpath(runRoot)); QVERIFY(QDir().mkpath(codex + "/pack/.system")); QVERIFY(QDir().mkpath(xdg + "/opencode/agents"));
+        qputenv("XDG_CONFIG_HOME", xdg.toUtf8());
+        auto write = [](const QString &path, const QByteArray &body) { QFile f(path); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(body); };
+        write(codex + "/pack/.system/x", "1");
+        const AutoLoadedFiles snap = AutoLoadedFiles::snapshot(runRoot);
+        write(codex + "/pack/.system/x", "2");
+        QVERIFY2(snap.changed().contains(".codex/skills"), "a nested .system must be watched");
+        const AutoLoadedFiles xdgSnap = AutoLoadedFiles::snapshot(runRoot);
+        write(xdg + "/opencode/agents/a.md", "x");
+        QVERIFY2(xdgSnap.changed().contains("xdgroot"), qPrintable(xdgSnap.changed()));
+        qunsetenv("XDG_CONFIG_HOME");
+    }
+    void aWatchedTreeOverTheByteBudgetRefusesTheRun() {
+        prepare = [](const PipelineWorkspace &ws) {
+            const QString skills = QFileInfo(ws.root).absolutePath() + "/.claude/skills";
+            QDir().mkpath(skills);
+            for (int i = 0; i < 20; ++i) { QFile f(QString("%1/big%2").arg(skills).arg(i)); f.open(QIODevice::WriteOnly); f.resize(15 * 1024 * 1024); }
+        };
+        const auto r = run();
+        QCOMPARE(r.state, State::Failed);
+        QVERIFY2(r.message.contains("automatically"), qPrintable(r.message));
+        QDir(QFileInfo(r.ws.root).absolutePath() + "/.claude").removeRecursively();
+    }
     void codexBundledSkillsAreNotWatched() {
         qputenv("HOME", (temp->path() + "/home3").toUtf8());
         const QString runRoot = temp->path() + "/codex/runs/one", system = temp->path() + "/home3/.codex/skills/.system";
