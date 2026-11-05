@@ -394,6 +394,89 @@ private slots:
         QVERIFY(read(fake + "/opencode-env").contains("\"bash\":\"deny\""));
         QVERIFY(!read(fake + "/args").contains("clean-room pipeline")); // the brief is not on the command line
     }
+    void instructionDirectoriesAreWatched() {
+        qputenv("HOME", (temp->path() + "/home").toUtf8());
+        const QString runRoot = temp->path() + "/watch/runs/one";
+        QVERIFY(QDir().mkpath(runRoot));
+        const QString skill = temp->path() + "/watch/.claude/skills/x/SKILL.md";
+        QVERIFY(QDir().mkpath(QFileInfo(skill).absolutePath()));
+        auto write = [](const QString &path, const QByteArray &body) { QFile f(path); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(body); };
+        write(skill, "a");
+        const AutoLoadedFiles before = AutoLoadedFiles::snapshot(runRoot);
+        QVERIFY(before.changed().isEmpty());
+        write(skill, "b");
+        QVERIFY2(before.changed().contains("skills"), qPrintable(before.changed()));
+        write(skill, "a");
+        QVERIFY(before.changed().isEmpty());
+        write(QFileInfo(skill).absolutePath() + "/extra.md", "new");
+        QVERIFY2(before.changed().contains("skills"), qPrintable(before.changed()));
+        QVERIFY(QFile::remove(QFileInfo(skill).absolutePath() + "/extra.md"));
+        QVERIFY(QFile::remove(skill));
+        QVERIFY2(before.changed().contains("skills"), qPrintable(before.changed()));
+        // a symlink added to a watched tree, and a tree beyond the entry cap, both count as changed
+        const AutoLoadedFiles again = AutoLoadedFiles::snapshot(runRoot);
+        QVERIFY(again.changed().isEmpty());
+        QVERIFY(QFile::link("/etc/hostname", QFileInfo(skill).absolutePath() + "/link.md"));
+        QVERIFY2(again.changed().contains("skills"), qPrintable(again.changed()));
+        QVERIFY(QFile::remove(QFileInfo(skill).absolutePath() + "/link.md"));
+        // a directory symlink is followed: editing the real file, retargeting the link, a loop and a chmod are all seen
+        const QString real = temp->path() + "/watch/real";
+        QVERIFY(QDir().mkpath(real));
+        write(real + "/f.md", "1");
+        const QString dirLink = QFileInfo(skill).absolutePath() + "/../linked";
+        QVERIFY(QFile::link(real, dirLink));
+        const AutoLoadedFiles linked = AutoLoadedFiles::snapshot(runRoot);
+        QVERIFY(linked.changed().isEmpty());
+        write(real + "/f.md", "2");
+        QVERIFY2(linked.changed().contains("skills"), qPrintable(linked.changed()));
+        write(real + "/f.md", "1");
+        QVERIFY(linked.changed().isEmpty());
+        QVERIFY(QFile::setPermissions(real + "/f.md", QFile::permissions(real + "/f.md") | QFileDevice::ExeOwner));
+        QVERIFY2(linked.changed().contains("skills"), qPrintable(linked.changed()));
+        QVERIFY(QFile::setPermissions(real + "/f.md", QFile::permissions(real + "/f.md") & ~QFileDevice::ExeOwner));
+        QVERIFY(QFile::link(QFileInfo(skill).absolutePath() + "/..", real + "/loop"));
+        QVERIFY2(!linked.changed().isEmpty(), "adding a loop link must register as a change, not hang");
+        const AutoLoadedFiles looped = AutoLoadedFiles::snapshot(runRoot);
+        QVERIFY2(looped.oversized().isEmpty() && looped.changed().isEmpty(), "a link loop must hash stably, not overflow");
+        const QString real2 = temp->path() + "/watch/real2";
+        QVERIFY(QDir().mkpath(real2));
+        write(real2 + "/f.md", "1");
+        QVERIFY(QFile::remove(dirLink));
+        QVERIFY(QFile::link(real2, dirLink));
+        QVERIFY2(!looped.changed().isEmpty(), "retargeting a link to a copy with the same contents must register");
+        QVERIFY(QFile::remove(dirLink));
+        QVERIFY(QFile::link(real, dirLink));
+        QVERIFY(QFile::remove(real + "/loop"));
+        QVERIFY(QFile::remove(dirLink));
+        const QString agents = temp->path() + "/watch/.opencode/agents";
+        QVERIFY(QDir().mkpath(agents));
+        const AutoLoadedFiles agentsBefore = AutoLoadedFiles::snapshot(runRoot);
+        QVERIFY(agentsBefore.changed().isEmpty());
+        write(agents + "/a.md", "x");
+        QVERIFY2(agentsBefore.changed().contains("agents"), qPrintable(agentsBefore.changed()));
+        for (int i = 0; i < 16400; ++i) write(QString("%1/f%2").arg(agents).arg(i), "x");
+        const AutoLoadedFiles huge = AutoLoadedFiles::snapshot(runRoot);
+        QVERIFY2(huge.oversized().contains("agents"), "an over-cap tree must be reported, not left unwatched");
+        QVERIFY(huge.changed().isEmpty());  // reported once at start, not as a false change on every stage
+    }
+    void aTreeReachedThroughTwoLinksIsCountedOnce() {
+        qputenv("HOME", (temp->path() + "/home2").toUtf8());
+        const QString runRoot = temp->path() + "/diamond/runs/one", real = temp->path() + "/diamond/real", skills = temp->path() + "/diamond/.claude/skills";
+        QVERIFY(QDir().mkpath(runRoot)); QVERIFY(QDir().mkpath(real)); QVERIFY(QDir().mkpath(skills));
+        for (int i = 0; i < 10000; ++i) { QFile f(QString("%1/f%2").arg(real).arg(i)); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
+        QVERIFY(QFile::link(real, skills + "/a")); QVERIFY(QFile::link(real, skills + "/b"));
+        const AutoLoadedFiles snap = AutoLoadedFiles::snapshot(runRoot);
+        QVERIFY2(snap.oversized().isEmpty(), "10000 files behind two links are 10000 entries, not 20000");
+        QVERIFY(snap.changed().isEmpty());
+    }
+    void codexBundledSkillsAreNotWatched() {
+        qputenv("HOME", (temp->path() + "/home3").toUtf8());
+        const QString runRoot = temp->path() + "/codex/runs/one", system = temp->path() + "/home3/.codex/skills/.system";
+        QVERIFY(QDir().mkpath(runRoot)); QVERIFY(QDir().mkpath(system));
+        const AutoLoadedFiles snap = AutoLoadedFiles::snapshot(runRoot);
+        QFile f(system + "/bundled.md"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("rewritten by codex"); f.close();
+        QVERIFY2(snap.changed().isEmpty(), qPrintable(snap.changed()));
+    }
     void changedInstructionFileStopsTheRun() {
         plan("research 1 plant\n");
         const auto r = run();
