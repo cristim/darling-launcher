@@ -1,1 +1,2 @@
 undefined8 foo(void)
+local_28 = 0;

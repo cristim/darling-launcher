@@ -1,1 +1,2 @@
+iVar1 = foo();
 *(int *)(local_28 + 8) = 0;

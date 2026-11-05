@@ -111,7 +111,17 @@ private slots:
         QTest::newRow("x86-jcc") << block({"jbe 0x10", "cmp eax, ebx", "sete al", "cmovne rax, rbx"}) << true;
         QTest::newRow("x86-bare") << block({"cdq", "syscall", "ret"}) << true;
         QTest::newRow("x86-att") << block({"addq $8, %rsp", "movl $1, %eax", "xorl %eax, %eax"}) << true;
-        QTest::newRow("plain-b") << block({"b label", "b label2", "b .L3"}) << true;
+        QTest::newRow("plain-b") << block({"b .L3", "b _foo", "b 0x1000"}) << true;
+        QTest::newRow("armv7-branches") << block({"bx lr", "beq label", "blx r3", "bne _loop"}) << true;
+        QTest::newRow("sse") << block({"movss xmm0, xmm1", "movaps xmm2, xmm3", "pxor xmm4, xmm4"}) << true;
+        QTest::newRow("semicolon-plus-prose") << QString("mov x0, x1; ldr x2, [sp, #8]; then we return; bl _foo\n") << true;
+        QTest::newRow("pipe-joined") << QString("mov x0, x1 | ldr x2, [sp, #8] | bl _foo\n") << true;
+        QTest::newRow("svc-imm") << block({"svc #0", "svc #0x80", "brk #1"}) << true;
+        for (const char *op : {"cdq", "cqo", "cwde", "cdqe", "cltq", "cqto", "cltd", "cwtl", "cbtw", "syscall", "sysenter", "ud2", "eret", "wfi", "wfe", "leave", "nop", "hlt", "int3", "retq"})
+            QTest::newRow(qPrintable(QString("bare-") + op)) << block({op, op, op}) << true;
+        QTest::newRow("prose-loop") << block({"Loop forward/back/end", "Loop forward", "Loop end"}) << false;
+        QTest::newRow("prose-bare-label-branches") << block({"- b main", "b 12", "js foo", "jo bar", "jc baz", "jp qux", "b label", "loop again"}) << false;
+        QTest::newRow("prose-hash-numbers") << block({"fix #12", "rev #13", "neg #14", "not #15"}) << false;
         QTest::newRow("semicolon-joined") << QString("mov x0, x1; ldr x2, [sp, #8]; bl _foo\n") << true;
         QTest::newRow("semicolon-joined-x86") << QString("push rbp; mov rbp, rsp; sub rsp, 16\n") << true;
         QTest::newRow("prose-short-words") << block({"We not rev neg the sar value", "Option b is chosen; not c", "bic and mvn are words, as is clz"}) << false;
@@ -126,16 +136,27 @@ private slots:
             QVERIFY2(ids(hits, false).contains("R1") == flagged, qPrintable(describe(hits)));
         }
     }
-    // R5 must cover Ghidra decompiler output as well as IDA.
+    // R5 must cover Ghidra decompiler output as well as IDA; weak names need corroboration.
     void r5_data() {
         QTest::addColumn<QString>("text"); QTest::addColumn<bool>("flagged");
         QTest::newRow("FUN") << QString("calls FUN_00101a2b here") << true;
-        QTest::newRow("param") << QString("uVar1 = param_1 + 4;") << true;
-        QTest::newRow("local") << QString("*(int *)(local_28 + 8) = 0;") << true;
-        QTest::newRow("iVar") << QString("iVar1 = foo();") << true;
+        QTest::newRow("PTR_FUN") << QString("x = PTR_FUN_00401000;") << true;
+        QTest::newRow("_DAT") << QString("x = _DAT_100008000;") << true;
+        QTest::newRow("thunk_FUN") << QString("thunk_FUN_00401000();") << true;
         QTest::newRow("DAT") << QString("x = DAT_00104000;") << true;
         QTest::newRow("CONCAT") << QString("y = CONCAT44(a, b);") << true;
-        QTest::newRow("undefined8") << QString("undefined8 foo(void)") << true;
+        QTest::newRow("SUB84") << QString("y = SUB84(a, 0);") << true;
+        QTest::newRow("ZEXT416") << QString("y = ZEXT416(a);") << true;
+        QTest::newRow("in_stack") << QString("x = in_stack_ffffffe8;") << true;
+        QTest::newRow("unaff") << QString("x = unaff_RBX;") << true;
+        QTest::newRow("extraout") << QString("x = extraout_RAX;") << true;
+        QTest::newRow("local_res") << QString("x = local_res8;") << true;
+        QTest::newRow("two-weak-same-line") << QString("uVar1 = param_1 + 4;") << true;
+        QTest::newRow("two-weak-apart") << QString("iVar1 = foo();\n\nprose here\n*(int *)(local_28 + 8) = 0;\n") << true;
+        QTest::newRow("pppuVar") << QString("pppuVar1 = in_RDI;") << true;
+        QTest::newRow("undefined8-local") << QString("undefined8 foo(void)\nlocal_28 = 0;") << true;
+        for (const char *t : {"envVar1", "newVar2", "param_1", "param_2", "local_cafe", "local_1", "DAT_1234", "undefined2", "in_RDI"})
+            QTest::newRow(qPrintable(QString("weak-alone-") + t)) << QString("see %1 here").arg(t) << false;
         QTest::newRow("near-prose") << QString("The function is undefined, the local variable param is unnamed; a data file DAT holds it.\n") << false;
         QTest::newRow("near-identifiers") << QString("local_name and param_x and funny_ones and variable1\n") << false;
     }
@@ -147,9 +168,12 @@ private slots:
         }
     }
     void exposureMarkersGhidra() {
-        for (const char *t : {"FUN_00101a2b called", "uVar2 = param_1;", "local_28 = 0;", "x = DAT_00104000;", "CONCAT44(a, b)", "undefined8 f()"})
-            QCOMPARE(HandoffCheck::exposureMarkers(t).size(), 1);
+        for (const char *t : {"FUN_00101a2b called", "uVar2 = param_1;", "x = _DAT_100008000;", "CONCAT44(a, b)", "undefined8 f()\nlocal_28 = 0;"})
+            QVERIFY2(!HandoffCheck::exposureMarkers(t).isEmpty(), t);
         QVERIFY(HandoffCheck::exposureMarkers("The function is undefined; local variable param.\n").isEmpty());
+        QVERIFY(HandoffCheck::exposureMarkers("iVar1 = foo();\n").isEmpty());
+        QVERIFY(HandoffCheck::exposureMarkers("see param_1 here\n").isEmpty());
+        QVERIFY(HandoffCheck::exposureMarkers("see local_1 here\n").isEmpty());
     }
     // C++ vs python on the same corpus, plus mechanical variants of it, so the port cannot drift.
     void parityWithPythonOracle() {

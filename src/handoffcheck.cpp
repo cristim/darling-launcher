@@ -21,12 +21,15 @@ const QString IMM = R"((?:[#$]-?(?:0x[0-9a-f]+|[0-9]+)|-?0x[0-9a-f]+|-?[0-9]+))"
 const QString MEM = R"((?:(?:[a-z]+\s+ptr\s+)?(?:[a-z]s:)?\[[^\]\n]{1,40}\]!?|-?(?:0x[0-9a-f]+|[0-9]+)?\(%[a-z0-9]+[^)\n]{0,20}\)))";
 const QString LABEL = R"(\*?[A-Za-z_.$][\w.$@]*)";
 const QString OPS = "(?:" + REG + "|" + IMM + "|" + MEM + "|" + LABEL + ")";
+// Best-effort: a fixed list of common AArch64/x86 mnemonics, not a disassembler (ARMv7 r0-r7, x87, string ops are not covered).
 QStringList x86Mnemonics() {
     QStringList all = QString("mov movq movl movzx movsx push pop call lea jmp je jne jz jnz ja jb jg jl jle jge "
         "cmp test xor add sub and or imul shl shr inc dec "
         "sar sal rol ror rcl rcr not neg xchg adc sbb mul div idiv movabs movsxd movzbl movzwl movsbl movswl movslq "
         "cmpxchg xadd bt bts btr btc bsf bsr tzcnt lzcnt popcnt bswap pushq popq pushf popf callq jmpq "
-        "jae jna jnae jnb jnbe jng jnge jnl jnle jc jnc jo jno js jns jp jnp jcxz jecxz jrcxz loop").split(' ', Qt::SkipEmptyParts);
+        "jae jna jnae jnb jnbe jng jnge jnl jnle jc jnc jo jno js jns jp jnp jcxz jecxz jrcxz loop "
+        "movss movsd movaps movups movapd movdqa movdqu pxor xorps xorpd addss addsd subss subsd mulss mulsd divss divsd "
+        "ucomiss ucomisd cvtsi2sd cvtsi2ss").split(' ', Qt::SkipEmptyParts);
     for (const QString &base : QString("add sub and or xor cmp test shl shr sar neg not inc dec imul lea mov adc sbb mul div idiv").split(' '))
         for (const QChar suffix : QString("bwlq")) all << base + suffix;
     for (const QString &cc : QString("e ne z nz a ae b be g ge l le s ns o no p np c nc").split(' ')) all << "set" + cc << "cmov" + cc;
@@ -41,30 +44,50 @@ QString mnemonics() {
         "rev rev16 rev32 sdiv udiv smull umull smulh umulh msub mneg ror extr bfi bfxil bfm ubfm sbfm ubfiz sbfiz "
         "csinc csinv csneg cinc cinv cneg ccmp ccmn ldrsb ldrsh ldnp stnp ldtr sttr ldursw ldurb ldurh sturb sturh "
         "ldpsw ldrsw ldaxp stxp stlxp ldarb ldarh stlrb stlrh ldxrb ldxrh stxrb stxrh ldadd ldclr ldeor ldset swp "
-        "ld1 st1 movi dup umov prfm msr mrs dmb dsb isb brk").split(' ', Qt::SkipEmptyParts);
+        "ld1 st1 movi dup umov prfm msr mrs dmb dsb isb brk bx blx beq bne blt bgt ble bge bhi bls bcs bcc bmi bpl").split(' ', Qt::SkipEmptyParts);
     all += x86Mnemonics();
     all.removeDuplicates();
     std::stable_sort(all.begin(), all.end(), [](const QString &a, const QString &b) { return a.size() > b.size(); });
     return all.join('|');
 }
-const QSet<QString> BRANCH = [] {
-    QSet<QString> s;
-    for (const QString &m : QString("b bl blr br call callq jmp jmpq je jne jz jnz ja jb jg jl jle jge jae jbe jna jnae jnb jnbe jng jnge "
-        "jnl jnle jc jnc jo jno js jns jp jnp jcxz jecxz jrcxz loop cbz cbnz").split(' ')) s.insert(m);
-    return s;
-}();
+QSet<QString> wordSet(const char *words) { const QStringList l = QString(words).split(' '); return QSet<QString>(l.begin(), l.end()); }
+const QSet<QString> BRANCH = wordSet("bl blr br bx blx beq bne blt bgt ble bge bhi bls bcs bcc bmi bpl call callq jmp jmpq je jne jz jnz ja jb jg jl jle jge "
+    "jae jbe jna jnae jnb jnbe jng jnge jnl jnle jnc jno jns jnp jcxz jecxz jrcxz cbz cbnz");
+// Short or word-like: a bare label operand only counts if it looks like a symbol or address ("b main" is prose).
+const QSet<QString> WEAK_BRANCH = wordSet("b loop js jo jc jp");
+// A lone "#N" immediate is only instruction-shaped for these.
+const QSet<QString> IMM_ONLY = wordSet("svc brk hvc smc int push pushq");
 const RX ASM_LINE = rx(R"(^\s*(?:(?:0x)?[0-9a-f]{4,16}:\s*)?(?<m>)" + mnemonics() + R"(|b\.[a-z]{2})(?<ops>\s+)" + OPS + R"((?:\s*,\s*)" + OPS + R"(){0,3})\s*(?:(?:;|//|@).*)?$)", true);
 const RX BARE_LINE = rx(R"(^\s*(?:(?:0x)?[0-9a-f]{4,16}:\s*)?(?:ret|retq|leave|nop|cltq|cqto|hlt|int3|cdq|cqo|cwde|cdqe|cltd|cwtl|cbtw|syscall|sysenter|ud2|eret|wfi|wfe)\s*(?:(?:;|//).*)?$)", true);
-const RX STRICT_OP = rx("^(?:" + REG + "|" + MEM + R"(|[#$]-?(?:0x[0-9a-f]+|[0-9]+)|-?0x[0-9a-f]+)$)", true);
+const RX STRICT_OP = rx("^(?:" + REG + "|" + MEM + R"(|-?0x[0-9a-f]+)$)", true);
+const RX IMM_OP = rx(R"(^[#$]-?(?:0x[0-9a-f]+|[0-9]+)$)", true);
+const RX SYMBOL_OP = rx(R"([_.:]|^-?0x[0-9a-f]+$)", true);
 const RX DECIMAL = rx(R"(^-?[0-9]+\z)");
 struct LineRule { QString id, description; RX pattern; };
-// Ghidra decompiler names: FUN_/DAT_/LAB_/UNK_ addresses, param_N, local_N, xVarN, CONCATnn, undefinedN.
-const QString GHIDRA = R"(\b(?:FUN|DAT|LAB|UNK)_[0-9A-Fa-f]{4,}\b|\b(?:param_\d+|local_[0-9A-Fa-f]+)\b|\b[a-z]{1,3}Var\d+\b|\bCONCAT\d{2}\b|\bundefined[1-8]\b)";
+// Ghidra decompiler names. Strong signatures are decisive alone; weak names (param_1, iVar1, short DAT_)
+// are ordinary identifiers and only count when two different kinds appear in the same text.
+const QString NB = R"((?<![A-Za-z0-9]))";
+const QString GHIDRA_STRONG = NB + R"((?:FUN|DAT|LAB|UNK)_[0-9A-Fa-f]{8,}\b|)" + NB + R"(S?CONCAT\d{2}\(|)" + NB + R"(SUB\d{2}\(|)"
+    + NB + R"([SZ]EXT\d{2,3}\b|)" + NB + R"(in_stack_[0-9A-Fa-f]{4,}\b|)" + NB + R"((?:unaff|extraout)_[A-Za-z]\w*|)" + NB + R"(local_res[0-9A-Fa-f]+\b)";
+const QList<RX> GHIDRA_WEAK{
+    rx(NB + R"([a-z]{1,6}Var\d+\b)"), rx(NB + R"(param_\d+\b)"), rx(NB + R"(local_[0-9A-Fa-f]+\b)"),
+    rx(NB + R"((?:FUN|DAT|LAB|UNK)_[0-9A-Fa-f]{4,7}\b)"), rx(NB + R"(undefined[1-8]\b)"), rx(NB + R"(in_[A-Z]{2,5}[0-9]?\b)")};
+QSet<int> ghidraWeakKinds(const QString &line) {
+    QSet<int> kinds;
+    for (int k = 0; k < GHIDRA_WEAK.size(); ++k) if (GHIDRA_WEAK[k].match(line).hasMatch()) kinds << k;
+    return kinds;
+}
+// Lines carrying a weak Ghidra name, but only when the text holds two different kinds of them.
+QList<int> corroboratedGhidraLines(const QStringList &lines) {
+    QList<int> hitLines; QSet<int> all;
+    for (int i = 0; i < lines.size(); ++i) { const QSet<int> k = ghidraWeakKinds(lines[i]); if (!k.isEmpty()) { hitLines << i; all.unite(k); } }
+    return all.size() >= 2 ? hitLines : QList<int>();
+}
 const QList<LineRule> LINE_RULES{
     {"R2", "address+offset notation", rx(R"(<\+\d+>|<[\w.$]+\+(?:0x)" + H + R"(+|\d+)>|^\s*(?:=>\s*)?0x)" + H + R"({8,16}\s*:|\b[A-Za-z_]\w*\s*\+\s*0x)" + H + R"(+\b|\b_[A-Za-z]\w*\+\d+\b)", true)},
     {"R3", "disassembler/dump tool output signature", rx(R"(Contents of \(__\w+,__\w+\)|\(__[A-Z]+,__\w+\)\s+section|file format\s+(?:mach-?o|elf\d*)|^\s*cmd\s+LC_\w+|^\s*Idx\s+Name\s+Size\s+VMA|^\s*(?:rebase|lazy bind|weak bind|bind|export) information)", true)},
     {"R4", "hex-dump line", rx(R"(^\s*(?:0x)?)" + H + R"({4,16}:?\s+(?:)" + H + R"({2}\s+){8,}|^\s*)" + H + R"({6,16}:\s+(?:)" + H + R"({4}\s+){4,})")},
-    {"R5", "decompiler pseudocode marker", rx(R"(\b(?:sub|loc)_[0-9A-Fa-f]+\b|\b(?:LOBYTE|HIBYTE|LOWORD|HIWORD|LODWORD|HIDWORD)\s*\(|(?<![\w.])v\d+\s*=(?!=)|\b__int(?:8|16|32|64)\b|\b_(?:QWORD|DWORD|WORD|BYTE)\b|\b__(?:fastcall|cdecl|stdcall|usercall)\b|)" + GHIDRA)},
+    {"R5", "decompiler pseudocode marker", rx(R"(\b(?:sub|loc)_[0-9A-Fa-f]+\b|\b(?:LOBYTE|HIBYTE|LOWORD|HIWORD|LODWORD|HIDWORD)\s*\(|(?<![\w.])v\d+\s*=(?!=)|\b__int(?:8|16|32|64)\b|\b_(?:QWORD|DWORD|WORD|BYTE)\b|\b__(?:fastcall|cdecl|stdcall|usercall)\b|)" + GHIDRA_STRONG)},
     {"R6", "path into Apple system image, install volume or shared cache", rx(R"(/System/(?:Library|Volumes|Cryptexes|Applications)|/Library/Apple\b|/Volumes/[^/\s]+/(?:System|Library|usr|Applications)\b|dyld_shared_cache|\.dyld\b|/usr/lib/system/\S*\.dylib)", true)},
     {"R8", "forbidden trace field as key", rx(R"(["'](?:lr|pc|backtrace|image_offset|return_address)["']\s*:|(?<![\w.])(?:lr|pc)\s*[:=]\s*0x[0-9a-f]+|(?<![\w.])(?:backtrace|image_offset|return_address)\s*[:=]\s*(?:0x[0-9a-f]+|\[|\{|\d))", true)},
 };
@@ -92,20 +115,28 @@ bool asmLike(const QString &line) {
     if (BARE_LINE.match(line).hasMatch()) return true;
     const auto m = ASM_LINE.match(line);
     if (!m.hasMatch()) return false;
-    if (BRANCH.contains(m.captured("m").toLower())) return true;
-    // Without a register, memory operand or prefixed immediate, "add 5" is prose.
-    for (const QString &op : m.captured("ops").split(',')) {
+    const QString mnem = m.captured("m").toLower();
+    if (BRANCH.contains(mnem)) return true;
+    const QStringList ops = m.captured("ops").split(',');
+    if (WEAK_BRANCH.contains(mnem)) {
+        for (const QString &op : ops) { const QString o = pyStrip(op); if (STRICT_OP.match(o).hasMatch() || SYMBOL_OP.match(o).hasMatch()) return true; }
+        return false;
+    }
+    // Without a register, memory operand or hex address, "add 5" and "fix #12" are prose.
+    for (const QString &op : ops) {
         const QString o = pyStrip(op);
         if (STRICT_OP.match(o).hasMatch() && !DECIMAL.match(o).hasMatch()) return true;
     }
+    if (IMM_ONLY.contains(mnem))
+        for (const QString &op : ops) if (IMM_OP.match(pyStrip(op)).hasMatch()) return true;
     return false;
 }
 
-// Instruction lines this line stands for: a line of `;`-joined instructions counts each one.
+// Instruction lines this line stands for: each instruction-like `;` or `|` segment counts once.
 int asmWeight(const QString &line) {
     QStringList segs;
-    for (const QString &part : line.split(';')) { const QString t = pyStrip(part); if (!t.isEmpty()) segs << t; }
-    if (segs.size() >= 2 && std::all_of(segs.begin(), segs.end(), [](const QString &x) { return asmLike(x); })) return int(segs.size());
+    for (const QString &part : line.split(QRegularExpression("[;|]"))) { const QString t = pyStrip(part); if (!t.isEmpty()) segs << t; }
+    if (segs.size() >= 2) return int(std::count_if(segs.begin(), segs.end(), [](const QString &x) { return asmLike(x); }));
     return asmLike(line) ? 1 : 0;
 }
 
@@ -234,6 +265,7 @@ QList<HandoffCheck::Hit> HandoffCheck::checkText(const QString &input) {
         for (const auto &rule : LINE_RULES) if (rule.pattern.match(lines[i]).hasMatch()) hits << Hit{i + 1, rule.id, rule.description};
         if (hasInterface && (OBJC_INTERFACE.match(lines[i]).hasMatch() || CLASSDUMP_IVAR.match(lines[i]).hasMatch())) hits << Hit{i + 1, "R3", "class-dump style @interface with ivar offsets"};
     }
+    for (int i : corroboratedGhidraLines(lines)) hits << Hit{i + 1, "R5", LINE_RULES[3].description};
     for (int line : traceHits(text)) hits << Hit{line, "R7", line ? "raw trace (T0) JSON object" : "too many JSON candidates to scan"};
 
     QList<int> block, run;
@@ -329,14 +361,16 @@ QList<HandoffCheck::Hit> HandoffCheck::checkTextStrict(const QString &input) {
     return sortedUnique(hits);
 }
 QList<HandoffCheck::Hit> HandoffCheck::exposureMarkers(const QString &input) {
-    static const RX markers = rx(R"(\b(?:sub|loc)_[0-9A-Fa-f]+\b|\b(?:LOBYTE|HIBYTE|LOWORD|HIWORD|LODWORD|HIDWORD)\s*\(|)" + GHIDRA);
-    const QStringList lines = foldLookalikes(normalize(input)).split('\n');
+    static const RX markers = rx(R"(\b(?:sub|loc)_[0-9A-Fa-f]+\b|\b(?:LOBYTE|HIBYTE|LOWORD|HIWORD|LODWORD|HIDWORD)\s*\(|)" + GHIDRA_STRONG);
+    const QStringList raw = foldLookalikes(normalize(input)).split('\n');
+    QStringList lines;
+    for (const QString &l : raw) lines << stripMd(l.left(MaxLineLength));
     QList<Hit> hits;
     for (int i = 0; i < lines.size(); ++i) {
-        const QString line = stripMd(lines[i].left(MaxLineLength));
-        if (LINE_RULES[1].pattern.match(line).hasMatch()) hits << Hit{i + 1, "R3", LINE_RULES[1].description};
-        if (markers.match(line).hasMatch()) hits << Hit{i + 1, "R5", "decompiler name or byte-access marker"};
+        if (LINE_RULES[1].pattern.match(lines[i]).hasMatch()) hits << Hit{i + 1, "R3", LINE_RULES[1].description};
+        if (markers.match(lines[i]).hasMatch()) hits << Hit{i + 1, "R5", "decompiler name or byte-access marker"};
     }
+    for (int i : corroboratedGhidraLines(lines)) hits << Hit{i + 1, "R5", "decompiler name or byte-access marker"};
     return sortedUnique(hits);
 }
 QList<HandoffCheck::Hit> HandoffCheck::rawTraceObjects(const QString &text) {
