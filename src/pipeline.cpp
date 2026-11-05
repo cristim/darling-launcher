@@ -159,7 +159,7 @@ QProcessEnvironment MissingSymbolPipeline::stageEnvironment(const QProcessEnviro
     return env;
 }
 QString MissingSymbolPipeline::checkNames(const QString &symbol, const QString &library) {
-    static const QRegularExpression symbolName(R"(\A(?:[A-Za-z0-9_$.@:<>+\-\[\]]{1,256}|[-+]\[[A-Za-z0-9_]{1,128}(?:\([A-Za-z0-9_]{1,128}\))? [A-Za-z0-9_:]{1,128}\])\z)"), libraryName(R"(\A[A-Za-z0-9_./+ \-]{0,256}\z)");
+    static const QRegularExpression symbolName(R"(\A(?:[A-Za-z0-9_$.@:<>+\-\[\]]{1,256}|[-+]\[[A-Za-z0-9_]{1,128}(?:\([A-Za-z0-9_]{1,128}\))? [A-Za-z0-9_:]{1,128}\])\z)"), libraryName(R"(\A[A-Za-z0-9_./+\-]{0,256}\z)");
     if (!symbolName.match(symbol).hasMatch()) return "The missing symbol's name has characters or a length the pipeline does not accept; it is not passed to any agent.";
     if (!libraryName.match(library).hasMatch()) return "The library name has characters or a length the pipeline does not accept; it is not passed to any agent.";
     return {};
