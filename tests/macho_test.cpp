@@ -2,6 +2,7 @@
 // All images here are synthetic bytes built by this file; no Apple files are read.
 #include "macho.h"
 #include "macho_fixture.h"
+#include <QMap>
 #include <QtTest>
 
 using MachO::kSubtypeArm64;
@@ -124,11 +125,64 @@ private slots:
         QVERIFY(!MachO::readDependencies(image, kSubtypeArm64e, true, &d, &err));
         QVERIFY(!err.isEmpty());
     }
+    void closureOrderRelativeAndUnresolved() {
+        QMap<QString, QByteArray> fs = {{kA, thin(2, {kB, "/usr/lib/missing.dylib"})}, {kB, thin(2, {})}};
+        int rpathCalls = 0;
+        auto resolver = [&](const QString &n) -> std::optional<QByteArray> {
+            if (n.startsWith('@')) ++rpathCalls;
+            return fs.contains(n) ? std::optional(fs[n]) : std::nullopt;
+        };
+        MachO::Closure c; QString err;
+        QVERIFY2(MachO::dependencyClosure(thin(2, {kA, "@rpath/X.framework/X"}), resolver, 2, false, &c, &err), qPrintable(err));
+        QCOMPARE(c.installNames, QStringList({kA, kB, "/usr/lib/missing.dylib"}));
+        QCOMPARE(c.unresolved, QStringList({"/usr/lib/missing.dylib"}));
+        QCOMPARE(c.unresolvableRelative, QStringList({"@rpath/X.framework/X"}));
+        QCOMPARE(rpathCalls, 0);
+    }
     void fat64IsNamedInError() {
         QByteArray b = fat({{kArm64, 2, thin(2, {kA})}}); patch32(b, 0, 0xcafebabf, true);
         MachO::Dependencies d; QString err;
         QVERIFY(!read(b, kSubtypeArm64e, true, &d, &err));
         QVERIFY(err.contains("FAT_MAGIC_64"));
+    }
+    void closureRelativeFloodIsCapped() {
+        QStringList rel; for (int i = 0; i < 300; ++i) rel << QString("@rpath/L%1.dylib").arg(i);
+        MachO::Closure c; QString err;
+        QVERIFY(!MachO::dependencyClosure(thin(2, rel), [](const QString &) { return std::optional<QByteArray>(); }, 2, false, &c, &err));
+        QVERIFY(err.contains("node cap"));
+    }
+    void closureTerminatesOnCycle() {
+        QMap<QString, QByteArray> fs = {{kA, thin(2, {kB})}, {kB, thin(2, {kA})}};
+        int calls = 0;
+        auto resolver = [&](const QString &n) -> std::optional<QByteArray> { ++calls; return fs.value(n); };
+        MachO::Closure c; QString err;
+        QVERIFY2(MachO::dependencyClosure(thin(2, {kA}), resolver, 2, false, &c, &err), qPrintable(err));
+        QCOMPARE(c.installNames, QStringList({kA, kB}));
+        QCOMPARE(calls, 2);
+    }
+    void closureNodeCap() {
+        QStringList names; for (int i = 0; i < 300; ++i) names << QString("/usr/lib/lib%1.dylib").arg(i);
+        MachO::Closure c; QString err;
+        QVERIFY(!MachO::dependencyClosure(thin(2, names), [](const QString &) { return std::optional<QByteArray>(); }, 2, false, &c, &err));
+        QVERIFY(err.contains("node cap"));
+    }
+    void closureDepthCap() {
+        auto chain = [](int length) {
+            return [length](const QString &n) -> std::optional<QByteArray> {
+                const int i = n.mid(12, n.size() - 18).toInt();
+                return thin(2, i + 1 < length ? QStringList(QString("/usr/lib/lib%1.dylib").arg(i + 1)) : QStringList());
+            };
+        };
+        MachO::Closure c; QString err;
+        QVERIFY2(MachO::dependencyClosure(thin(2, {"/usr/lib/lib0.dylib"}), chain(20), 2, false, &c, &err), qPrintable(err));
+        QCOMPARE(c.installNames.size(), 20);
+        QVERIFY(!MachO::dependencyClosure(thin(2, {"/usr/lib/lib0.dylib"}), chain(60), 2, false, &c, &err));
+        QVERIFY(err.contains("depth cap"));
+    }
+    void closureFailsOnMalformedDependency() {
+        MachO::Closure c; QString err;
+        QVERIFY(!MachO::dependencyClosure(thin(2, {kA}), [](const QString &) { return std::optional(QByteArray("junk")); }, 2, false, &c, &err));
+        QVERIFY(err.contains(kA));
     }
 };
 QTEST_APPLESS_MAIN(MachOTest)
