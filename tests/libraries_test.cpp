@@ -121,6 +121,14 @@ private slots:
         QVERIFY(!Libraries::save(dir.path(), f, &err));
         QVERIFY(!QFileInfo::exists(Libraries::librariesPath(dir.path())));
     }
+    void loadAndSaveRefuseSymlinkedLauncherDir() {
+        QTemporaryDir dir, evil; QString err; LibrariesFile f; f.libraries = {record()};
+        QVERIFY(QFile::link(evil.path(), dir.path() + "/.darling-launcher"));
+        QVERIFY(!Libraries::save(dir.path(), f, &err));
+        QVERIFY(QDir(evil.path()).isEmpty());
+        writeFile(evil.path() + "/libraries.json", "{}");
+        LibrariesFile out; QVERIFY(!Libraries::load(dir.path(), &out, &err));
+    }
     void pinnedList_data() {
         QTest::addColumn<QString>("name"); QTest::addColumn<bool>("pinned");
         QTest::newRow("AppKit") << "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit" << true;

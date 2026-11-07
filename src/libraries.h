@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <QByteArray>
 #include <QList>
 #include <QString>
 
@@ -23,14 +24,18 @@ struct LibrariesFile {
 };
 
 namespace Libraries {
+constexpr int kMaxRecords = 4096;
 QString idFor(const QString &installName);
 bool validInstallName(const QString &installName, QString *error);
 // Darling's own libraries (Cocotron AppKit/CoreGraphics/..., CoreFoundation, Foundation, libobjc, libSystem):
 // imports must not shadow them unless forced.
 bool isPinned(const QString &installName);
+bool validRecord(const LibraryRecord &r, QString *error);
 QString librariesPath(const QString &prefix);
 QString storePath(const QString &prefix, const QString &id);
 // A missing file is an empty default; anything unreadable or invalid fails closed.
 bool load(const QString &prefix, LibrariesFile *out, QString *error);
+// Validates and renders libraries.json; refuses content larger than load() would accept.
+bool serialize(const LibrariesFile &file, QByteArray *json, QString *error);
 bool save(const QString &prefix, const LibrariesFile &file, QString *error);
 }
