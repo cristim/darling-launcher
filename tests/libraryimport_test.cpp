@@ -1,35 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "imagesource.h"
-#include "libraryimport.h"
-#include <QDir>
-#include <QFile>
-#include <QTemporaryDir>
-#include <QtTest>
-#include <sys/stat.h>
-#include <unistd.h>
-
-static const QString kLib = "/usr/lib/libfoo.dylib";
-static const QString kAppKit = "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit";
-
-static QByteArray slurp(const QString &path) { QFile f(path); return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray(); }
-static void put(const QString &path, const QByteArray &data) {
-    QDir().mkpath(QFileInfo(path).absolutePath());
-    QFile f(path); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(data);
-}
-static LibrarySource srcFor(const QByteArray &b) { return {"fixture", "uuid", "tool", ImageSources::sha256Hex(b)}; }
-static int modeOf(const QString &p) { struct stat st; return ::stat(p.toUtf8().constData(), &st) == 0 ? int(st.st_mode & 0777) : -1; }
-
-struct Env {
-    QTemporaryDir prefix, runtime, proc, evil;
-    ImportOptions opts;
-    Env() { opts.procFs.procRoot = proc.path(); opts.procFs.socketMayBeLive = [](const QString &) { return false; }; }
-    bool import(const QString &name, const QByteArray &b, bool force = false, QString *err = nullptr) {
-        QString local; return importImage(prefix.path(), runtime.path(), name, b, srcFor(b), force, err ? err : &local, opts);
-    }
-    QString upper(const QString &name = kLib) const { return prefix.path() + name; }
-    LibrariesFile records() { LibrariesFile f; QString e; Libraries::load(prefix.path(), &f, &e); return f; }
-    bool untouched() const { return !QFileInfo::exists(prefix.path() + "/.darling-launcher") && !QFileInfo::exists(upper()) && QDir(evil.path()).isEmpty(); }
-};
+#include "import_env.h"
 
 class ImportTest : public QObject {
     Q_OBJECT
@@ -203,6 +173,22 @@ private slots:
         QCOMPARE(slurp(store + "/image"), QByteArray("third"));
         QVERIFY(!QFileInfo::exists(store + "/image.pending"));
         QCOMPARE(e.records().libraries[0].source.sha256, ImageSources::sha256Hex("third"));
+    }
+    void crashRightAfterRemovingTheInterruptedFileIsRecoverable_data() {
+        QTest::addColumn<QByteArray>("again");
+        QTest::newRow("same bytes") << QByteArray("third"); QTest::newRow("different bytes") << QByteArray("fourth");
+    }
+    void crashRightAfterRemovingTheInterruptedFileIsRecoverable() {
+        QFETCH(QByteArray, again);
+        Env e; QString err; QVERIFY(e.import(kLib, "old"));
+        e.opts.abortAfter = [](const QString &s) { return s == "upper"; };
+        QVERIFY(!e.import(kLib, "new"));
+        e.opts.abortAfter = [](const QString &s) { return s == "unlinked"; };
+        QVERIFY(!e.import(kLib, "third")); QVERIFY(!QFileInfo::exists(e.upper()));
+        e.opts.abortAfter = nullptr; QVERIFY2(e.import(kLib, again, false, &err), qPrintable(err));
+        QCOMPARE(slurp(e.upper()), again);
+        QCOMPARE(slurp(Libraries::storePath(e.prefix.path(), Libraries::idFor(kLib)) + "/image"), again);
+        QCOMPARE(e.records().libraries[0].source.sha256, ImageSources::sha256Hex(again));
     }
     void differentBytesAfterAnInterruptedFreshImportSucceed() {
         Env e; e.opts.abortAfter = [](const QString &s) { return s == "upper"; };

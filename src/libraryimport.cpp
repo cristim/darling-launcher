@@ -8,7 +8,6 @@
 
 namespace {
 using LauncherCore::fail;
-struct LockGuard { int fd; ~LockGuard() { if (fd >= 0) ::close(fd); } };
 QString storeDir(const QString &id) { return ".darling-launcher/libs/" + id; }
 
 }
@@ -21,6 +20,16 @@ bool runtimeProvides(const QString &runtimeRoot, const QString &installName) {
     if (match.hasMatch()) relative = relative.left(match.capturedEnd(2));
     const QFileInfo provided(runtimeRoot + "/" + relative);
     return provided.exists() || provided.isSymLink();
+}
+
+PrefixSession::~PrefixSession() { if (lockFd >= 0) ::close(lockFd); }
+
+bool openSession(const QString &prefix, const ImportOptions &options, PrefixSession *session, QString *error) {
+    session->lockFd = SafeFs::lockFile(prefix, ".darling-launcher/lock", 0755, error);
+    if (session->lockFd < 0) return false;
+    QString why;
+    if (PrefixState::prefixRunning(prefix, options.procFs, &why)) return fail(error, "Refusing to change libraries while the prefix may be running: " + why);
+    return Libraries::load(prefix, &session->file, error);
 }
 
 bool checkRuntimeAllows(const QString &runtimeRoot, const QString &installName, bool force, QString *error) {
@@ -56,12 +65,9 @@ bool importImage(const QString &prefix, const QString &runtimeRoot, const QStrin
     if (!Libraries::validRecord(record, error)) return false;
     if (!checkRuntimeAllows(runtimeRoot, installName, force, error)) return false;
 
-    LockGuard lock{SafeFs::lockFile(prefix, ".darling-launcher/lock", 0755, error)};
-    if (lock.fd < 0) return false;
-    QString why;
-    if (PrefixState::prefixRunning(prefix, options.procFs, &why)) return fail(error, "Refusing to import while the prefix may be running: " + why);
-    LibrariesFile file;
-    if (!Libraries::load(prefix, &file, error)) return false;
+    PrefixSession session;
+    if (!openSession(prefix, options, &session, error)) return false;
+    LibrariesFile &file = session.file;
     if (!file.enabled && !options.overrideMasterSwitch) return fail(error, "Library imports are switched off for this prefix (libraries.json enabled=false)");
     int recordIndex = -1;
     for (int i = 0; i < file.libraries.size(); ++i) if (file.libraries[i].installName == installName) recordIndex = i;
@@ -73,6 +79,7 @@ bool importImage(const QString &prefix, const QString &runtimeRoot, const QStrin
     // Remove it first so every later crash point still leaves either no upper file or a recognisable one.
     if (upper.interrupted && upper.sha != record.source.sha256) {
         if (!SafeFs::removeFile(prefix, installName.mid(1), error)) return false;
+        if (options.abortAfter && options.abortAfter("unlinked")) return fail(error, "Import aborted after removing the interrupted file");
     }
 
     // Validate the updated records (count, size) now, before anything is written.
