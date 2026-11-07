@@ -10,7 +10,7 @@
 struct ImportOptions {
     PrefixState::ProcFs procFs;
     SafeFs::Hooks upperWriteHooks; // test seam for the descriptor-chain write of the upper file
-    // Test seam: called after the "pending", "upper" and "record" steps; returning true aborts the import there.
+    // Test seam: called after the "unlinked" (interrupted file removed), "pending", "upper" and "record" steps; returning true aborts the import there.
     std::function<bool(const QString &stage)> abortAfter;
     // libraries.json enabled=false is the per-prefix master switch; importing into a switched-off prefix needs this.
     bool overrideMasterSwitch = false;
@@ -28,6 +28,18 @@ struct UpperState {
 };
 bool upperFileState(const QString &prefix, const QString &installName, const LibraryRecord *record, qint64 maxBytes,
                     UpperState *out, QString *error);
+
+// Exclusive access to a prefix's library state: the launcher lock is held, the prefix is not running and
+// libraries.json is loaded. Used by import, enable and disable.
+struct PrefixSession {
+    int lockFd = -1;
+    LibrariesFile file;
+    PrefixSession() = default;
+    PrefixSession(const PrefixSession &) = delete;
+    PrefixSession &operator=(const PrefixSession &) = delete;
+    ~PrefixSession();
+};
+bool openSession(const QString &prefix, const ImportOptions &options, PrefixSession *session, QString *error);
 
 // The "builtin" rule: does the Darling runtime already provide this path (or its framework directory)?
 bool runtimeProvides(const QString &runtimeRoot, const QString &installName);
