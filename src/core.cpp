@@ -16,9 +16,8 @@
 #include <plist/plist.h>
 #include <cstdlib>
 
-namespace {
+namespace LauncherCore {
 bool fail(QString *error, const QString &message) { if (error) *error = message; return false; }
-QString shellQuote(QString value) { value.replace("'", "'\\''"); return "'" + value + "'"; }
 
 bool confinedRelative(const QString &path) {
     if (path.isEmpty() || QDir::isAbsolutePath(path)) return false;
@@ -30,6 +29,22 @@ bool confinedRelative(const QString &path) {
 bool within(const QString &child, const QString &root) {
     return child == root || child.startsWith(root + '/');
 }
+
+bool writeJsonAtomic(const QString &path, const QJsonObject &object, QString *error) {
+    if (!QDir().mkpath(QFileInfo(path).absolutePath())) return fail(error, "Cannot create directory for " + path);
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) return fail(error, file.errorString());
+    file.write(QJsonDocument(object).toJson());
+    if (!file.commit()) return fail(error, file.errorString());
+    return true;
+}
+}
+
+namespace {
+using LauncherCore::fail;
+using LauncherCore::confinedRelative;
+using LauncherCore::within;
+QString shellQuote(QString value) { value.replace("'", "'\\''"); return "'" + value + "'"; }
 
 bool copyTree(const QString &source, const QString &destination, const QString &sourceRoot, QString *error) {
     QFileInfo info(source);
@@ -275,13 +290,7 @@ QJsonObject loadCatalog(const QString &prefix) {
     return QJsonDocument::fromJson(file.readAll()).object();
 }
 bool saveCatalog(const QString &prefix, const QJsonObject &catalog, QString *error) {
-    QString path = catalogPath(prefix);
-    if (!QDir().mkpath(QFileInfo(path).absolutePath())) return fail(error, "Cannot create catalog directory");
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly)) return fail(error, file.errorString());
-    file.write(QJsonDocument(catalog).toJson());
-    if (!file.commit()) return fail(error, file.errorString());
-    return true;
+    return writeJsonAtomic(catalogPath(prefix), catalog, error);
 }
 bool stageBrewfile(const QString &prefix, const QString &source, QString *guestPath, QString *sha256, QString *error) {
     if (!QFileInfo(prefix).isDir()) return fail(error, "Prefix does not exist");
