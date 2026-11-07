@@ -21,6 +21,8 @@ bool readFile(const QString &root, const QString &relPath, qint64 maxBytes, QByt
 bool renameInDir(const QString &root, const QString &dirRelPath, const QString &from, const QString &to, QString *error);
 // Unlinks a file (never a directory, never through a symlinked parent). Already absent is success.
 bool removeFile(const QString &root, const QString &relPath, QString *error);
+// Removes an empty directory (never through a symlinked parent). Already absent is success.
+bool removeDirectory(const QString &root, const QString &relPath, QString *error);
 // flock(LOCK_EX|LOCK_NB) on a regular file; returns the descriptor (close it to unlock) or -1.
 int lockFile(const QString &root, const QString &relPath, mode_t dirMode, QString *error);
 }

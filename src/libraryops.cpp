@@ -71,6 +71,23 @@ bool disableLibrary(const QString &prefix, const QString &installName, QString *
     return Libraries::save(prefix, s.file, error);
 }
 
+bool abandonLibrary(const QString &prefix, const QString &installName, QString *error, const ImportOptions &options) {
+    PrefixSession s;
+    if (!openSession(prefix, options, &s, error)) return false;
+    const int i = indexOf(s.file, installName);
+    UpperState st;
+    if (!upperState(prefix, s.file, installName, options, &st, error)) return false;
+    if (st.exists && st.ours) return fail(error, "The upper file is still ours; disable the library instead of abandoning it: " + installName);
+    if (i >= 0) {
+        s.file.libraries.removeAt(i);
+        if (!Libraries::save(prefix, s.file, error)) return false;
+    }
+    // Only files this launcher created; the upper file is never touched.
+    const QString dir = ".darling-launcher/libs/" + Libraries::idFor(installName);
+    return SafeFs::removeFile(prefix, dir + "/image", error) && SafeFs::removeFile(prefix, dir + "/image.pending", error)
+        && SafeFs::removeDirectory(prefix, dir, error);
+}
+
 bool enableLibrary(const QString &prefix, const QString &runtimeRoot, const QString &installName, bool force,
                    QString *error, const ImportOptions &options) {
     PrefixSession s;
