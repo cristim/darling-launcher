@@ -41,6 +41,11 @@ MissingSymbol diagnose(const QString &output);
 struct PrefixCheck { QString name; bool ok; QString detail; };
 QList<PrefixCheck> checkPrefix(const QString &launcher, const QString &runtimeRoot, const QString &prefix);
 QList<PrefixCheck> repairPrefix(const QString &launcher, const QString &runtimeRoot, const QString &prefix);
+// Shared path/IO helpers (also used by the library import code).
+bool fail(QString *error, const QString &message);
+bool confinedRelative(const QString &path);
+bool within(const QString &child, const QString &root);
+bool writeJsonAtomic(const QString &path, const QJsonObject &object, QString *error);
 QString catalogPath(const QString &prefix);
 QJsonObject loadCatalog(const QString &prefix);
 bool saveCatalog(const QString &prefix, const QJsonObject &catalog, QString *error);
