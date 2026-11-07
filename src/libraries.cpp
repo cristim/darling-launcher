@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "libraries.h"
 #include "core.h"
+#include "safefs.h"
 #include <QCryptographicHash>
-#include <QFile>
-#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -21,7 +20,7 @@ const char *const kPinnedFrameworks[] = {"AppKit", "Cocoa", "CoreData", "CoreGra
 const char *const kPinnedLibPrefixes[] = {"/usr/lib/libobjc", "/usr/lib/libSystem"};
 // Limits on guest-writable input.
 const qint64 kMaxFileBytes = 1 << 20;
-const int kMaxRecords = 4096;
+const QString kRelPath = QStringLiteral(".darling-launcher/libraries.json");
 const int kMaxNameBytes = 4096;
 const int kMaxComponentBytes = 255;
 const int kMaxFieldChars = 128;
@@ -60,10 +59,10 @@ bool isPinned(const QString &installName) {
     return false;
 }
 
-QString librariesPath(const QString &prefix) { return prefix + "/.darling-launcher/libraries.json"; }
+QString librariesPath(const QString &prefix) { return prefix + "/" + kRelPath; }
 QString storePath(const QString &prefix, const QString &id) { return prefix + "/.darling-launcher/libs/" + id; }
 
-static bool validRecord(const LibraryRecord &r, QString *error) {
+bool validRecord(const LibraryRecord &r, QString *error) {
     using LauncherCore::fail;
     if (!validInstallName(r.installName, error)) return false;
     if (r.id != idFor(r.installName)) return fail(error, "Record id does not match its install name: " + r.installName);
@@ -91,15 +90,12 @@ static bool strictString(const QJsonObject &o, const char *key, QString *out, QS
 bool load(const QString &prefix, LibrariesFile *out, QString *error) {
     using LauncherCore::fail;
     *out = {};
-    QFile file(librariesPath(prefix));
-    const QFileInfo info(file.fileName());
-    if (!info.exists() && !info.isSymLink()) return true;
-    // guest-writable path: a FIFO would block the open forever and a symlink could redirect the read
-    if (info.isSymLink() || !info.isFile()) return fail(error, "libraries.json is not a regular file");
-    if (!file.open(QIODevice::ReadOnly)) return fail(error, "Cannot read libraries.json: " + file.errorString());
-    if (file.size() > kMaxFileBytes) return fail(error, "libraries.json is too large");
+    // guest-writable path: read through a descriptor chain that refuses symlinks, FIFOs and oversized files
+    QByteArray raw; bool exists = false;
+    if (!SafeFs::readFile(prefix, kRelPath, kMaxFileBytes, &raw, &exists, error)) return false;
+    if (!exists) return true;
     QJsonParseError parse;
-    const auto doc = QJsonDocument::fromJson(file.read(kMaxFileBytes + 1), &parse);
+    const auto doc = QJsonDocument::fromJson(raw, &parse);
     if (parse.error != QJsonParseError::NoError || !doc.isObject()) return fail(error, "libraries.json is not valid JSON");
     const auto root = doc.object();
     const auto version = root.value("version");
@@ -127,7 +123,7 @@ bool load(const QString &prefix, LibrariesFile *out, QString *error) {
     return true;
 }
 
-bool save(const QString &prefix, const LibrariesFile &file, QString *error) {
+bool serialize(const LibrariesFile &file, QByteArray *json, QString *error) {
     QJsonArray records; QSet<QString> names, ids;
     if (file.libraries.size() > kMaxRecords) return LauncherCore::fail(error, "Too many records");
     for (const auto &r : file.libraries) {
@@ -137,6 +133,15 @@ bool save(const QString &prefix, const LibrariesFile &file, QString *error) {
         records.append(QJsonObject{{"installName", r.installName}, {"id", r.id}, {"enabled", r.enabled},
             {"source", QJsonObject{{"kind", r.source.kind}, {"cacheUUID", r.source.cacheUUID}, {"toolVersion", r.source.toolVersion}, {"sha256", r.source.sha256}}}});
     }
-    return LauncherCore::writeJsonAtomic(librariesPath(prefix), QJsonObject{{"version", 1}, {"enabled", file.enabled}, {"libraries", records}}, error);
+    *json = QJsonDocument(QJsonObject{{"version", 1}, {"enabled", file.enabled}, {"libraries", records}}).toJson(QJsonDocument::Indented);
+    // load() refuses larger files, so never write one
+    if (json->size() > kMaxFileBytes) return LauncherCore::fail(error, "libraries.json would exceed its size limit");
+    return true;
+}
+
+bool save(const QString &prefix, const LibrariesFile &file, QString *error) {
+    QByteArray json;
+    if (!serialize(file, &json, error)) return false;
+    return SafeFs::writeFile(prefix, kRelPath, json, 0644, 0755, true, error);
 }
 }
