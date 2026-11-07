@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "window.h"
+#include "libscli.h"
 #include "log.h"
 #include "stagesupervisor.h"
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QTextStream>
 #include <QTimer>
 #include <cstring>
 int main(int argc, char **argv) {
     if (argc > 1 && std::strcmp(argv[1], StageSupervisor::Flag) == 0) return StageSupervisor::run(argc, argv);
+    if (argc > 1 && QByteArray(argv[1]) == "libs") { // no GUI: handled before QApplication exists
+        QStringList args; for (int i = 2; i < argc; ++i) args << QString::fromLocal8Bit(argv[i]);
+        QTextStream out(stdout), err(stderr);
+        return libsMain(args, out, err);
+    }
     QApplication app(argc, argv);
     app.setApplicationName("Darling Launcher");
     LauncherLog::installQtHandler();
