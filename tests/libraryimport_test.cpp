@@ -144,6 +144,77 @@ private slots:
         QCOMPARE(slurp(e.prefix.path() + "/usr/moved/libfoo.dylib"), QByteArray("b"));
         QVERIFY(QDir(e.evil.path()).isEmpty());
     }
+    // Aborts a fresh import or a replace after `stage`, then checks that nothing unrecognisable is left and that
+    // re-importing completes it from that crash point.
+    void crashAtEveryStepIsRecoverable_data() {
+        QTest::addColumn<QString>("stage"); QTest::addColumn<bool>("replace");
+        for (const char *st : {"pending", "upper", "record"}) {
+            QTest::newRow(qPrintable(QString("fresh after %1").arg(st))) << QString(st) << false;
+            QTest::newRow(qPrintable(QString("replace after %1").arg(st))) << QString(st) << true;
+        }
+    }
+    void crashAtEveryStepIsRecoverable() {
+        QFETCH(QString, stage); QFETCH(bool, replace);
+        Env e; QString err;
+        if (replace) QVERIFY(e.import(kLib, "old"));
+        e.opts.abortAfter = [&](const QString &s) { return s == stage; };
+        QVERIFY(!e.import(kLib, "new"));
+        const auto f = e.records();
+        UpperState st; QVERIFY2(upperFileState(e.prefix.path(), kLib, f.libraries.isEmpty() ? nullptr : &f.libraries[0], 1 << 20, &st, &err), qPrintable(err));
+        QVERIFY2(!st.exists || st.ours, "an upper file survived that the launcher cannot recognise");
+        QCOMPARE(st.exists, stage != "pending" || replace);
+        if (!replace && stage == "pending") QVERIFY(!QFileInfo::exists(e.upper()));
+        e.opts.abortAfter = nullptr;
+        QVERIFY2(e.import(kLib, "new", false, &err), qPrintable(err));
+        QCOMPARE(slurp(e.upper()), QByteArray("new"));
+        const QString store = Libraries::storePath(e.prefix.path(), Libraries::idFor(kLib));
+        QCOMPARE(slurp(store + "/image"), QByteArray("new"));
+        QVERIFY(!QFileInfo::exists(store + "/image.pending"));
+        QCOMPARE(e.records().libraries.size(), 1);
+        QCOMPARE(e.records().libraries[0].source.sha256, ImageSources::sha256Hex("new"));
+    }
+    void liveImageIsNeverReplacedBeforeTheRecordIsWritten() {
+        Env e; QVERIFY(e.import(kLib, "old"));
+        e.opts.abortAfter = [](const QString &s) { return s == "upper"; };
+        QVERIFY(!e.import(kLib, "new"));
+        QCOMPARE(slurp(Libraries::storePath(e.prefix.path(), Libraries::idFor(kLib)) + "/image"), QByteArray("old"));
+    }
+    void differentBytesAfterEachCrashPointSucceedAndEndConsistent_data() {
+        QTest::addColumn<QString>("firstCrash"); QTest::addColumn<QString>("secondCrash");
+        for (const char *a : {"pending", "upper", "record"})
+            for (const char *b : {"", "pending", "upper", "record"})
+                QTest::newRow(qPrintable(QString("crash %1 then %2").arg(a, *b ? b : "no crash"))) << QString(a) << QString(b);
+    }
+    void differentBytesAfterEachCrashPointSucceedAndEndConsistent() {
+        QFETCH(QString, firstCrash); QFETCH(QString, secondCrash);
+        Env e; QString err; QVERIFY(e.import(kLib, "old"));
+        e.opts.abortAfter = [&](const QString &s) { return s == firstCrash; };
+        QVERIFY(!e.import(kLib, "new"));
+        e.opts.abortAfter = [&](const QString &s) { return !secondCrash.isEmpty() && s == secondCrash; };
+        QCOMPARE(e.import(kLib, "third", false, &err), secondCrash.isEmpty());
+        if (!secondCrash.isEmpty()) { // the second import was cut short too: nothing unrecognisable may remain
+            const auto f = e.records();
+            UpperState st; QVERIFY(upperFileState(e.prefix.path(), kLib, &f.libraries[0], 1 << 20, &st, &err));
+            QVERIFY2(!st.exists || st.ours, "unrecognisable upper file");
+            e.opts.abortAfter = nullptr; QVERIFY2(e.import(kLib, "third", false, &err), qPrintable(err));
+        }
+        QCOMPARE(slurp(e.upper()), QByteArray("third"));
+        const QString store = Libraries::storePath(e.prefix.path(), Libraries::idFor(kLib));
+        QCOMPARE(slurp(store + "/image"), QByteArray("third"));
+        QVERIFY(!QFileInfo::exists(store + "/image.pending"));
+        QCOMPARE(e.records().libraries[0].source.sha256, ImageSources::sha256Hex("third"));
+    }
+    void differentBytesAfterAnInterruptedFreshImportSucceed() {
+        Env e; e.opts.abortAfter = [](const QString &s) { return s == "upper"; };
+        QVERIFY(!e.import(kLib, "first"));
+        e.opts.abortAfter = nullptr; QString err; QVERIFY2(e.import(kLib, "second", false, &err), qPrintable(err));
+        QCOMPARE(slurp(e.upper()), QByteArray("second"));
+    }
+    void pendingFileDoesNotMakeAForeignFileOurs() {
+        Env e; put(e.upper(), "guest file");
+        QVERIFY(!e.import(kLib, "mine"));
+        QCOMPARE(slurp(e.upper()), QByteArray("guest file"));
+    }
     void runtimeRootMustBeAnExistingAbsoluteDirectory() {
         Env e; QString err;
         QVERIFY(!importImage(e.prefix.path(), ".", kLib, "b", srcFor("b"), false, &err, e.opts)); // exists, but relative
