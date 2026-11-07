@@ -118,6 +118,17 @@ private slots:
         QVERIFY(!SafeFs::removeFile(d.path(), "l/a", &err));
         QVERIFY(QFileInfo::exists(evil.path() + "/a"));
     }
+    void removeDirectoryRemovesOnlyEmptyRealDirectories() {
+        QTemporaryDir d, evil; QString err;
+        QVERIFY(SafeFs::writeFile(d.path(), "s/a", "x", 0600, 0700, false, &err));
+        QVERIFY(!SafeFs::removeDirectory(d.path(), "s", &err)); QVERIFY(QFileInfo::exists(d.path() + "/s/a"));
+        QVERIFY(SafeFs::removeFile(d.path(), "s/a", &err));
+        QVERIFY2(SafeFs::removeDirectory(d.path(), "s", &err), qPrintable(err));
+        QVERIFY(!QFileInfo::exists(d.path() + "/s"));
+        QVERIFY(SafeFs::removeDirectory(d.path(), "s", &err)); // idempotent
+        QVERIFY(QDir().mkpath(evil.path() + "/sub")); QVERIFY(QFile::link(evil.path(), d.path() + "/l"));
+        QVERIFY(!SafeFs::removeDirectory(d.path(), "l/sub", &err)); QVERIFY(QFileInfo::exists(evil.path() + "/sub"));
+    }
     void lockExcludesAnotherHolder() {
         QTemporaryDir d; QString err;
         const int a = SafeFs::lockFile(d.path(), ".x/lock", 0700, &err); QVERIFY2(a >= 0, qPrintable(err));

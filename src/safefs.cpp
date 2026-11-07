@@ -125,6 +125,15 @@ bool removeFile(const QString &root, const QString &relPath, QString *error) {
     return true;
 }
 
+bool removeDirectory(const QString &root, const QString &relPath, QString *error) {
+    QStringList dirs; QString leaf; bool missing = false;
+    if (!split(relPath, &dirs, &leaf, error)) return false;
+    Fd dir(openDirs(root, dirs, false, 0, &missing, error));
+    if (dir.fd < 0) return missing;
+    if (::unlinkat(dir.fd, leaf.toUtf8().constData(), AT_REMOVEDIR) != 0 && errno != ENOENT) return fail(error, sysError("Cannot remove directory " + relPath));
+    return true;
+}
+
 int lockFile(const QString &root, const QString &relPath, mode_t dirMode, QString *error) {
     QStringList dirs; QString leaf;
     if (!split(relPath, &dirs, &leaf, error)) return -1;

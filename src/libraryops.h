@@ -16,3 +16,6 @@ bool enableLibrary(const QString &prefix, const QString &runtimeRoot, const QStr
 // checks. Failing mid-way is completed by rerunning. abortAfter also sees "item:<installName>" after each library.
 bool setMasterSwitch(const QString &prefix, const QString &runtimeRoot, bool enabled, bool force, QStringList *skipped,
                      QString *error, const ImportOptions &options = {});
+// Escape for a tampered library: drops its record and the store files this launcher created, never the upper file.
+// Refused while the upper file is still ours (disable it instead).
+bool abandonLibrary(const QString &prefix, const QString &installName, QString *error, const ImportOptions &options = {});

@@ -13,6 +13,7 @@ struct OpsEnv : Env {
     bool master(bool on, bool force = false, QString *err = nullptr) {
         QString l; return setMasterSwitch(prefix.path(), runtime.path(), on, force, &skipped, err ? err : &l, opts);
     }
+    bool abandon(const QString &n = kLib, QString *err = nullptr) { QString l; return abandonLibrary(prefix.path(), n, err ? err : &l, opts); }
     bool has(const QString &n = kLib) const { return QFileInfo::exists(upper(n)); }
     QString store(const QString &n = kLib) const { return Libraries::storePath(prefix.path(), Libraries::idFor(n)); }
     bool recordEnabled(const QString &n = kLib) { for (const auto &r : records().libraries) if (r.installName == n) return r.enabled; return false; }
@@ -55,6 +56,20 @@ private slots:
         put(e.upper(), "guest"); QVERIFY(e.disable()); QCOMPARE(slurp(e.upper()), QByteArray("guest")); // foreign, no record
         OpsEnv f; QVERIFY(f.import(kLib, "img")); QVERIFY(f.disable()); put(f.upper(), "guest");
         QVERIFY(f.disable()); QCOMPARE(slurp(f.upper()), QByteArray("guest")); // disabled record, foreign file
+    }
+    void abandonDropsTheRecordAndOurStoreButNeverTheUpperFile() {
+        OpsEnv e; QVERIFY(e.import(kLib, "img")); put(e.upper(), "tampered");
+        QVERIFY(!e.disable());
+        QString err; QVERIFY2(e.abandon(kLib, &err), qPrintable(err));
+        QCOMPARE(slurp(e.upper()), QByteArray("tampered"));
+        QVERIFY(e.records().libraries.isEmpty()); QVERIFY(!QFileInfo::exists(e.store()));
+        QVERIFY(e.abandon()); // idempotent
+    }
+    void abandonRefusesWhileTheUpperFileIsStillOursAndWhileRunning() {
+        OpsEnv e; QVERIFY(e.import(kLib, "img")); QString err;
+        QVERIFY(!e.abandon(kLib, &err)); QVERIFY(err.contains("disable")); QCOMPARE(e.records().libraries.size(), 1);
+        e.markRunning(); put(e.upper(), "tampered");
+        QVERIFY(!e.abandon(kLib, &err)); QVERIFY(err.contains("running")); QCOMPARE(e.records().libraries.size(), 1);
     }
     void disableWorksAtEveryCrashState_data() {
         QTest::addColumn<QString>("stage"); QTest::addColumn<bool>("replace");
