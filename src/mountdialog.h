@@ -34,7 +34,8 @@ private:
     QPushButton *cryptexButton = nullptr;
     QPushButton *cryptexUnmountButton = nullptr;
     QPushButton *prebootUnmountButton = nullptr;
-    QString cryptexRoot;
+    QString cryptexRoot;         // root of the cryptex mount that was verified; Unmount targets this
+    QString pendingCryptexRoot;  // root of the attempt in progress
     QTextEdit *output = nullptr;
     bool mountBusy = false;
     bool requestedBatch = false;

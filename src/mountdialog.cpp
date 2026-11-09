@@ -243,7 +243,7 @@ void MountDialog::mountCryptex(const QString &requestedRoot, const QString &apfs
     if (!LauncherMount::makeCryptexCommand(python, QStringLiteral(LAUNCHER_MOUNT_CRYPTEX_SCRIPT),
                                            root, apfsFuse, device, &command, &error)) { output->append(error); return; }
     output->append("Warning: apfs-fuse can use several GB of memory while reading the cryptex image.");
-    cryptexRoot = root;
+    pendingCryptexRoot = root;
     runCryptexCommand(command, "Waiting for one authorization request for the Preboot mount…");
 }
 
@@ -268,7 +268,7 @@ void MountDialog::runCryptexCommand(const MountCommand &command, const QString &
     };
     connect(process, &QProcess::readyReadStandardOutput, this, consume);
     connect(process, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) {
-        consume(); setBusy(false);
+        consume(); setBusy(false); pendingCryptexRoot.clear();
         output->append(exit != QProcess::NormalExit ? "Cryptex mount helper crashed." : LauncherMount::exitDescription(code));
         process->deleteLater(); discover();
     });
@@ -285,7 +285,10 @@ void MountDialog::handleCryptexEvent(const QByteArray &line) {
     if (type == "mounted") {
         QStorageInfo storage(path); storage.refresh();
         const bool verified = storage.rootPath() == path;
-        if (role == "cryptex-os" && verified) cryptexUnmountButton->setEnabled(true);
+        if (role == "cryptex-os" && verified) {
+            cryptexRoot = LauncherMount::adoptCryptexRoot(cryptexRoot, pendingCryptexRoot, path);
+            cryptexUnmountButton->setEnabled(!cryptexRoot.isEmpty());
+        }
         output->append((verified ? "Mounted read-only: " : "Reported mounted but not verified: ") + path);
     } else if (type == "unmounted") output->append("Unmounted " + role + ": " + path);
     else if (type == "dyld") output->append("dyld shared cache directory: " + path);
