@@ -220,6 +220,55 @@ ownership. It never writes filesystem data to the macOS device or unlocks encryp
 volumes. Mounts remain present until explicitly unmounted. Apple payloads and
 filesystem metadata are private local data and are not uploaded.
 
+## MCP server for AI clients
+
+`tools/launcher-mcp.py` is a stdio [Model Context Protocol](https://modelcontextprotocol.io)
+server that lets an AI client such as Claude Code inspect the launcher's state and, if you
+opt in, start and stop apps. It uses only the Python 3 standard library, needs no network
+and no Qt, and runs as its own process; nothing in the GUI changes. Register it with:
+
+```sh
+claude mcp add darling-launcher -- python3 -I /absolute/path/to/tools/launcher-mcp.py
+# to allow launch_app and stop_prefix as well:
+claude mcp add darling-launcher -e DARLING_LAUNCHER_MCP_ALLOW_ACTIONS=1 -- python3 -I /absolute/path/to/tools/launcher-mcp.py
+```
+
+It reads `~/.darling-launcher` and the launcher's settings file
+(`~/.config/cristim/darling-launcher.conf`). `DARLING_LAUNCHER_DATA_DIR` and
+`DARLING_LAUNCHER_CONFIG` override those locations; no other environment variable is read
+except `DARLING_LAUNCHER_MCP_ALLOW_ACTIONS` (`1` or `0`).
+
+| Tool | Effect |
+| --- | --- |
+| `launcher_status` | Read-only. Installed runtime tags, selected paths, default prefix, mount root, last log lines. |
+| `list_prefixes` | Read-only. Managed prefixes and their imported-app counts. |
+| `list_apps` | Read-only. Apps in a prefix's import catalog. |
+| `mount_status` | Read-only. `findmnt` entries under the launcher mount root. |
+| `tail_log` | Read-only. Last lines of `launcher.log` or of the log of apps this server started. |
+| `mount_plan` | Read-only. Returns the `pkexec`/`mount`/script command lines for you to run; runs nothing. |
+| `launch_app` | Not read-only. `darling exec` of an imported app. Needs the opt-in and `confirm: true`. |
+| `stop_prefix` | Not read-only. `darling shutdown` for a prefix. Needs the opt-in and `confirm: true`. |
+
+Safety model:
+
+- Action tools are refused unless the server was started with
+  `DARLING_LAUNCHER_MCP_ALLOW_ACTIONS=1`, and each call must also pass `confirm: true`.
+- The server never calls `sudo` or `pkexec` and never mounts anything. `mount_plan` only
+  returns commands. The cryptex plan mirrors the documented command of the cryptex mount
+  action; its script is present only on a checkout that includes it, and the plan says so.
+- A prefix is a bare name or an absolute path of a direct, non-symlink child of
+  `~/.darling-launcher/prefixes`. Mount directories must be inside
+  `~/.darling-launcher/mounts` without symlink components. `..` is refused everywhere.
+- Subprocesses run as argument lists (no shell) with a fixed environment allowlist, a
+  timeout and a cap on captured output. A running app or a slow `darling shutdown` is left
+  running; the server never sends signals to Darling or guest processes.
+- Every result has home directory paths, the user name and token-like strings redacted.
+- Protocol messages use stdout; logging goes to stderr. Lines over 256 KiB are rejected.
+
+The tests (`ctest -R launcher-mcp`, or `python3 tests/launcher_mcp_test.py`) use temporary
+directories and fake `darling`, `findmnt` and `pkexec` executables; they need no Darling,
+privileges or network.
+
 ## Diagnostic log
 
 The launcher appends to `~/.darling-launcher/logs/launcher.log` (rotated at 8 MB to a
