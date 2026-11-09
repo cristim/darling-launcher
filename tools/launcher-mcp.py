@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shlex
 import stat
 import subprocess
@@ -53,7 +54,11 @@ MOUNT_PLAN_ARGUMENTS = {
     "unmount": {"directory"},
 }
 
-LOG_SOURCES = {"launcher": "launcher.log", "mcp-launch": "mcp-launch.log"}
+LOG_SOURCES = ("launcher", "mcp-launch")
+# One file per launch_app call, so output of other running apps is never attributed to a launch.
+LAUNCH_LOG_DIR = "mcp-launch"
+LAUNCH_LOG_RE = re.compile(r"^\d{8}T\d{6}-[0-9a-f]{8}\.log$")
+MAX_LAUNCH_LOGS = 20
 
 
 def log(message):
@@ -661,9 +666,22 @@ class Server:
             kept.append(line[:MAX_LOG_LINE_CHARS])
         return kept[::-1]
 
+    def launch_logs(self):
+        """The per-launch log files, oldest first."""
+        check_no_symlinks(self.config.data_dir, ["logs", LAUNCH_LOG_DIR])
+        try:
+            entries = os.scandir(self.config.log_dir / LAUNCH_LOG_DIR)
+        except FileNotFoundError:
+            return []
+        with entries:
+            return sorted(e.name for e in entries if LAUNCH_LOG_RE.match(e.name) and e.is_file(follow_symlinks=False))
+
     def log_lines(self, source, count):
         check_no_symlinks(self.config.data_dir, ["logs"])
-        return self.tail_file(self.config.log_dir / LOG_SOURCES[source], count)
+        if source == "launcher":
+            return self.tail_file(self.config.log_dir / "launcher.log", count)
+        names = self.launch_logs()
+        return self.tail_file(self.config.log_dir / LAUNCH_LOG_DIR / names[-1], count) if names else []
 
     def catalog(self, prefix):
         """Imported apps of a prefix from its private catalog, as (valid entries, number of skipped entries)."""
@@ -674,8 +692,8 @@ class Server:
         raw = read_regular_file(path, MAX_CATALOG_BYTES, "prefix catalog")
         try:
             document = json.loads(raw)
-        except ValueError:
-            raise ToolError("the prefix catalog is not valid JSON")
+        except (ValueError, RecursionError, MemoryError):
+            raise ToolError("the prefix catalog is not valid JSON, or is nested too deeply")
         records = document.get("apps", []) if isinstance(document, dict) else None
         if not isinstance(records, list):
             raise ToolError("the prefix catalog has no 'apps' list")
@@ -820,7 +838,7 @@ def build_tools(server):
         lines = args.get("lines", 50)
         source = args.get("source", "launcher")
         found = server.log_lines(source, lines)
-        return {"source": source, "lines": found}, f"Last {len(found)} line(s) of {LOG_SOURCES[source]}."
+        return {"source": source, "lines": found}, f"Last {len(found)} line(s) of the {source} log."
 
     def require_actions(args):
         """The two gates every action passes before it touches anything: server-start opt-in, then per-call confirm."""
@@ -863,31 +881,35 @@ def build_tools(server):
         prefix = resolve_prefix(config, args["prefix"])
         binary, env = darling_environment(read_settings(config), prefix)
         app, guest = find_app(prefix, args["app"])
-        check_no_symlinks(config.data_dir, ["logs"])
-        config.log_dir.mkdir(mode=0o700, exist_ok=True)
-        log_path = config.log_dir / LOG_SOURCES["mcp-launch"]
+        server.launch_logs()  # refuses a symlinked logs directory
+        log_dir = config.log_dir / LAUNCH_LOG_DIR
+        log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        log_name = f"{time.strftime('%Y%m%dT%H%M%S')}-{secrets.token_hex(4)}.log"
         argv = [binary, "exec", guest]
         try:
-            fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            fd = os.open(log_dir / log_name, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         except OSError as error:
-            raise ToolError(f"cannot open the launch log: {error.strerror}")
-        with os.fdopen(fd, "ab") as sink:
-            start = sink.seek(0, os.SEEK_END)
-            sink.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} [launch:{app['name']}] {prefix.name}: {' '.join(argv)}\n".encode())
-            sink.flush()
+            raise ToolError(f"cannot create the launch log: {error.strerror}")
+        try:
+            os.write(fd, f"{time.strftime('%Y-%m-%dT%H:%M:%S')} [launch:{app['name']}] {prefix.name}: {' '.join(argv)}\n".encode())
             try:
-                proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.STDOUT, env=env, cwd="/", start_new_session=True, close_fds=True)
+                proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=fd, stderr=subprocess.STDOUT, env=env, cwd="/", start_new_session=True, close_fds=True)
             except OSError as error:
                 raise ToolError(f"could not start darling: {error.strerror}")
-        server.track(proc)
-        deadline = time.monotonic() + args.get("wait_seconds", 5)
-        while proc.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.02)
-        code = proc.poll()
-        with open(log_path, "rb") as reader:
-            reader.seek(start)
-            output = reader.read(MAX_CHILD_OUTPUT).decode("utf-8", "replace")
-        data = {"prefix": str(prefix), "app": app["name"], "bundle": app["bundle"], "pid": proc.pid,
+            server.track(proc)
+            deadline = time.monotonic() + args.get("wait_seconds", 5)
+            while proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            code = proc.poll()
+            output = os.pread(fd, MAX_CHILD_OUTPUT, 0).decode("utf-8", "replace")
+        finally:
+            os.close(fd)
+        for old in server.launch_logs()[:-MAX_LAUNCH_LOGS]:
+            try:
+                os.unlink(log_dir / old)  # only this server's own rotating files, matched by name
+            except OSError:
+                pass
+        data = {"prefix": str(prefix), "app": app["name"], "bundle": app["bundle"], "pid": proc.pid, "log_file": log_name,
                 "state": "running" if code is None else "exited", "exit_code": code, "output": output}
         summary = (f"{app['name']} is still running (pid {proc.pid}); it was left running." if code is None
                    else f"{app['name']} exited with code {code}.")
@@ -1005,10 +1027,10 @@ def build_tools(server):
              read_only_note + "Runs findmnt (no privileges) and returns the mounts under the launcher's mount root with source, filesystem, options and a read_only flag. Never mounts or unmounts.",
              {}, [], mount_status, True, {"mounts": {"type": "array"}, "mount_root": {"type": "string"}}),
         Tool("tail_log", "Tail launcher log",
-             read_only_note + "Returns the last lines of the launcher log (source 'launcher') or of the log of apps started by this server (source 'mcp-launch'), "
+             read_only_note + "Returns the last lines of the launcher log (source 'launcher') or of the newest app started by this server (source 'mcp-launch'), "
              "with home directory paths and token-like strings redacted.",
              {"lines": {"type": "integer", "minimum": 1, "maximum": MAX_LOG_LINES, "description": "Number of lines, default 50."},
-              "source": {"type": "string", "enum": list(LOG_SOURCES), "description": "Which log, default 'launcher'."}},
+              "source": {"type": "string", "enum": list(LOG_SOURCES), "description": "Which log, default 'launcher'; 'mcp-launch' is the newest launch_app log."}},
              [], tail_log, True, {"lines": {"type": "array"}, "source": {"type": "string"}}),
         Tool("mount_plan", "Plan a macOS volume mount",
              read_only_note + "Returns, and never runs, the exact command line the launcher would use so the USER can run it: kind 'batch' (mount all detected partitions), "
@@ -1027,14 +1049,15 @@ def build_tools(server):
               "directory": {"type": "string", "maxLength": 1024, "description": "kinds partition (mount directory) and unmount (directory to unmount), inside the mount root."}},
              ["kind"], mount_plan, True, {"executed": {"type": "boolean"}, "commands": {"type": "array"}, "warnings": {"type": "array"}}, shell_fields=("shell",)),
         Tool("launch_app", "Launch imported app",
-             disabled_note + "Starts an imported app through the prefix's darling binary like the launcher's Launch button "
-             "(`darling exec /Applications/<App>.app/Contents/MacOS/<executable>` with DPREFIX set). Waits up to wait_seconds, then reports whether it "
-             "exited or is still running; a running app is left running and is never killed. Its output goes to the 'mcp-launch' log (see tail_log).",
+             disabled_note + "Starts an imported app like the launcher's Launch button, with the `darling` selected in the launcher settings "
+             "(or, if none is selected, the first `darling` on PATH): `darling exec /Applications/<App>.app/Contents/MacOS/<executable>` with DPREFIX set. "
+             "Waits up to wait_seconds, then reports whether it exited or is still running; a running app is left running and is never killed. "
+             "Its output goes to its own file under logs/mcp-launch (newest: tail_log source 'mcp-launch'); the newest 20 such files are kept.",
              {"prefix": prefix_property, "app": {"type": "string", "minLength": 1, "maxLength": 256, "description": "App name or bundle path from list_apps."},
               "confirm": confirm_property, "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 60, "description": "How long to wait for an early exit, default 5."}},
              ["prefix", "app", "confirm"], launch_app, False, {"state": {"type": "string"}, "pid": {"type": "integer"}, "output": {"type": "string"}}),
         Tool("stop_prefix", "Stop prefix processes",
-             disabled_note + "Runs `darling shutdown` for the prefix, which ends every app running in that prefix. It asks Darling to shut down; it never "
+             disabled_note + "Runs `darling shutdown` for the prefix (with the `darling` from the launcher settings, or the first on PATH), which ends every app running in that prefix. It asks Darling to shut down; it never "
              "sends signals itself, and if the command does not finish in 60 seconds it is left running.",
              {"prefix": prefix_property, "confirm": confirm_property},
              ["prefix", "confirm"], stop_prefix, False, {"exit_code": {"type": "integer"}, "output": {"type": "string"}}, destructive=True),

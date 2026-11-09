@@ -338,10 +338,10 @@ except `DARLING_LAUNCHER_MCP_ALLOW_ACTIONS` (`1` or `0`).
 | `list_prefixes` | Read-only. Managed prefixes and their imported-app counts. |
 | `list_apps` | Read-only. Apps in a prefix's import catalog. |
 | `mount_status` | Read-only. `findmnt` entries under the launcher mount root. |
-| `tail_log` | Read-only. Last lines of `launcher.log` or of the log of apps this server started. |
+| `tail_log` | Read-only. Last lines of `launcher.log` or of the newest app this server started (`mcp-launch`). |
 | `mount_plan` | Read-only. Returns the `pkexec`/`mount`/script command lines for you to run; runs nothing. |
-| `launch_app` | Not read-only. `darling exec` of an imported app. Needs the opt-in and `confirm: true`. |
-| `stop_prefix` | Not read-only. `darling shutdown` for a prefix. Needs the opt-in and `confirm: true`. |
+| `launch_app` | Not read-only. `darling exec` of an imported app, with the `darling` selected in the launcher settings (or the first on `PATH`). Needs the opt-in and `confirm: true`. |
+| `stop_prefix` | Not read-only. `darling shutdown` for a prefix, with the same `darling`. Needs the opt-in and `confirm: true`. |
 
 Safety model:
 
@@ -358,7 +358,9 @@ Safety model:
   `~/.darling-launcher/mounts` without symlink components. `..` is refused everywhere.
 - Subprocesses run as argument lists (no shell) with a fixed environment allowlist, a
   timeout and a cap on captured output. A running app or a slow `darling shutdown` is left
-  running; the server never sends signals to Darling or guest processes.
+  running; the server never sends signals to Darling or guest processes. Each `launch_app`
+  writes its output to its own file under `~/.darling-launcher/logs/mcp-launch/` (mode 0600);
+  the newest 20 are kept.
 - Every result has home directory paths, `/home/<name>`-style user-name components and
   token-like strings redacted. In `mount_plan`, `argv` and the descriptions are redacted
   like everything else (home shown as `~`). Each command's `shell` string is the copy-paste
