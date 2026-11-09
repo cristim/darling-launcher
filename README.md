@@ -220,6 +220,33 @@ ownership. It never writes filesystem data to the macOS device or unlocks encryp
 volumes. Mounts remain present until explicitly unmounted. Apple payloads and
 filesystem metadata are private local data and are not uploaded.
 
+### Mount the cryptex OS image (dyld shared cache)
+
+**Settings → Mount macOS source… → Mount cryptex OS (Preboot + os.dmg)** runs
+`tools/mount-cryptex.py`, which automates two read-only mounts:
+
+1. One `pkexec` request mounts the macOS Preboot volume with
+   `apfs-fuse -o allow_other,uid=<you>,gid=<you> -v <index> <partition> <root>/macos-preboot`.
+   The partition and volume index are found by running `apfsutil` on unmounted APFS
+   partitions and selecting the volume named `Preboot`. Select a partition in the
+   dialog to restrict the search to it.
+2. As you, without privileges, it mounts
+   `<preboot>/root/<UUID>/cryptex1/current/os.dmg` with
+   `apfs-fuse -o uid=<you>,gid=<you> -v 0 <os.dmg> <root>/macos-cryptex-os`. The
+   `<UUID>` directory is found by listing; this mount has no `allow_other`.
+
+When `<cryptex-os>/root/System/Library/dyld/` exists, its path is reported in the
+dialog output. A missing tool, no Preboot volume, several Preboot volumes or images,
+or an image path that resolves outside the Preboot mount stops the action with an
+error; nothing is guessed. If Preboot is already mounted, no authorization is requested.
+
+`apfs-fuse` can use several GB of memory while it reads the cryptex image. Use
+**Unmount cryptex OS** (no authorization needed), then unmount Preboot from the
+session mounts list (one `pkexec umount`). The same script runs from a desktop
+terminal: `python3 tools/mount-cryptex.py --mount-root DIR --apfs-fuse PATH --apfsutil PATH [--device /dev/...]`.
+The real mount and the `pkexec` prompt are not covered by the automated tests, which
+use fixtures and fake commands.
+
 ## Diagnostic log
 
 The launcher appends to `~/.darling-launcher/logs/launcher.log` (rotated at 8 MB to a
