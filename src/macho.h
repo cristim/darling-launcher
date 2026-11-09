@@ -28,6 +28,10 @@ struct Dependencies {
 bool readDependencies(const QByteArray &image, quint32 preferredSubtype, bool allowFallback,
                       Dependencies *out, QString *error);
 
+// The masked cpusubtypes of the arm64 slices named by the first bytes of a thin or fat image (the arch table or the
+// header is enough). Empty for an image with no arm64 slice. Fails on anything that is not a Mach-O.
+bool arm64Subtypes(const QByteArray &head, QList<quint32> *subtypes, QString *error);
+
 using Resolver = std::function<std::optional<QByteArray>(const QString &installName)>;
 struct Closure {
     QStringList installNames;       // breadth-first discovery order, root excluded

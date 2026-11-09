@@ -2,6 +2,7 @@
 #include "dyldcache_fixture.h"
 #include "dyldcacheconfig.h"
 #include "launchenv.h"
+#include "macho_fixture.h"
 #include "core.h"
 #include <QProcessEnvironment>
 #include <QSettings>
@@ -61,6 +62,56 @@ private slots:
           QProcessEnvironment e; QString err; QVERIFY(!fx.env(&e, &err)); QVERIFY(err.contains("0700")); }
         { Fx fx; QVERIFY(fx.save(fx.config())); QTemporaryDir links; QVERIFY(QFile::link(fx.stores.path(), links.path() + "/l"));
           QProcessEnvironment e = fx.base; QString err; QVERIFY(!LaunchEnv::guestEnvironment(&e, fx.prefix.path(), links.path() + "/l", &err)); QVERIFY(err.contains("symbolic link")); }
+    }
+    // forRun is the one decision point of the window: kind of run, then the app's own architecture.
+    static QByteArray fatOf(const QList<QPair<quint32, quint32>> &cpuSubs) {
+        QByteArray b; put32(b, 0xcafebabe, true); put32(b, quint32(cpuSubs.size()), true);
+        for (const auto &c : cpuSubs) { put32(b, c.first, true); put32(b, c.second, true); put32(b, 0x4000, true); put32(b, 0x100, true); put32(b, 14, true); }
+        return b;
+    }
+    void forRunGivesTheCacheToArm64eAppLaunchesOnly() {
+        struct Case { const char *name; QByteArray exe; bool cache; const char *note; };
+        const quint32 arm64 = 0x0100000c, x86 = 0x01000007;
+        const QList<Case> cases = {
+            {"thin arm64e", thin(2, {}), true, ""},
+            {"thin arm64e with pac abi bits", thin(0x80000002u, {}), true, ""},
+            {"thin arm64", thin(0, {}), false, "non-arm64e"},
+            {"thin x86_64", thinWith(3, {}, x86), false, "not an arm64"},
+            {"fat arm64 and arm64e", fatOf({{arm64, 0}, {arm64, 2}}), false, "non-arm64e"},
+            {"fat arm64e and x86_64", fatOf({{arm64, 2}, {x86, 3}}), true, ""},
+            {"not a Mach-O", QByteArray("#!/bin/sh\n"), false, "could not be determined"},
+            {"truncated fat table", fatOf({{arm64, 2}}).left(12), false, "could not be determined"},
+        };
+        for (const Case &c : cases) {
+            Fx fx; QVERIFY(fx.save(fx.config()));
+            const QString rel = "Applications/X.app/Contents/MacOS/X";
+            QDir().mkpath(fx.prefix.path() + "/Applications/X.app/Contents/MacOS");
+            { QFile f(fx.prefix.path() + "/" + rel); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(c.exe); }
+            QProcessEnvironment e = fx.base; QString err, note;
+            QVERIFY2(LaunchEnv::forRun(LaunchEnv::RunKind::App, &e, fx.prefix.path(), fx.stores.path(), rel, &err, &note), c.name);
+            QCOMPARE(e.contains("DYLD_SHARED_CACHE_SPLIT_DIR"), c.cache);
+            QCOMPARE(Fx::dyldKeys(e).size(), c.cache ? 2 : 0);
+            QVERIFY2(note.contains(c.note), qPrintable(QString(c.name) + ": " + note)); if (c.cache) QVERIFY(note.isEmpty());
+            QVERIFY(!note.contains(fx.prefix.path()));
+        }
+        Fx fx; QVERIFY(fx.save(fx.config())); QString err, note; QProcessEnvironment e = fx.base;   // no executable on disk
+        QVERIFY(LaunchEnv::forRun(LaunchEnv::RunKind::App, &e, fx.prefix.path(), fx.stores.path(), "Applications/Gone.app/Contents/MacOS/Gone", &err, &note));
+        QCOMPARE(Fx::dyldKeys(e).size(), 0); QVERIFY(note.contains("could not be determined"));
+    }
+    void forRunMaintenanceNeverGetsTheCacheAndAnAppWithoutTheCacheGetsNoNote() {
+        Fx fx; QVERIFY(fx.save(fx.config()));
+        const QString rel = "Applications/X.app/Contents/MacOS/X";
+        QDir().mkpath(fx.prefix.path() + "/Applications/X.app/Contents/MacOS");
+        { QFile f(fx.prefix.path() + "/" + rel); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(thin(2, {})); }
+        QProcessEnvironment e = fx.base; QString err, note;
+        QVERIFY(LaunchEnv::forRun(LaunchEnv::RunKind::Maintenance, &e, fx.prefix.path(), fx.stores.path(), rel, &err, &note));
+        QCOMPARE(Fx::dyldKeys(e).size(), 0); QVERIFY(note.isEmpty()); QCOMPARE(e.value("PATH"), QString("/usr/bin"));
+        Fx plain; e = plain.base;                       // a prefix that did not ask for the cache: stripped, nothing to explain
+        QVERIFY(LaunchEnv::forRun(LaunchEnv::RunKind::App, &e, plain.prefix.path(), plain.stores.path(), rel, &err, &note));
+        QCOMPARE(Fx::dyldKeys(e).size(), 0); QVERIFY(note.isEmpty());
+        e = fx.base;                                    // a broken store still fails an app launch loudly
+        QVERIFY(QFile::remove(fx.stores.path() + "/" + fx.id + "/store.json"));
+        QVERIFY(!LaunchEnv::forRun(LaunchEnv::RunKind::App, &e, fx.prefix.path(), fx.stores.path(), rel, &err, &note)); QVERIFY(err.contains("not usable"));
     }
     void failsLoudAndLeavesTheEnvironmentAloneWhenTheStoreIsNotUsable() {
         auto expectRefusal = [](Fx &fx, const QString &needle) {

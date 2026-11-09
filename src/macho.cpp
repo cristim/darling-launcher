@@ -124,6 +124,27 @@ bool pickSlice(const QByteArray &image, quint32 preferred, bool allowFallback, S
 }
 
 namespace MachO {
+bool arm64Subtypes(const QByteArray &head, QList<quint32> *subtypes, QString *error) {
+    const QByteArrayView all(head);
+    subtypes->clear();
+    quint32 magic;
+    if (!u32(all, 0, true, &magic)) return fail(error, "Mach-O file is too short");
+    if (magic == kFatMagic) {
+        quint32 n;
+        if (!u32(all, 4, true, &n) || n == 0 || n > kMaxFatArch) return fail(error, "Fat header is invalid");
+        for (quint32 i = 0; i < n; ++i) {
+            quint32 cpu, sub;
+            if (!u32(all, 8 + 20ull * i, true, &cpu) || !u32(all, 12 + 20ull * i, true, &sub)) return fail(error, "Fat arch table is truncated");
+            if (cpu == kCpuArm64) subtypes->append(sub & kSubtypeMask);
+        }
+        return true;
+    }
+    quint32 cpu, sub;
+    if (!u32(all, 0, false, &magic) || magic != kMhMagic64 || !u32(all, 4, false, &cpu) || !u32(all, 8, false, &sub)) return fail(error, "Not a 64-bit Mach-O image");
+    if (cpu == kCpuArm64) subtypes->append(sub & kSubtypeMask);
+    return true;
+}
+
 bool readDependencies(const QByteArray &image, quint32 preferredSubtype, bool allowFallback, Dependencies *out, QString *error) {
     Slice slice; bool fallback = false;
     if (!pickSlice(image, preferredSubtype, allowFallback, &slice, &fallback, error)) return false;

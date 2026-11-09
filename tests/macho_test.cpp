@@ -184,6 +184,17 @@ private slots:
         QVERIFY(!MachO::dependencyClosure(thin(2, {kA}), [](const QString &) { return std::optional(QByteArray("junk")); }, 2, false, &c, &err));
         QVERIFY(err.contains(kA));
     }
+    void arm64SubtypesReadsOnlyTheHeaders() {
+        QList<quint32> subs; QString err;
+        QVERIFY(MachO::arm64Subtypes(thin(2, {}).left(16), &subs, &err)); QCOMPARE(subs, QList<quint32>({2}));
+        QVERIFY(MachO::arm64Subtypes(thinWith(0x80000002u, {}), &subs, &err)); QCOMPARE(subs, QList<quint32>({2}));     // pointer-auth ABI bits masked
+        QVERIFY(MachO::arm64Subtypes(thinWith(3, {}, 0x01000007), &subs, &err)); QVERIFY(subs.isEmpty());               // x86_64: no arm64 slice
+        const QByteArray fat3 = fat({{kArm64, 0, thin(0, {})}, {kArm64, 0x80000002u, thin(2, {})}, {0x01000007, 3, thinWith(3, {}, 0x01000007)}});
+        QVERIFY(MachO::arm64Subtypes(fat3, &subs, &err)); QCOMPARE(subs, QList<quint32>({0, 2}));
+        QVERIFY(!MachO::arm64Subtypes(fat3.left(30), &subs, &err));                  // arch table cut short
+        QByteArray many; put32(many, 0xcafebabe, true); put32(many, 17, true); QVERIFY(!MachO::arm64Subtypes(many + QByteArray(400, 0), &subs, &err));
+        QVERIFY(!MachO::arm64Subtypes("#!/bin/sh", &subs, &err)); QVERIFY(!MachO::arm64Subtypes("", &subs, &err));
+    }
 };
 QTEST_APPLESS_MAIN(MachOTest)
 #include "macho_test.moc"
