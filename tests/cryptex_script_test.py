@@ -196,7 +196,8 @@ class DiscoveryTest(unittest.TestCase):
     def test_containment_check_matches_is_relative_to(self):
         for path, anchor, inside in (("/a/b/c", "/a/b", True), ("/a/b", "/a/b", True), ("/a/bc", "/a/b", False), ("/a", "/a/b", False), ("/x/y", "/a/b", False)):
             self.assertEqual(cryptex.is_inside(path, anchor), inside, (path, anchor))
-            self.assertEqual(Path(path).is_relative_to(anchor), inside)
+            if hasattr(Path, "is_relative_to"):  # Python 3.9+; the script itself must not need it
+                self.assertEqual(Path(path).is_relative_to(anchor), inside)
         self.assertFalse(cryptex.is_inside("relative/x", "/a/b"))
 
     def test_old_python_is_refused_with_a_clear_message(self):
