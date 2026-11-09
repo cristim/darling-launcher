@@ -39,6 +39,39 @@ private slots:
         QString link = temporary.path() + "/link"; QVERIFY(QFile::link(directory, link));
         QVERIFY(!LauncherMount::makeCommand(partition, link, MountBackend::Kernel, 2, 1000, 1000, "/usr/bin/true", "/usr/bin/true", &command, &error));
     }
+    void cryptexCommandIsOneArgvList() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        QString script = temporary.path() + "/mount-cryptex.py"; QFile file(script); QVERIFY(file.open(QIODevice::WriteOnly)); file.close();
+        const QString tool = "/usr/bin/true"; const QString root = "/run/user/1000/mount root";
+        MountCommand command; QString error;
+        QVERIFY2(LauncherMount::makeCryptexCommand(tool, script, root, tool, {}, &command, &error), qPrintable(error));
+        QCOMPARE(command.program, tool);
+        QCOMPARE(command.arguments, (QStringList{"-I", script, "--mount-root", root, "--apfs-fuse", tool}));
+        QVERIFY(LauncherMount::makeCryptexCommand(tool, script, root, tool, "/dev/nvme0n1p3", &command, &error));
+        QCOMPARE(command.arguments.mid(command.arguments.size() - 2), (QStringList{"--device", "/dev/nvme0n1p3"}));
+    }
+    void cryptexCommandRefusals() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        QString script = temporary.path() + "/mount-cryptex.py"; QFile file(script); QVERIFY(file.open(QIODevice::WriteOnly)); file.close();
+        const QString tool = "/usr/bin/true", root = "/run/user/1000/mounts"; MountCommand command; QString error;
+        for (const QString &badRoot : {QString(), QString("relative"), QString("/"), QString("/run/../etc")})
+            QVERIFY(!LauncherMount::makeCryptexCommand(tool, script, badRoot, tool, {}, &command, &error));
+        for (const QString &badDevice : {QString("/dev/sda2;touch x"), QString("sda2"), QString("/dev/../etc/passwd")})
+            QVERIFY(!LauncherMount::makeCryptexCommand(tool, script, root, tool, badDevice, &command, &error));
+        QVERIFY(!LauncherMount::makeCryptexCommand("", script, root, tool, {}, &command, &error));
+        QVERIFY(!LauncherMount::makeCryptexCommand(tool, script, root, temporary.path() + "/missing", {}, &command, &error));
+        QVERIFY(!LauncherMount::makeCryptexCommand(tool, script, root, "apfs-fuse", {}, &command, &error));
+        QVERIFY(!LauncherMount::makeCryptexCommand(tool, temporary.path() + "/missing.py", root, tool, {}, &command, &error));
+        QVERIFY(!error.isEmpty());
+    }
+    void cryptexUnmountTargetsOnlyTheCryptexDirectory() {
+        MountCommand command; QString error;
+        QVERIFY2(LauncherMount::makeCryptexUnmountCommand("/usr/bin/true", "/run/user/1000/mount root", &command, &error), qPrintable(error));
+        QCOMPARE(command.arguments, (QStringList{"-u", "--", "/run/user/1000/mount root/macos-cryptex-os"}));
+        QVERIFY(!LauncherMount::makeCryptexUnmountCommand("/usr/bin/true", "/", &command, &error));
+        QVERIFY(!LauncherMount::makeCryptexUnmountCommand("fusermount3", "/run/user/1000/mounts", &command, &error));
+        QVERIFY(!LauncherMount::makeCryptexUnmountCommand("/usr/bin/true", "mounts", &command, &error));
+    }
     void privilegeRunner_data() {
         QTest::addColumn<int>("exitCode"); QTest::addColumn<QString>("message");
         QTest::newRow("success") << 0 << "completed";

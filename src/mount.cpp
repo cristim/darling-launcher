@@ -9,6 +9,9 @@
 
 namespace {
 bool fail(QString *error, const QString &message) { if (error) *error = message; return false; }
+bool validRoot(const QString &root) {
+    return QDir::isAbsolutePath(root) && QDir::cleanPath(root) == root && root != "/";
+}
 void collect(const QJsonArray &devices, QList<MacPartition> *result) {
     for (const auto &value : devices) {
         const auto item = value.toObject();
@@ -62,6 +65,30 @@ bool makeCommand(const MacPartition &partition, const QString &directory, MountB
         arguments << "-i" << "-t" << partition.filesystem << "-o" << options << "--" << partition.device << target.canonicalFilePath();
     }
     if (command) *command = {pkexec, arguments};
+    return true;
+}
+
+QString cryptexMountDirectory(const QString &mountRoot) { return mountRoot + "/macos-cryptex-os"; }
+
+bool makeCryptexCommand(const QString &python, const QString &script, const QString &mountRoot,
+                        const QString &apfsFuse, const QString &device,
+                        MountCommand *command, QString *error) {
+    if (!validRoot(mountRoot)) return fail(error, "Choose an absolute mount root");
+    if (!device.isEmpty() && (!QRegularExpression(R"(^/dev/[A-Za-z0-9_/-]+$)").match(device).hasMatch() || device.contains("..")))
+        return fail(error, "Choose a detected device path under /dev");
+    for (const auto &tool : {python, apfsFuse})
+        if (!QDir::isAbsolutePath(tool) || !QFileInfo(tool).isExecutable()) return fail(error, "Python or apfs-fuse is unavailable");
+    if (!QDir::isAbsolutePath(script) || !QFileInfo(script).isFile()) return fail(error, "The cryptex mount script is unavailable");
+    QStringList arguments{"-I", script, "--mount-root", mountRoot, "--apfs-fuse", apfsFuse};
+    if (!device.isEmpty()) arguments << "--device" << device;
+    if (command) *command = {python, arguments};
+    return true;
+}
+
+bool makeCryptexUnmountCommand(const QString &fusermount, const QString &mountRoot, MountCommand *command, QString *error) {
+    if (!validRoot(mountRoot)) return fail(error, "Choose an absolute mount root");
+    if (!QDir::isAbsolutePath(fusermount) || !QFileInfo(fusermount).isExecutable()) return fail(error, "fusermount is unavailable");
+    if (command) *command = {fusermount, {"-u", "--", cryptexMountDirectory(mountRoot)}};
     return true;
 }
 

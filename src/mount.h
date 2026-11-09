@@ -22,6 +22,13 @@ bool makeCommand(const MacPartition &partition, const QString &directory, MountB
                  int volumeIndex, unsigned uid, unsigned gid, const QString &pkexec,
                  const QString &mountTool, MountCommand *command, QString *error);
 QString exitDescription(int code);
+// The directory names are mirrored in tools/mount-cryptex.py.
+QString cryptexMountDirectory(const QString &mountRoot);
+bool makeCryptexCommand(const QString &python, const QString &script, const QString &mountRoot,
+                        const QString &apfsFuse, const QString &device,
+                        MountCommand *command, QString *error);
+bool makeCryptexUnmountCommand(const QString &fusermount, const QString &mountRoot,
+                               MountCommand *command, QString *error);
 }
 
 class MountRunner : public QObject {
