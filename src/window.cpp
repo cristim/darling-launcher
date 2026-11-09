@@ -7,6 +7,8 @@
 #include "prefixdialog.h"
 #include "discovery.h"
 #include "troubleshooting.h"
+#include "dyldcachestore.h"
+#include "launchenv.h"
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDir>
@@ -654,9 +656,10 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     QString p = prefix->text();
     if (!QDir::isAbsolutePath(p) || !QFileInfo(p).isDir()) { invalid("Select an existing prefix directory."); return; }
     if (!runtimeRoot->text().isEmpty() && (!QDir::isAbsolutePath(runtimeRoot->text()) || !QFileInfo(runtimeRoot->text()).isDir())) { invalid("Select a valid runtime install root."); return; }
-    auto *process = new QProcess(this);
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    for (const auto &name : env.keys()) if (name.startsWith("DYLD_")) env.remove(name);
+    QString envError;
+    if (!LaunchEnv::guestEnvironment(&env, p, DyldCacheStore::configuredRoot(), &envError)) { invalid(envError); return; }
+    auto *process = new QProcess(this);
     env.remove("DARLING_INSTALL_PREFIX");
     if (!runtimeRoot->text().isEmpty()) env.insert("DARLING_INSTALL_PREFIX", runtimeRoot->text());
     env.insert("DPREFIX", p);
