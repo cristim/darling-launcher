@@ -9,6 +9,17 @@
 // O_NOFOLLOW|O_DIRECTORY from a held descriptor, so a component swapped for a symlink after it was
 // opened cannot redirect a write. `root` itself is opened following symlinks (it is the prefix the user chose).
 namespace SafeFs {
+// Owns a descriptor and closes it.
+struct Fd {
+    int fd;
+    explicit Fd(int f = -1) : fd(f) {}
+    ~Fd();
+    Fd(const Fd &) = delete;
+    Fd &operator=(const Fd &) = delete;
+    int release() { const int f = fd; fd = -1; return f; }
+};
+// Reads exactly len bytes at off; false on error or end of file.
+bool preadFull(int fd, char *buf, qint64 len, qint64 off);
 struct Hooks {
     std::function<void()> afterDirsOpened; // test seam: runs after the directory chain is held, before the file is created
 };

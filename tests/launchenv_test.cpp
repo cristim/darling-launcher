@@ -20,7 +20,7 @@ struct Fx {
         base.insert("DYLD_INSERT_LIBRARIES", "/evil.dylib"); base.insert("DYLD_FOO", "1");
         base.insert("DYLD_SHARED_CACHE_SPLIT_DIR", "/volumes/evil"); base.insert("DYLD_SHARED_CACHE_SPLIT_POLICY", "/evil.policy");
     }
-    DyldCacheConfig config() const { DyldCacheConfig c; c.enabled = true; c.mode = DyldCacheMode::AllowList; c.store = id; c.served = {kLibz}; return c; }
+    DyldCacheConfig config() const { DyldCacheConfig c; c.mode = DyldCacheMode::AllowList; c.store = id; c.served = {kLibz}; return c; }
     bool save(const DyldCacheConfig &c) {
         PrefixState::ProcFs p; p.procRoot = proc.path(); p.socketMayBeLive = [](const QString &) { return false; };
         QString err; return DyldCacheConfigFile::save(prefix.path(), c, &err, p);
@@ -47,8 +47,8 @@ private slots:
         QCOMPARE(e.value("PATH"), QString("/usr/bin"));
     }
     void offModesAddNothing() {
-        for (int v = 0; v < 3; ++v) {
-            Fx fx; DyldCacheConfig c = fx.config(); if (v == 0) c.enabled = false; else if (v == 1) c.mode = DyldCacheMode::Off; else c.served.clear();
+        for (int v = 0; v < 2; ++v) {
+            Fx fx; DyldCacheConfig c = fx.config(); if (v == 0) c.mode = DyldCacheMode::Off; else c.served.clear();
             QVERIFY(fx.save(c)); QProcessEnvironment e; QString err; QVERIFY2(fx.env(&e, &err), qPrintable(err)); QCOMPARE(Fx::dyldKeys(e), QStringList());
         }
     }

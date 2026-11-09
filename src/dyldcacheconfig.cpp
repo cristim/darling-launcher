@@ -38,15 +38,15 @@ bool validate(const DyldCacheConfig &c, QString *error) {
         if (seen.contains(name)) return fail(error, "Duplicate cached library: " + name);
         seen.insert(name);
     }
-    if (c.enabled && c.mode == DyldCacheMode::AllowList && c.store.isEmpty()) return fail(error, "The cache is enabled but no store is chosen");
+    if (c.mode == DyldCacheMode::AllowList && c.store.isEmpty()) return fail(error, "The cache is turned on but no store is chosen");
     return true;
 }
 
-bool wantsCache(const DyldCacheConfig &c) { return c.enabled && c.mode == DyldCacheMode::AllowList && !c.served.isEmpty(); }
+bool wantsCache(const DyldCacheConfig &c) { return c.mode == DyldCacheMode::AllowList && !c.served.isEmpty(); }
 
 bool serialize(const DyldCacheConfig &c, QByteArray *json, QString *error) {
     if (!validate(c, error)) return false;
-    *json = QJsonDocument(QJsonObject{{"version", 1}, {"enabled", c.enabled}, {"mode", modeName(c.mode)}, {"store", c.store},
+    *json = QJsonDocument(QJsonObject{{"version", 1}, {"mode", modeName(c.mode)}, {"store", c.store},
                                       {"served", QJsonArray::fromStringList(c.served)}}).toJson(QJsonDocument::Indented);
     return true;
 }
@@ -61,11 +61,10 @@ bool load(const QString &prefix, DyldCacheConfig *out, QString *error) {
     if (parse.error != QJsonParseError::NoError || !doc.isObject()) return fail(error, "dyld-cache.json is not valid JSON");
     const auto o = doc.object();
     if (!o.value("version").isDouble() || o.value("version").toInt(-1) != 1) return fail(error, "Unsupported dyld-cache.json version");
-    if (!o.value("enabled").isBool()) return fail(error, "dyld-cache.json field 'enabled' must be a boolean");
     if (!o.value("mode").isString() || !o.value("store").isString() || !o.value("served").isArray())
         return fail(error, "dyld-cache.json has a field of the wrong type");
     DyldCacheConfig c;
-    c.enabled = o.value("enabled").toBool(); c.store = o.value("store").toString();
+    c.store = o.value("store").toString();
     const QString mode = o.value("mode").toString();
     if (mode == "off") c.mode = DyldCacheMode::Off; else if (mode == "allowlist") c.mode = DyldCacheMode::AllowList;
     else return fail(error, "Unknown dyld-cache.json mode");

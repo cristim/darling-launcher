@@ -145,7 +145,7 @@ private slots:
         QVERIFY(write(workspace + "/build/darling", "#!/bin/sh\nif [ \"$1\" = shutdown ]; then env | grep '^DYLD_' | sort > \"$DPREFIX/shutdown.env\"; touch \"$DPREFIX/stopped\"; exit 0; fi\nenv | grep '^DYLD_' | sort > \"$DPREFIX/run.env\"\nexec sleep 30\n"));
         QVERIFY(QDir().mkpath(workspace + "/clone/.git"));
         QVERIFY(write(workspace + "/proposal.json", QJsonDocument(QJsonObject{{"source", workspace + "/clone"}}).toJson()));
-        DyldCacheConfig config; config.enabled = true; config.mode = DyldCacheMode::AllowList; config.store = id; config.served = {"/usr/lib/libz.1.dylib"};
+        DyldCacheConfig config; config.mode = DyldCacheMode::AllowList; config.store = id; config.served = {"/usr/lib/libz.1.dylib"};
         PrefixState::ProcFs procFs; procFs.procRoot = proc.path(); procFs.socketMayBeLive = [](const QString &) { return false; };
         QString err; QVERIFY2(DyldCacheConfigFile::save(prefix, config, &err, procFs), qPrintable(err));
         const QJsonObject diagnostic{{"prefix", prefix}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}, {"launcher", workspace + "/build/darling"}, {"runtime", workspace + "/image"}};

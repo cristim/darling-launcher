@@ -19,13 +19,14 @@ constexpr int kSuffixBytes = 32;
 quint32 u32(const QByteArray &b, int off) {
     quint32 v; std::memcpy(&v, b.constData() + off, 4); return v; // little-endian host, like the cache
 }
+}
+
+namespace DyldCache {
 bool validSuffix(const QByteArray &s) {
     static const QRegularExpression re("^\\.[A-Za-z0-9._-]+$");
     return !s.isEmpty() && s.size() < kSuffixBytes && re.match(QString::fromLatin1(s)).hasMatch() && !s.contains("..");
 }
-}
 
-namespace DyldCache {
 QString mainFileName(const QString &arch) { return "dyld_shared_cache_" + arch; }
 QString uuidHex(const QByteArray &uuid) { return QString::fromLatin1(uuid.toHex()); }
 

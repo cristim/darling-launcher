@@ -14,14 +14,7 @@
 
 namespace {
 using LauncherCore::fail;
-struct Fd {
-    int fd;
-    explicit Fd(int f = -1) : fd(f) {}
-    ~Fd() { if (fd >= 0) ::close(fd); }
-    Fd(const Fd &) = delete;
-    Fd &operator=(const Fd &) = delete;
-    int release() { const int f = fd; fd = -1; return f; }
-};
+using SafeFs::Fd;
 QString sysError(const QString &what) { return what + ": " + QString::fromLocal8Bit(strerror(errno)); }
 
 // Opens root then each component of `dirs` without following symlinks. *missing is set (and -1 returned
@@ -58,6 +51,18 @@ bool split(const QString &relPath, QStringList *dirs, QString *leaf, QString *er
 }
 
 namespace SafeFs {
+Fd::~Fd() { if (fd >= 0) ::close(fd); }
+
+bool preadFull(int fd, char *buf, qint64 len, qint64 off) {
+    for (qint64 got = 0; got < len;) {
+        const ssize_t n = ::pread(fd, buf + got, size_t(len - got), off + got);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        got += n;
+    }
+    return true;
+}
+
 bool writeFile(const QString &root, const QString &relPath, const QByteArray &data, mode_t fileMode, mode_t dirMode,
                bool replace, QString *error, const Hooks &hooks) {
     QStringList dirs; QString leaf;

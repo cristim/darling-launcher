@@ -26,9 +26,7 @@ const QRegularExpression &hexRe(int n) {
 }
 bool validFileName(const QString &name, const QString &arch) {
     const QString base = DyldCache::mainFileName(arch);
-    if (name == base) return true;
-    static const QRegularExpression suffix("^\\.[A-Za-z0-9._-]+$");
-    return name.startsWith(base) && name.size() < base.size() + 32 && suffix.match(name.mid(base.size())).hasMatch() && !name.contains("..");
+    return name == base || (name.startsWith(base) && DyldCache::validSuffix(name.mid(base.size()).toLatin1()));
 }
 }
 
@@ -78,7 +76,7 @@ bool checkPrivate(const QString &root, const QString &id, QString *error, const 
 QByteArray renderManifest(const StoreManifest &m) {
     QJsonArray files;
     for (const auto &f : m.files) files.append(QJsonObject{{"name", f.name}, {"size", double(f.size)}, {"uuid", f.uuid}, {"sha256", f.sha256}});
-    return QJsonDocument(QJsonObject{{"version", 1}, {"arch", m.arch}, {"uuid", m.uuid}, {"buildLabel", m.buildLabel},
+    return QJsonDocument(QJsonObject{{"version", 1}, {"arch", m.arch}, {"uuid", m.uuid},
                                      {"copiedAt", m.copiedAt}, {"files", files}}).toJson(QJsonDocument::Indented);
 }
 
@@ -88,11 +86,11 @@ bool parseManifest(const QByteArray &json, StoreManifest *out, QString *error) {
     if (parse.error != QJsonParseError::NoError || !doc.isObject()) return fail(error, "store.json is not valid JSON");
     const auto o = doc.object();
     if (!o.value("version").isDouble() || o.value("version").toInt(-1) != 1) return fail(error, "Unsupported store.json version");
-    for (const char *key : {"arch", "uuid", "buildLabel", "copiedAt"})
+    for (const char *key : {"arch", "uuid", "copiedAt"})
         if (!o.value(key).isString()) return fail(error, QString("store.json field '%1' must be a string").arg(key));
     StoreManifest m;
     m.arch = o.value("arch").toString(); m.uuid = o.value("uuid").toString();
-    m.buildLabel = o.value("buildLabel").toString().left(64); m.copiedAt = o.value("copiedAt").toString().left(64);
+    m.copiedAt = o.value("copiedAt").toString().left(64);
     if (m.arch != "arm64" && m.arch != "arm64e") return fail(error, "store.json has an unsupported architecture");
     if (!hexRe(32).match(m.uuid).hasMatch()) return fail(error, "store.json has an invalid UUID");
     if (!o.value("files").isArray()) return fail(error, "store.json field 'files' must be an array");
@@ -122,20 +120,14 @@ bool readHead(const QString &root, const QString &relPath, qint64 window, QByteA
     qint64 size = 0;
     const int fd = SafeFs::openRead(root, relPath, &size, error);
     if (fd < 0) return false;
+    SafeFs::Fd guard(fd);
     QByteArray buf(int(qMin(window, size)), Qt::Uninitialized);
-    qint64 off = 0;
-    while (off < buf.size()) {
-        const ssize_t n = ::pread(fd, buf.data() + off, size_t(buf.size() - off), off);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) { ::close(fd); return fail(error, "Cannot read the start of " + QFileInfo(relPath).fileName()); }
-        off += n;
-    }
-    ::close(fd);
+    if (!SafeFs::preadFull(fd, buf.data(), buf.size(), 0)) return fail(error, "Cannot read the start of " + QFileInfo(relPath).fileName());
     *head = buf; *fileSize = size;
     return true;
 }
 
-StoreStatus status(const QString &root, const QString &id, const QString &sourceUuidHex) {
+StoreStatus status(const QString &root, const QString &id) {
     StoreStatus st;
     if (!validStoreId(id)) { st.state = StoreState::Corrupt; st.detail = "Invalid store id"; return st; }
     const QFileInfo dir(root + "/" + id);
@@ -154,8 +146,7 @@ StoreStatus status(const QString &root, const QString &id, const QString &source
         QString arch; QByteArray uuid;
         if (!DyldCache::parseFileHeader(head, &arch, &uuid, &err) || arch != st.manifest.arch || DyldCache::uuidHex(uuid) != f.uuid) { st.detail = f.name + " does not match the manifest"; return st; }
     }
-    st.state = (!sourceUuidHex.isEmpty() && sourceUuidHex != st.manifest.uuid) ? StoreState::Stale : StoreState::Ready;
-    st.detail = st.state == StoreState::Stale ? "The source holds a newer macOS cache build" : QString();
+    st.state = StoreState::Ready;
     return st;
 }
 

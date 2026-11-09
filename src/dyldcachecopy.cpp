@@ -18,27 +18,13 @@ using namespace DyldCacheStore;
 using DyldCopy = DyldCacheCopy::Outcome;
 constexpr int kHeaderProbe = 0x58 + kUuidBytes;
 
-struct Fd {
-    int fd;
-    explicit Fd(int f = -1) : fd(f) {}
-    ~Fd() { if (fd >= 0) ::close(fd); }
-    Fd(const Fd &) = delete;
-    Fd &operator=(const Fd &) = delete;
-};
+using SafeFs::Fd;
+using SafeFs::preadFull;
 struct Item { QString name; qint64 size; QByteArray uuid; };
 struct Tally { qint64 done = 0, total = 0; int index = 0, count = 0; };
 
 bool cancelled(const std::atomic<bool> *c) { return c && c->load(); }
 DyldCopy failed(const QString &message) { DyldCopy o; o.error = message; return o; }
-bool preadFull(int fd, char *buf, qint64 len, qint64 off) {
-    for (qint64 got = 0; got < len;) {
-        const ssize_t n = ::pread(fd, buf + got, size_t(len - got), off + got);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) return false;
-        got += n;
-    }
-    return true;
-}
 bool pwriteFull(int fd, const char *buf, qint64 len, qint64 off) {
     for (qint64 put = 0; put < len;) {
         const ssize_t n = ::pwrite(fd, buf + put, size_t(len - put), off + put);
@@ -173,7 +159,7 @@ Outcome copyCache(const QString &sourceDir, const QString &arch, const QString &
     if (lock.fd < 0) return failed(err);
 
     const auto before = status(storeRoot, id);
-    if (before.state == StoreState::Ready || before.state == StoreState::Stale) { Outcome o; o.result = Result::Done; o.storeId = id; return o; }
+    if (before.state == StoreState::Ready) { Outcome o; o.result = Result::Done; o.storeId = id; return o; }
     if (before.state == StoreState::Corrupt) return failed("The existing store for this cache build is damaged: " + before.detail + ". Move it aside and copy again.");
 
     Tally tally; tally.count = int(items.size());
@@ -197,7 +183,7 @@ Outcome copyCache(const QString &sourceDir, const QString &arch, const QString &
         if (r.result != Result::Done) { Outcome o = r; o.storeId = id; return o; }
     }
 
-    StoreManifest m; m.arch = arch; m.uuid = uuidHex(header.uuid); m.buildLabel = opt.buildLabel;
+    StoreManifest m; m.arch = arch; m.uuid = uuidHex(header.uuid);;
     m.copiedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     for (const Item &it : items) {
         StoreFile f{it.name, it.size, uuidHex(it.uuid), QString()};

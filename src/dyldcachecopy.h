@@ -16,7 +16,6 @@ struct Options {
     qint64 blockBytes = qint64(1) << 20;    // one read; progress and cancel are checked per block
     int pauseMs = 0;                        // pause after each window
     qint64 marginBytes = DyldCacheStore::kDefaultMarginBytes;
-    QString buildLabel;                     // recorded in the manifest; informational
     // Test seams.
     DyldCacheStore::FreeBytesFn freeBytes;                                   // default: statvfs
     std::function<void(int ms)> sleepFn;                                     // default: QThread::msleep

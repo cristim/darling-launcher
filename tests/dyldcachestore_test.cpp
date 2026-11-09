@@ -56,10 +56,7 @@ private slots:
         QTemporaryDir d; QString err;
         QCOMPARE(status(d.path(), "arm64e-" + QString(32, 'a')).state, StoreState::Missing);
         const QString id = makeFakeStore(d.path(), "arm64e", 1, {".01"});
-        const QString uuid = DyldCache::uuidHex(fakeUuid(100));
         QCOMPARE(status(d.path(), id).state, StoreState::Ready);
-        QCOMPARE(status(d.path(), id, uuid).state, StoreState::Ready);
-        const auto stale = status(d.path(), id, QString(32, 'b')); QCOMPARE(stale.state, StoreState::Stale); QVERIFY(!stale.detail.isEmpty());
         // Partial: no manifest yet
         const QString pid = makeFakeStore(d.path(), "arm64", 2, {});
         QVERIFY(QFile::remove(d.path() + "/" + pid + "/store.json")); QCOMPARE(status(d.path(), pid).state, StoreState::Partial);
