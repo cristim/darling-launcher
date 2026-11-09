@@ -356,7 +356,9 @@ Safety model:
   root, so they are offered only when that script is installed root-owned in
   `/usr/local/libexec/darling-launcher` or `/usr/libexec/darling-launcher` (`sudo cmake
   --install`); a copy in a checkout is never used. Otherwise the result has a warning and no
-  command, while the per-partition `pkexec mount` and `umount` plans need no script. The cryptex plan mirrors the documented command of the cryptex mount
+  command, while the per-partition `pkexec mount` and `umount` plans need no script.
+  If `apfs-fuse` or `apfsutil` is not in those directories, the `batch` plan passes an explicit
+  empty value for it (so the script does not search `PATH`) and warns; HFS-only machines still work. The cryptex plan mirrors the documented command of the cryptex mount
   action; its script is present only on a checkout that includes it, and the plan says so.
 - A prefix is a bare name or an absolute path of a direct, non-symlink child of
   `~/.darling-launcher/prefixes`. Mount directories must be inside
