@@ -562,6 +562,16 @@ class ReadOnlyToolsTest(ToolTestCase):
         self.refused("tail_log", {}, "refusing symlink")
 
 
+ADVERSARIAL_INPUTS = {
+    "userinfo colons": lambda n: "://" + "a:" * (n // 2), "scheme repeated": lambda n: "://x" * (n // 4), "nested userinfo": lambda n: "://a:a" * (n // 6),
+    "empty userinfo": lambda n: "://:" * (n // 4), "at signs": lambda n: "@" * n, "at after userinfo": lambda n: "://a:" + "@" * n, "long password": lambda n: "://a:" + "x" * n,
+    "percent run": lambda n: "%41" * (n // 3), "percent and userinfo": lambda n: "%41://" + "a:" * (n // 2), "mixed encodings": lambda n: "%2F\\/\uff0f%252F" * (n // 12),
+    "encoded secret": lambda n: "password%3D" + "hunter2" * (n // 7), "many labels": lambda n: "password=a token=b secret=c " * (n // 27), "unclosed quotes": lambda n: 'token="a ' * (n // 9),
+    "spaced labels": lambda n: "password abc " * (n // 13), "whitespace": lambda n: " " * n, "slash homes": lambda n: "/home/" * (n // 6), "bearer": lambda n: "bearer x " * (n // 9),
+    "token prefixes": lambda n: "ghp_" + "A" * n, "jwt": lambda n: "eyJ" + "A" * 20 + "." + "A" * n, "fullwidth": lambda n: "\uff0f" * n, "nfkc expansion": lambda n: "\ufb01" * n}
+
+
+
 class RedactionTest(ToolTestCase):
     def test_home_user_and_tokens_are_redacted_everywhere(self):
         fx = self.fx
@@ -729,55 +739,92 @@ class RedactionTest(ToolTestCase):
                       "ssh://git@host:22/repo", "postgres://host:5432/db", "http://localhost:3000", "mailto:a@b", "https://user@host:80/p@x", "https://example.com:443 and a@b", "file:///etc/x@y"):
             self.assertEqual(redactor.text(plain), plain)
 
-    ADVERSARIAL_INPUTS = {
-        "userinfo colons": lambda n: "://" + "a:" * (n // 2), "scheme repeated": lambda n: "://x" * (n // 4), "nested userinfo": lambda n: "://a:a" * (n // 6),
-        "empty userinfo": lambda n: "://:" * (n // 4), "at signs": lambda n: "@" * n, "at after userinfo": lambda n: "://a:" + "@" * n, "long password": lambda n: "://a:" + "x" * n,
-        "percent run": lambda n: "%41" * (n // 3), "percent and userinfo": lambda n: "%41://" + "a:" * (n // 2), "mixed encodings": lambda n: "%2F\\/\uff0f%252F" * (n // 12),
-        "encoded secret": lambda n: "password%3D" + "hunter2" * (n // 7), "many labels": lambda n: "password=a token=b secret=c " * (n // 27), "unclosed quotes": lambda n: 'token="a ' * (n // 9),
-        "spaced labels": lambda n: "password abc " * (n // 13), "whitespace": lambda n: " " * n, "slash homes": lambda n: "/home/" * (n // 6), "bearer": lambda n: "bearer x " * (n // 9),
-        "token prefixes": lambda n: "ghp_" + "A" * n, "jwt": lambda n: "eyJ" + "A" * 20 + "." + "A" * n, "fullwidth": lambda n: "\uff0f" * n, "nfkc expansion": lambda n: "\ufb01" * n}
+    def isolated(self, name, size, capped, limit_mb=1024):
+        """Redacts one adversarial input in a child with an address-space limit and a deadline, so a broken cap or a
+        non-linear pattern fails this test quickly instead of eating the machine's memory or time."""
+        script = ("import resource, sys, time, importlib.util\n"
+                  f"resource.setrlimit(resource.RLIMIT_AS, ({limit_mb} << 20, {limit_mb} << 20))\n"
+                  "spec = importlib.util.spec_from_file_location('t', sys.argv[1]); t = importlib.util.module_from_spec(spec); spec.loader.exec_module(t)\n"
+                  "if sys.argv[4] == 'uncapped': t.mcp.Redactor.MAX_SCAN_CHARS = 10 ** 9\n"
+                  "text = t.ADVERSARIAL_INPUTS[sys.argv[2]](int(sys.argv[3]))\n"
+                  "started = time.monotonic(); t.mcp.Redactor('/home/alice').text(text); elapsed = time.monotonic() - started\n"
+                  "print(elapsed, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024)\n")
+        try:
+            done = subprocess.run([sys.executable, "-I", "-c", script, str(Path(__file__).resolve()), name, str(size), "capped" if capped else "uncapped"],
+                                  capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            self.fail(f"{name} at {size} did not finish within 30 s")
+        self.assertEqual(done.returncode, 0, f"{name} at {size}: {done.stderr[-300:]}")
+        elapsed, peak = (float(x) for x in done.stdout.split())
+        return elapsed, peak
 
-    def test_adversarial_input_cannot_stall_the_redactor(self):
-        redactor = mcp.Redactor("/home/alice")
-        slowest = (0, "")
+    def test_adversarial_input_cannot_stall_the_redactor_or_balloon_its_memory(self):
         for size in (65536, 1048576):
-            for name, make in self.ADVERSARIAL_INPUTS.items():
-                text = make(size)
-                started = time.monotonic()
-                result = redactor.text(text)
-                elapsed = time.monotonic() - started
+            for name in ADVERSARIAL_INPUTS:
+                elapsed, peak = self.isolated(name, size, capped=True)
                 self.assertLess(elapsed, 1.0, f"{name} at {size} took {elapsed:.2f}s")
-                self.assertLessEqual(len(result), mcp.Redactor.MAX_SCAN_CHARS * 4, name)
-                slowest = max(slowest, (elapsed, name))
-        self.assertLess(slowest[0], 1.0)
+                self.assertLess(peak, 400, f"{name} at {size} peaked at {peak:.0f} MB")
 
     def test_the_patterns_alone_are_linear_without_the_input_cap(self):
-        redactor = mcp.Redactor("/home/alice")
-        with patch.object(mcp.Redactor, "MAX_SCAN_CHARS", 10 ** 9):
-            for name, make in self.ADVERSARIAL_INPUTS.items():
-                started = time.monotonic()
-                redactor.text(make(131072))
-                self.assertLess(time.monotonic() - started, 1.5, name)
+        for name in ADVERSARIAL_INPUTS:
+            elapsed, peak = self.isolated(name, 131072, capped=False)
+            self.assertLess(elapsed, 1.5, name)
+            self.assertLess(peak, 400, name)
 
-    def test_oversized_text_is_truncated_before_redaction_never_redacted_in_pieces(self):
+    STRADDLERS = {
+        "labelled": ("password=hunter2xyz", ("hunt", "xyz")), "spaced label": ("password hunter2xyz", ("hunt", "xyz")),
+        "quoted value": ('password="hunter2 xyz"', ("hunt", "xyz")), "unclosed quote": ('password="hunter2 xyz', ("hunt", "xyz")),
+        "userinfo": ("https://bob:p@ss@host/x", ("bob", "p@ss", "ss@")), "home path": ("/home/bobby/docs", ("bo",)),
+        "encoded home": ("%2Fhome%2Fbobby%2Fdocs", ("bo",)), "encoded label": ("password%3Dhunter2xyz", ("hunt", "xyz")),
+        "github token": ("ghp_" + "A1b2C3d4E5" * 3, ("ghp_", "A1b2")), "jwt": ("eyJ" + "Q" * 20 + "." + "R" * 20 + "." + "S" * 20, ("eyJ", "QQQQ", "RRRR")),
+        "long label value": ("password=" + "h" * 800, ("hh",)), "long userinfo": ("https://u:" + "p" * 400 + "@h", ("ppp",)),
+        "encoded bearer": ("Bearer%20abcdef123456", ("abcdef",))}
+    FILLERS = {"words": "x ", "no whitespace": "A", "delimiters": "a/b,", "newlines": "x\n"}
+
+    def test_a_secret_straddling_the_truncation_limit_never_shows_a_partial_prefix(self):
+        redactor = mcp.Redactor("/home/alice")
+        limit, lookahead = 1200, 300
+        with patch.object(mcp.Redactor, "MAX_SCAN_CHARS", limit), patch.object(mcp.Redactor, "LOOKAHEAD_CHARS", lookahead):
+            for name, (secret, fragments) in self.STRADDLERS.items():
+                starts = sorted(set(range(limit - len(secret) - 10, limit + 12)) | set(range(max(0, limit - len(secret) - 400), limit + 12, 37)))
+                for filler_name, unit in self.FILLERS.items():
+                    for start in starts:
+                        prefix = (unit * (start // len(unit) + 1))[:start]
+                        text = prefix + "," + secret + ", " + (unit * 400)
+                        text += unit * ((limit + lookahead + 150 - len(text)) // len(unit) + 1)
+                        self.assertGreater(len(text), limit + lookahead)
+                        result = redactor.text(text)
+                        where = f"{name} / {filler_name} / start {start}"
+                        self.assertTrue(result.endswith(mcp.Redactor.TRUNCATION_MARKER), where)
+                        self.assertLessEqual(len(result), limit + len(mcp.Redactor.TRUNCATION_MARKER) + 16, where)
+                        for fragment in fragments:
+                            self.assertNotIn(fragment, result.replace("<redacted>", "").replace("<user>", ""), where)
+
+    def test_text_between_the_limit_and_the_window_end_is_still_redacted_not_emitted_raw(self):
+        redactor = mcp.Redactor("/home/alice")
+        limit, lookahead = 1000, 200
+        with patch.object(mcp.Redactor, "MAX_SCAN_CHARS", limit), patch.object(mcp.Redactor, "LOOKAHEAD_CHARS", lookahead):
+            text = "w " * 480 + "password=hunter2xyz " + "w " * 400
+            self.assertEqual(redactor.text(text).count("hunter"), 0)
+            self.assertIn("password=<redacted>", redactor.text(text))
+            beyond = "w " * 520 + "password=hunter2xyz " + "w " * 400
+            self.assertNotIn("password", redactor.text(beyond))
+
+    def test_oversized_text_is_cut_after_redaction_and_stays_bounded(self):
         redactor = mcp.Redactor("/home/alice")
         limit = mcp.Redactor.MAX_SCAN_CHARS
         short = "password hunter2xyz and /home/alice/x"
         self.assertEqual(redactor.text(short), "password <redacted> and ~/x")
-        text = "word " * (limit // 5 + 10) + "password hunter2xyz " + "tail " * 100
+        text = "word " * (limit // 5 + 10) + "password hunter2xyz " + "tail " * 2000
         result = redactor.text(text)
         self.assertTrue(result.endswith(mcp.Redactor.TRUNCATION_MARKER))
         self.assertLessEqual(len(result), limit + len(mcp.Redactor.TRUNCATION_MARKER))
         self.assertNotIn("hunter", result)
         self.assertNotIn("tail", result)
-        for gap in range(0, 40):
-            secret_at_the_cut = "x" * (limit - 30 - gap) + " password hunter2xyz" + " y" * 40
-            cut = redactor.text(secret_at_the_cut)
-            self.assertNotIn("hunter2xyz", cut)
-            self.assertNotIn("hunter", cut.replace("<redacted>", ""))
-        no_whitespace = "A" * (limit + 5000)
-        cut = redactor.text(no_whitespace)
-        self.assertEqual(len(cut), limit - 4096 + len(mcp.Redactor.TRUNCATION_MARKER))
+        at_the_limit = "x " * (limit // 2 - 5) + "password=hunter2xyz " + "y " * 5000
+        straddling = redactor.text(at_the_limit)
+        self.assertNotIn("hunt", straddling)
+        self.assertEqual(redactor.text("A" * (limit + mcp.Redactor.LOOKAHEAD_CHARS + 5000)), mcp.Redactor.TRUNCATION_MARKER)
 
     def test_the_cap_applies_to_every_string_in_a_result(self):
         (self.fx.data / "logs/launcher.log").write_text(("token=abc " + "z" * 1900 + "\n") * 5)

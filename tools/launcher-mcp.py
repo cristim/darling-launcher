@@ -134,7 +134,7 @@ class Redactor:
     SCHEME = re.compile(r"(?i)\b(?:bearer|basic)\s+(?P<v>(?!<redacted>)[^\s\"']+)")
     LABELS = r"(?:api[_-]?key|access[_-]?key|token|secret|password|passwd|authorization)"
     # label, optional quote, = or :, then the whole value (a quoted string or up to whitespace/quote)
-    LABELLED = re.compile(r"""(?i)\b""" + LABELS + r"""\b["']?\s*[=:]\s*(?P<v>(?!<redacted>)(?:"[^"]*"|'[^']*'|[^\s"']+))""")
+    LABELLED = re.compile(r"""(?i)\b""" + LABELS + r"""\b["']?\s*[=:]\s*(?P<v>(?!<redacted>)(?:"[^"]*"|'[^']*'|"[^"\r\n]*|'[^'\r\n]*|[^\s"']+))""")
     # label separated by whitespace only: the next word if it is long enough to be a secret rather than prose ("the password field")
     SPACED = re.compile(r"(?i)\b" + LABELS + r"\b\s+(?P<v>(?!<redacted>)[^\s\"'=:]{6,})")
     # scheme://user:password@host. Every quantifier is bounded and the user class cannot contain ':', so each '://' costs at
@@ -144,10 +144,15 @@ class Redactor:
     # The name ends at a delimiter, so PATH=/home/a/bin:/usr/bin and (/home/a) keep their separators.
     GENERIC_HOME = re.compile(r"(?i)/(?:home|Users|run/media)/(?P<v>[^/\s\"'`:;,()\[\]{}<>|&=*?\\]+)")
     MAX_DECODE_DEPTH = 5
-    # Hard cap on what one call scans, so no input (a guest app's output, a settings value) can stall the single-threaded server.
-    # Longer text is truncated BEFORE redaction, at the last whitespace of the final 4 KiB, never split and redacted in pieces:
-    # a secret that spans whitespace (password hunter2, "a b" values) would otherwise be cut in two and leak.
+    # Hard cap on work per call, so no input (a guest app's output, a settings value) can stall the single-threaded server.
+    # Text longer than MAX_SCAN_CHARS + LOOKAHEAD_CHARS is cut to that window, the WHOLE window is redacted, and only then is
+    # the redacted result limited to the first MAX_SCAN_CHARS characters of the original: a span that starts before that limit
+    # is emitted whole (as its replacement), so a secret straddling the limit never shows a partial prefix, and the raw text
+    # after the last span is trimmed back to a delimiter so no partial token is emitted. Never redacted in chunks: a secret
+    # that spans whitespace (password hunter2, "a b" values) would be cut in two and leak.
     MAX_SCAN_CHARS = 65536
+    LOOKAHEAD_CHARS = 4096
+    CUT_DELIMITERS = " \t\r\n/,;\"'=&@:%"
     TRUNCATION_MARKER = "[truncated before redaction]"
 
     def __init__(self, home):
@@ -194,10 +199,9 @@ class Redactor:
         (at most MAX_DECODE_DEPTH layers) but the ORIGINAL text is what is returned, with every match redacted whole, so a
         decoded fragment never appears in the output. paths=False keeps paths and uses a replacement without shell
         metacharacters, for words that are quoted afterwards: redaction must never run over an already quoted string."""
-        if len(value) > self.MAX_SCAN_CHARS:
-            window = value[:self.MAX_SCAN_CHARS]
-            cut = max(window.rfind(c) for c in " \t\n\r")
-            value = window[:max(cut, self.MAX_SCAN_CHARS - 4096)] + self.TRUNCATION_MARKER
+        truncated = len(value) > self.MAX_SCAN_CHARS + self.LOOKAHEAD_CHARS
+        if truncated:
+            value = value[:self.MAX_SCAN_CHARS + self.LOOKAHEAD_CHARS]
         secret = "<redacted>" if paths else "REDACTED"
         current, origin = value, [(i, i + 1) for i in range(len(value))]
         found = self.spans(current, paths, secret)
@@ -209,7 +213,7 @@ class Redactor:
                 break
             current, origin = decoded, decoded_origin
             found += [(origin[a][0], origin[b - 1][1], repl) for a, b, repl in self.spans(current, paths, secret) if b > a]
-        if not found:
+        if not found and not truncated:
             return value
         found.sort(key=lambda f: (f[0], -f[1]))
         merged = []
@@ -222,11 +226,19 @@ class Redactor:
                     merged.append([last[1], end, repl])  # paths: no union, the later span keeps only its own remainder
             else:
                 merged.append([start, end, repl])
+        limit = self.MAX_SCAN_CHARS if truncated else len(value)
         result, position = [], 0
         for start, end, repl in merged:
+            if start >= limit:
+                break
             result += [value[position:start], repl]
             position = end
-        return "".join(result) + value[position:]
+        if position < limit:
+            tail = value[position:limit]
+            if truncated:
+                tail = tail[:max(tail.rfind(c) for c in self.CUT_DELIMITERS) + 1]  # no delimiter: the whole tail run is dropped
+            result.append(tail)
+        return "".join(result) + (self.TRUNCATION_MARKER if truncated else "")
 
     def obj(self, value, exempt=()):
         """Redacts every string except the values of dict keys named in exempt, which the tool has already made safe."""
