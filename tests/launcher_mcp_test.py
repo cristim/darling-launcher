@@ -33,7 +33,7 @@ class Fixture:
         self.bin = self.root / "bin"
         for directory in (self.data / "prefixes", self.data / "logs", self.data / "mounts", self.data / "runtimes", self.config_file.parent, self.bin):
             directory.mkdir(parents=True)
-        self.config = mcp.Config(self.home, self.data, self.config_file, allow_actions, USER)
+        self.config = mcp.Config(self.home, self.data, self.config_file, allow_actions)
         self.server = mcp.Server(self.config)
         self.env = patch.dict(os.environ, {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home)})
         self.env.start()
@@ -210,7 +210,7 @@ class ProtocolTest(unittest.TestCase):
         session = self.session()
         session.handshake()
         tools = session.rpc("tools/list")["result"]["tools"]
-        self.assertEqual({t["name"] for t in tools}, set(mcp.Server(mcp.Config("/h", "/h/d", "/h/c", False, USER)).tools))
+        self.assertEqual({t["name"] for t in tools}, set(mcp.Server(mcp.Config("/h", "/h/d", "/h/c", False)).tools))
         for tool in tools:
             self.assertRegex(tool["name"], r"^[a-z][a-z0-9_]{0,63}$")
             self.assertTrue(tool["description"])
@@ -504,12 +504,13 @@ class RedactionTest(ToolTestCase):
         for secret in (str(fx.home), "hunter2", token, "abcdef123456789", "/home/other"):
             self.assertNotIn(secret, blob, secret)
         text = result["content"][0]["text"]
-        self.assertIn("opened ~/Documents/file by <user>", text)
+        self.assertIn("opened ~/Documents/file by alice", text)
         self.assertIn("/home/<user>/stuff", text)
         self.assertIn("alicesmith stays", text)
         status = json.dumps(fx.call("launcher_status"))
         self.assertNotIn(str(fx.home), status)
         self.assertNotIn(f"/{USER}/", status)
+        self.assertIn("/run/media/<user>/macOS", status)
         self.assertIn("~/bin/darling", status)
 
     def test_error_messages_are_redacted_too(self):
@@ -517,9 +518,14 @@ class RedactionTest(ToolTestCase):
         self.assertNotIn(str(self.fx.home), json.dumps(result))
 
     def test_redactor_handles_root_and_short_user_names(self):
-        redactor = mcp.Redactor("/root", "root")
-        self.assertEqual(redactor.text("/root/x and root"), "~/x and root")
-        self.assertEqual(mcp.Redactor("/home/a", "a").text("a /home/a"), "a ~")
+        self.assertEqual(mcp.Redactor("/root").text("/root/x and root"), "~/x and root")
+        self.assertEqual(mcp.Redactor("/home/a").text("a /home/a"), "a ~")
+
+    def test_a_user_name_is_only_redacted_as_a_home_path_component(self):
+        redactor = mcp.Redactor("/home/dev")
+        self.assertEqual(redactor.text("/dev/sda1 mounted by dev at /home/dev/x and /home/other/y"), "/dev/sda1 mounted by dev at ~/x and /home/<user>/y")
+        self.assertEqual(mcp.Redactor("/home/darling").text("darling exec /usr/bin/darling in /home/darling"), "darling exec /usr/bin/darling in ~")
+        self.assertEqual(mcp.Redactor("/Users/me").text("/Users/me/Library /Users/you/Library"), "~/Library /Users/<user>/Library")
 
 
 FAKE_DARLING = """touch "$(dirname "$0")/ran"
