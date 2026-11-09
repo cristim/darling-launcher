@@ -225,6 +225,11 @@ class ProtocolTest(unittest.TestCase):
                 self.assertTrue(tool["description"].startswith("Read-only."))
             json.dumps(tool)
 
+    def test_initialized_notification_alone_does_not_skip_the_handshake(self):
+        session = self.session()
+        session.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self.assertEqual(session.rpc("tools/list", request_id=2)["error"]["code"], -32002)
+
     def test_tools_list_rejects_a_cursor(self):
         session = self.session()
         session.handshake()
@@ -456,6 +461,21 @@ class ReadOnlyToolsTest(ToolTestCase):
         lines = self.ok("tail_log", {"lines": 200})["lines"]
         self.assertEqual(lines[-1], "tail-marker")
         self.assertNotIn("head-marker", lines)
+
+    def test_tail_log_total_size_is_capped(self):
+        (self.fx.data / "logs/launcher.log").write_text(("x" * 1900 + "\n") * 200)
+        lines = self.ok("tail_log", {"lines": 200})["lines"]
+        self.assertLessEqual(sum(map(len, lines)), mcp.MAX_LOG_TOTAL_CHARS)
+        self.assertGreater(len(lines), 10)
+
+    def test_settings_file_may_be_a_symlink_to_a_dotfile_repo(self):
+        real = self.fx.root / "dotfiles.conf"
+        real.write_text("[General]\nprefix=/p\n")
+        self.fx.config_file.symlink_to(real)
+        self.assertEqual(mcp.read_settings(self.fx.config)["prefix"], "/p")
+        real.write_text("x" * (mcp.MAX_SETTINGS_BYTES + 1))
+        with self.assertRaises(mcp.ToolError):
+            mcp.read_settings(self.fx.config)
 
     def test_tail_log_missing_and_symlinked_logs(self):
         self.assertEqual(self.ok("tail_log")["lines"], [])
