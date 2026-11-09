@@ -743,6 +743,11 @@ class RedactionTest(ToolTestCase):
         self.assertEqual(redactor.text("x https://bob:" + "pw/@" * 400 + "host y"), "x https://<redacted>@host y")
         self.assertEqual(redactor.text("a://u:p@h b://v:q@i"), "a://<redacted>@h b://<redacted>@i")
 
+    def test_a_credential_after_an_earlier_scheme_in_the_same_token_is_found(self):
+        redactor = mcp.Redactor("/home/alice")
+        self.assertEqual(redactor.text("http://h/x?u=https://bob:pw@host"), "http://h/x?u=https://<redacted>@host")
+        self.assertEqual(redactor.text("a://b/c://d://u:p@h"), "a://b/c://<redacted>@h")
+
     def test_documented_limits_of_the_userinfo_scan(self):
         redactor = mcp.Redactor("/home/alice")
         self.assertEqual(redactor.text("https://bob:8080/x@y"), "https://bob:8080/x@y")  # a numeric password followed by '/' reads as a port
@@ -753,7 +758,8 @@ class RedactionTest(ToolTestCase):
     def test_urls_without_credentials_are_left_alone(self):
         redactor = mcp.Redactor("/home/alice")
         for plain in ("http://[::1]:8080/path@x", "http://[2001:db8::1]:80/", "http://host:8080/user@x", "https://example.com:443/a@b", "git@github.com:x/y.git", "ssh://git@host",
-                      "ssh://git@host:22/repo", "postgres://host:5432/db", "http://localhost:3000", "mailto:a@b", "https://user@host:80/p@x", "https://example.com:443 and a@b", "file:///etc/x@y"):
+                      "ssh://git@host:22/repo", "postgres://host:5432/db", "http://localhost:3000", "mailto:a@b", "https://user@host:80/p@x", "https://example.com:443 and a@b", "file:///etc/x@y",
+                      "http://example.com/a:b@c", "https://example.com/path/x:y@z"):
             self.assertEqual(redactor.text(plain), plain)
 
     def isolated(self, name, size, capped, limit_mb=1024):
