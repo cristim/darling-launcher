@@ -27,7 +27,9 @@ UID = os.getuid()
 
 
 def lsblk(*devices):
-    return {"blockdevices": [{"path": d, "fstype": "apfs", "mountpoints": m} for d, m in devices]}
+    """One real disk with the given APFS partitions."""
+    return {"blockdevices": [{"path": "/dev/sda", "type": "disk", "children": [
+        {"path": d, "type": "part", "fstype": "apfs", "mountpoints": m} for d, m in devices]}]}
 
 
 def make_dmg(preboot, uuid=UUID_A):
@@ -90,7 +92,7 @@ class DiscoveryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Ambiguous"):
             self.find(inventory, listings)
         self.assertEqual(self.find(inventory, listings, pinned="/dev/sdb2"), ("/dev/sdb2", 3))
-        with self.assertRaisesRegex(ValueError, "not a detected"):
+        with self.assertRaisesRegex(ValueError, "not an APFS partition of a real disk"):
             self.find(inventory, listings, pinned="/dev/sdc2")
 
     def test_two_preboot_volumes_on_one_partition_are_ambiguous(self):
@@ -100,6 +102,41 @@ class DiscoveryTest(unittest.TestCase):
     def test_invalid_device_aborts(self):
         with self.assertRaises(ValueError):
             self.find(lsblk(("/dev/sda2;x", [])), {})
+
+    def test_loop_devices_are_never_examined_even_when_pinned(self):
+        crafted = {"blockdevices": [{"path": "/dev/loop0", "type": "loop", "children": [
+            {"path": "/dev/loop0p1", "type": "part", "fstype": "apfs", "mountpoints": []}]}]}
+        listings = {"/dev/loop0p1": LIST}
+        probed = []
+        def run(argv):
+            probed.append(argv)
+            return LIST
+        for pinned in (None, "/dev/loop0p1"):
+            with self.assertRaises(ValueError):
+                cryptex.find_preboot(crafted, run, "/util", [], lambda _: None, pinned)
+        self.assertEqual(probed, [])
+
+    def test_only_partitions_of_real_disks_are_examined(self):
+        def tree(path, kind, parent_kind, fstype="apfs"):
+            return {"blockdevices": [{"path": "/dev/x", "type": parent_kind, "children": [{"path": path, "type": kind, "fstype": fstype, "mountpoints": []}]}]}
+        probed = []
+        def run(argv):
+            probed.append(argv)
+            return LIST
+        rejected = [tree("/dev/mapper/crypt", "crypt", "disk"), tree("/dev/sda2", "part", "lvm"), tree("/dev/sda2", "part", "loop"),
+                    tree("/dev/sda2", "part", None), tree("/dev/loop1p1", "part", "disk"),
+                    {"blockdevices": [{"path": "/dev/sda", "type": "disk", "fstype": "apfs", "mountpoints": []}]},
+                    {"blockdevices": [{"path": "/dev/loop2", "type": "disk", "children": [{"path": "/dev/loop2p1", "type": "part", "fstype": "apfs"}]}]}]
+        for inventory in rejected:
+            with self.assertRaises(ValueError):
+                cryptex.find_preboot(inventory, run, "/util", [], lambda _: None)
+        self.assertEqual(probed, [])
+        self.assertEqual(cryptex.find_preboot(tree("/dev/sda2", "part", "disk"), run, "/util", [], lambda _: None), ("/dev/sda2", 3))
+
+    def test_inventory_without_type_information_is_refused(self):
+        untyped = {"blockdevices": [{"path": "/dev/sda", "children": [{"path": "/dev/sda2", "fstype": "apfs"}]}]}
+        with self.assertRaisesRegex(ValueError, "No unmounted"):
+            cryptex.find_preboot(untyped, lambda argv: LIST, "/util", [], lambda _: None)
 
     def test_os_dmg_uuid_discovery(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -368,6 +405,7 @@ class MountTest(unittest.TestCase):
 
     def test_preboot_step_builds_exact_argv_and_verifies(self):
         destination = self.preboot()
+        self.assertIn(["/usr/bin/lsblk", "--json", "--output", "PATH,TYPE,FSTYPE,LABEL,MOUNTPOINTS"], self.calls)
         fuse = [c for c in self.calls if c[0] == self.trusted[0]]
         self.assertEqual(fuse, [[self.trusted[0], "-o", f"allow_other,uid={UID},gid={self.gid}", "-v", "3", "/dev/synthetic2", str(destination)]])
         self.assertEqual(destination, self.preboot_dir)

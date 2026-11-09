@@ -259,15 +259,31 @@ def authorization_command(options, lstat=os.lstat):
     return command + (["--device", options.device] if options.device else [])
 
 
+LSBLK = ["/usr/bin/lsblk", "--json", "--output", "PATH,TYPE,FSTYPE,LABEL,MOUNTPOINTS"]
+
+
+def real_apfs_partitions(inventory):
+    """APFS partitions of real disks only. Root parses these, and anyone can attach a loop device holding a
+    crafted image, so loop (and any other non-disk) parents, and devices without a type, are never examined."""
+    result = []
+    for disk in inventory.get("blockdevices", []):
+        if disk.get("type") != "disk" or disk.get("path", "").startswith("/dev/loop"):
+            continue
+        for partition in disk.get("children", []):
+            if partition.get("type") == "part" and partition.get("fstype") == "apfs" and not partition.get("path", "").startswith("/dev/loop"):
+                result.append(partition)
+    return result
+
+
 def find_preboot(inventory, run_command, apfsutil, existing, check_device, pinned=None):
     """Return (device, volume index) of the single Preboot volume; refuse zero or several."""
-    candidates = base.partitions(inventory)
+    candidates = real_apfs_partitions(inventory)
     if pinned and pinned not in [c.get("path") for c in candidates]:
-        raise ValueError(f"{pinned} is not a detected APFS partition")
+        raise ValueError(f"{pinned} is not an APFS partition of a real disk (loop devices are never examined)")
     found = []
     for partition in candidates:
         device = partition.get("path", "")
-        if partition.get("fstype") != "apfs" or (pinned and device != pinned):
+        if pinned and device != pinned:
             continue
         validate_device(device)
         if any(partition.get("mountpoints", [])) or any(r.get("source") == device for r in existing):
@@ -275,7 +291,7 @@ def find_preboot(inventory, run_command, apfsutil, existing, check_device, pinne
         check_device(device)
         found += [(device, v["index"]) for v in base.volumes(run_command([apfsutil, device])) if v["name"] == "Preboot"]
     if not found:
-        raise ValueError("No unmounted APFS partition with a Preboot volume was found")
+        raise ValueError("No unmounted APFS partition of a real disk with a Preboot volume was found")
     if len(found) > 1:
         raise ValueError("Ambiguous Preboot volumes (" + ", ".join(f"{d} volume {i}" for d, i in found) + "); select one partition")
     return found[0]
@@ -330,7 +346,7 @@ def mount_preboot(options, uid, gid, run_command=None, emit_event=emit, check_de
     """Privileged step. Only options.device is used; binaries and the mount point are chosen here."""
     run_command = run_command or base.run
     apfs_fuse, apfsutil = (tools or system_tools)()
-    inventory = json.loads(run_command(["/usr/bin/lsblk", "--json", "--output", "PATH,FSTYPE,LABEL,MOUNTPOINTS"]))
+    inventory = json.loads(run_command(LSBLK))
     existing = base.mounted_records(run_command)
     device, index = find_preboot(inventory, run_command, apfsutil, existing, check_device, options.device or None)
     destination = prepare_preboot_directory(uid, runtime_parent, lstat, setxattr, getxattr)
