@@ -64,8 +64,13 @@ def mounted_records(run_command):
     return document.get("filesystems", [])
 
 
-def mount_batch(options, uid, gid, run_command=run, emit_event=emit, check_device=None):
-    root = Path(options.mount_root)
+def validate_device(device):
+    if not re.fullmatch(r"/dev/[A-Za-z0-9_/-]+", device) or ".." in device:
+        raise ValueError("Invalid detected device path")
+
+
+def prepare_root(mount_root, uid, gid):
+    root = Path(mount_root)
     if not root.is_absolute() or root == Path("/") or root.resolve() != root:
         raise ValueError("Choose an absolute mount root without symlink ancestors")
     missing = []
@@ -80,14 +85,39 @@ def mount_batch(options, uid, gid, run_command=run, emit_event=emit, check_devic
             directory.chmod(0o700)
     if root.is_symlink() or not root.is_dir():
         raise ValueError("Invalid mount root")
+    return root
+
+
+def prepare_destination(destination, existing, uid, gid):
+    if destination.is_symlink() or destination.resolve() != destination:
+        raise ValueError("Mount directory has symlink ancestors")
+    new_directory = not destination.exists()
+    destination.mkdir(exist_ok=True)
+    if new_directory and os.geteuid() == 0:
+        os.chown(destination, uid, gid)
+        destination.chmod(0o700)
+    if any(r.get("target") == str(destination) for r in existing) or any(destination.iterdir()):
+        raise ValueError("Mount directory is mounted or not empty")
+
+
+def caller_identity():
+    if os.geteuid() != 0 or not os.environ.get("PKEXEC_UID"):
+        raise ValueError("Privileged mode requires pkexec and its caller identity")
+    uid = int(os.environ["PKEXEC_UID"])
+    if uid <= 0:
+        raise ValueError("A non-root caller is required")
+    return uid, pwd.getpwuid(uid).pw_gid
+
+
+def mount_batch(options, uid, gid, run_command=run, emit_event=emit, check_device=None):
+    root = prepare_root(options.mount_root, uid, gid)
     inventory = partitions(json.loads(run_command(["/usr/bin/lsblk", "--json", "--output", "PATH,FSTYPE,LABEL,MOUNTPOINTS"])))
     existing = mounted_records(run_command)
     owned = []
     for partition in inventory:
         device = partition.get("path", "")
         try:
-            if not re.fullmatch(r"/dev/[A-Za-z0-9_/-]+", device) or ".." in device:
-                raise ValueError("Invalid detected device path")
+            validate_device(device)
             if any(partition.get("mountpoints", [])) or any(r.get("source") == device for r in existing):
                 emit_event("skip", device=device, reason="Already mounted")
                 continue
@@ -110,15 +140,7 @@ def mount_batch(options, uid, gid, run_command=run, emit_event=emit, check_devic
                     continue
                 destination = root / f"{Path(device).name}-volume-{volume['index']}"
                 try:
-                    if destination.is_symlink() or destination.resolve() != destination:
-                        raise ValueError("Mount directory has symlink ancestors")
-                    new_directory = not destination.exists()
-                    destination.mkdir(exist_ok=True)
-                    if new_directory and os.geteuid() == 0:
-                        os.chown(destination, uid, gid)
-                        destination.chmod(0o700)
-                    if any(r.get("target") == str(destination) for r in existing) or any(destination.iterdir()):
-                        raise ValueError("Mount directory is mounted or not empty")
+                    prepare_destination(destination, existing, uid, gid)
                     flags = f"ro,nodev,nosuid,noexec,uid={uid},gid={gid}"
                     emit_event("progress", message=f"Mounting {device} volume {volume['index']} ({volume['name']}) read-only")
                     arguments = [driver, "-v", str(volume["index"]), "-o", flags + ",allow_other", device, str(destination)] if partition["fstype"] == "apfs" else [driver, "-i", "-t", partition["fstype"], "-o", flags, "--", device, str(destination)]
@@ -146,12 +168,12 @@ def mount_batch(options, uid, gid, run_command=run, emit_event=emit, check_devic
     return owned
 
 
-def authorization_command(options):
+def authorization_command(options, script=__file__, extra=()):
     pkexec = shutil.which("pkexec")
     if not pkexec:
         raise ValueError("pkexec is unavailable")
-    return [pkexec, str(Path(sys.executable).resolve()), "-I", str(Path(__file__).resolve()), "--privileged",
-            "--mount-root", options.mount_root, "--apfs-fuse", options.apfs_fuse, "--apfsutil", options.apfsutil]
+    return [pkexec, str(Path(sys.executable).resolve()), "-I", str(Path(script).resolve()), "--privileged",
+            "--mount-root", options.mount_root, "--apfs-fuse", options.apfs_fuse, "--apfsutil", options.apfsutil, *extra]
 
 
 def main(argv=None):
@@ -168,12 +190,7 @@ def main(argv=None):
             if code in (126, 127):
                 emit("error", message="Authorization cancelled or denied; stopped without retry")
             return code
-        if os.geteuid() != 0 or not os.environ.get("PKEXEC_UID"):
-            raise ValueError("Privileged mode requires pkexec and its caller identity")
-        uid = int(os.environ["PKEXEC_UID"])
-        if uid <= 0:
-            raise ValueError("A non-root caller is required")
-        mount_batch(options, uid, pwd.getpwuid(uid).pw_gid)
+        mount_batch(options, *caller_identity())
         return 0
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
         emit("error", message=str(error))
