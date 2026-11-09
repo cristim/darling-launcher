@@ -13,8 +13,7 @@
 enum class DyldCacheMode { Off, AllowList };
 
 struct DyldCacheConfig {
-    bool enabled = false;                     // master switch for the prefix; the selection is kept while off
-    DyldCacheMode mode = DyldCacheMode::Off;
+    DyldCacheMode mode = DyldCacheMode::Off;  // Off is the master switch: the selection below is kept while off
     QString store;                            // store id, empty until one is chosen
     QStringList served;                       // install names dyld serves from the cache
 };
@@ -31,7 +30,7 @@ extern const char *const kGuestPolicyPath;
 QString configPath(const QString &prefix);
 QString policyPath(const QString &prefix);
 bool validate(const DyldCacheConfig &config, QString *error);
-// enabled, allow-list mode and at least one library: the settings under which the prefix asks dyld for the cache.
+// allow-list mode and at least one library: the settings under which the prefix asks dyld for the cache.
 bool wantsCache(const DyldCacheConfig &config);
 // A missing file is the default (off). Anything unreadable or invalid fails closed.
 bool load(const QString &prefix, DyldCacheConfig *out, QString *error);

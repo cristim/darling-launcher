@@ -20,7 +20,6 @@ struct StoreFile {
 struct StoreManifest {
     QString arch;
     QString uuid;       // hex UUID of the main file
-    QString buildLabel; // optional, e.g. the macOS build; informational only
     QString copiedAt;   // ISO date
     QList<StoreFile> files; // main file first
 };
@@ -28,12 +27,11 @@ enum class StoreState {
     Missing,  // no directory
     Partial,  // directory without store.json
     Ready,    // manifest valid, every file has the recorded size and header UUID
-    Stale,    // Ready, but the source now holds a different cache build; still usable
     Corrupt,  // manifest invalid or a file differs from it
 };
 struct StoreStatus {
     StoreState state = StoreState::Missing;
-    StoreManifest manifest; // set for Ready, Stale and Corrupt-with-manifest
+    StoreManifest manifest; // set for Ready and Corrupt-with-manifest
     QString detail;         // human readable, no paths
 };
 
@@ -56,8 +54,9 @@ bool checkPrivate(const QString &root, const QString &id, QString *error, const 
 bool parseManifest(const QByteArray &json, StoreManifest *out, QString *error);
 QByteArray renderManifest(const StoreManifest &m);
 bool saveManifest(const QString &root, const QString &id, const StoreManifest &m, QString *error);
-// Quick check used at launch and in the UI: sizes and header UUIDs only, no hashing. sourceUuidHex may be empty.
-StoreStatus status(const QString &root, const QString &id, const QString &sourceUuidHex = {});
+// Quick check used at launch and in the UI: sizes and header UUIDs only, no hashing. A store whose UUID differs from
+// the source cache's UUID is an older macOS build: still usable, and the UI compares the two.
+StoreStatus status(const QString &root, const QString &id);
 // Store ids found under root (directories only, never symlinks), sorted.
 QStringList listStores(const QString &root);
 

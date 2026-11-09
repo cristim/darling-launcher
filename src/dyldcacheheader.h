@@ -25,6 +25,8 @@ struct MainHeader {
 QString mainFileName(const QString &arch);
 // Lowercase hex of the UUID bytes (32 characters).
 QString uuidHex(const QByteArray &uuid);
+// A plain file suffix such as ".01" or ".02.dylddata": at most 31 bytes, safe characters, no "..".
+bool validSuffix(const QByteArray &suffix);
 // Parses the first bytes of a main file. `fileSize` bounds what the header may point at.
 bool parseMainHeader(const QByteArray &head, qint64 fileSize, MainHeader *out, QString *error);
 // Magic and UUID of any cache file (main or sub-cache). *arch is the architecture named by the magic.

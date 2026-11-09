@@ -181,6 +181,16 @@ private slots:
         QCOMPARE(existing, qint64(3));
         struct stat st; QVERIFY(::stat((d.path() + "/loose").toUtf8().constData(), &st) == 0); QCOMPARE(int(st.st_mode & 0777), 0600);
     }
+    void preadFullReadsExactlyOrFails() {
+        QTemporaryDir d; QString err; qint64 size = 0;
+        QVERIFY(SafeFs::writeFile(d.path(), "f", "0123456789", 0600, 0700, false, &err));
+        SafeFs::Fd fd(SafeFs::openRead(d.path(), "f", &size, &err)); QVERIFY(fd.fd >= 0);
+        char buf[16];
+        QVERIFY(SafeFs::preadFull(fd.fd, buf, 4, 3)); QCOMPARE(QByteArray(buf, 4), QByteArray("3456"));
+        QVERIFY(SafeFs::preadFull(fd.fd, buf, 10, 0));
+        QVERIFY(!SafeFs::preadFull(fd.fd, buf, 4, 8));   // runs past the end of the file
+        QVERIFY(!SafeFs::preadFull(-1, buf, 1, 0));
+    }
     void renameNoReplaceKeepsTheTarget() {
         QTemporaryDir d; QString err;
         QVERIFY(SafeFs::writeFile(d.path(), "s/a", "new", 0600, 0700, false, &err));

@@ -22,7 +22,7 @@ bool guestEnvironment(QProcessEnvironment *env, const QString &prefix, const QSt
         if (DyldCacheConfigFile::wantsCache(config)) {
             if (!DyldCacheStore::checkPrivate(storeRoot, config.store, error)) return false;
             const auto st = DyldCacheStore::status(storeRoot, config.store);
-            if (st.state != StoreState::Ready && st.state != StoreState::Stale)
+            if (st.state != StoreState::Ready)
                 return fail(error, "The dyld cache store for this prefix is not usable (" + (st.detail.isEmpty() ? QStringLiteral("not copied yet") : st.detail) + "). Copy it again or turn the cache off for this prefix.");
             QByteArray policy; bool exists = false;
             if (!SafeFs::readFile(prefix, ".darling-launcher/dyld-cache.policy", 256 * 1024, &policy, &exists, error)) return false;

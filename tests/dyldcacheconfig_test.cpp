@@ -20,29 +20,29 @@ struct Fx {
     PrefixState::ProcFs procFs;
     Fx() { procFs.procRoot = proc.path(); procFs.socketMayBeLive = [](const QString &) { return false; }; }
     bool save(const DyldCacheConfig &c, QString *err = nullptr) { QString e; return DyldCacheConfigFile::save(prefix.path(), c, err ? err : &e, procFs); }
-    static DyldCacheConfig on() { DyldCacheConfig c; c.enabled = true; c.mode = DyldCacheMode::AllowList; c.store = kStore; c.served = {kLibz}; return c; }
+    static DyldCacheConfig on() { DyldCacheConfig c; c.mode = DyldCacheMode::AllowList; c.store = kStore; c.served = {kLibz}; return c; }
 };
 
 class DyldCacheConfigTest : public QObject {
     Q_OBJECT
 private slots:
     void missingFileIsTheOffDefault() {
-        Fx fx; DyldCacheConfig c; QString err; c.enabled = true;
+        Fx fx; DyldCacheConfig c; QString err; c.mode = DyldCacheMode::AllowList;
         QVERIFY2(load(fx.prefix.path(), &c, &err), qPrintable(err));
-        QVERIFY(!c.enabled); QCOMPARE(c.mode, DyldCacheMode::Off); QVERIFY(c.served.isEmpty()); QVERIFY(!wantsCache(c));
+        QCOMPARE(c.mode, DyldCacheMode::Off); QVERIFY(c.served.isEmpty()); QVERIFY(!wantsCache(c));
     }
     void saveWritesConfigAndTheExactPolicy() {
         Fx fx; QString err; QVERIFY2(fx.save(Fx::on(), &err), qPrintable(err));
         DyldCacheConfig back; QVERIFY2(load(fx.prefix.path(), &back, &err), qPrintable(err));
-        QCOMPARE(back.store, kStore); QCOMPARE(back.served, QStringList({kLibz})); QVERIFY(back.enabled); QCOMPARE(back.mode, DyldCacheMode::AllowList); QVERIFY(wantsCache(back));
+        QCOMPARE(back.store, kStore); QCOMPARE(back.served, QStringList({kLibz})); QCOMPARE(back.mode, DyldCacheMode::AllowList); QVERIFY(wantsCache(back));
         QCOMPARE(slurp(policyPath(fx.prefix.path())), QByteArray("darling-dyld-cache-policy 1\n/usr/lib/libz.1.dylib\n"));
         QCOMPARE(modeOf(policyPath(fx.prefix.path())), 0644); QCOMPARE(modeOf(configPath(fx.prefix.path())), 0644);
         QCOMPARE(QByteArray(kGuestPolicyPath), QByteArray("/.darling-launcher/dyld-cache.policy"));
     }
     void policyIsRemovedWhenThePrefixDoesNotWantTheCache() {
-        for (int variant = 0; variant < 3; ++variant) {
+        for (int variant = 0; variant < 2; ++variant) {
             Fx fx; QVERIFY(fx.save(Fx::on())); QVERIFY(QFileInfo::exists(policyPath(fx.prefix.path())));
-            DyldCacheConfig c = Fx::on(); if (variant == 0) c.enabled = false; else if (variant == 1) c.mode = DyldCacheMode::Off; else c.served.clear();
+            DyldCacheConfig c = Fx::on(); if (variant == 0) c.mode = DyldCacheMode::Off; else c.served.clear();
             QString err; QVERIFY2(fx.save(c, &err), qPrintable(err));
             QVERIFY2(!QFileInfo::exists(policyPath(fx.prefix.path())), qPrintable(QString::number(variant)));
             DyldCacheConfig back; QVERIFY(load(fx.prefix.path(), &back, &err)); QCOMPARE(back.served, c.served); // the selection is kept
@@ -62,12 +62,12 @@ private slots:
     }
     void loadFailsClosedOnGuestWrittenGarbage() {
         const QList<QByteArray> bad = {
-            "not json", "[]", R"({"version":2,"enabled":true,"mode":"off","store":"","served":[]})",
-            R"({"version":1,"enabled":"yes","mode":"off","store":"","served":[]})",
-            R"({"version":1,"enabled":true,"mode":"cache-first","store":"","served":[]})",
-            R"({"version":1,"enabled":true,"mode":"off","store":"","served":[1]})",
-            R"({"version":1,"enabled":true,"mode":"off","store":"","served":["/usr/lib/libfoo.dylib"]})",
-            R"({"version":1,"enabled":true,"mode":"off","served":[]})",
+            "not json", "[]", R"({"version":2,"mode":"off","store":"","served":[]})",
+            R"({"version":1,"mode":5,"store":"","served":[]})",
+            R"({"version":1,"mode":"cache-first","store":"","served":[]})",
+            R"({"version":1,"mode":"off","store":"","served":[1]})",
+            R"({"version":1,"mode":"off","store":"","served":["/usr/lib/libfoo.dylib"]})",
+            R"({"version":1,"mode":"off","served":[]})",
         };
         for (const QByteArray &b : bad) {
             Fx fx; put(configPath(fx.prefix.path()), b); DyldCacheConfig c; QString err;
