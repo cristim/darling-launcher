@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import struct
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -324,6 +325,7 @@ class MountTest(unittest.TestCase):
         self.fuse.chmod(0o700)
         self.options = SimpleNamespace(mount_root=str(self.mounts), apfs_fuse=str(self.fuse), device="")
         self.root_owned = fake_lstat()
+        self.acls = {}
         self.trusted = ("/usr/local/bin/apfs-fuse", "/usr/local/bin/apfsutil")
         self.calls, self.records, self.events = [], [], []
         self.gid = os.getgid()
@@ -345,9 +347,17 @@ class MountTest(unittest.TestCase):
             (Path(argv[-1]) / "root/System/Library/dyld").mkdir(parents=True)
         return ""
 
+    def set_acl(self, path, name, value):
+        self.assertEqual(name, "system.posix_acl_access")
+        self.acls[path] = value
+
+    def get_acl(self, path, name):
+        return self.acls[path]
+
     def preboot(self, **overrides):
         arguments = dict(run_command=self.fake_run, emit_event=self.emit, check_device=lambda _: None, tools=lambda: self.trusted,
-                         lstat=self.root_owned, runtime_parent=str(self.runtime))
+                         lstat=self.root_owned, runtime_parent=str(self.runtime),
+                         setxattr=self.set_acl, getxattr=self.get_acl)
         arguments.update(overrides)
         return cryptex.mount_preboot(self.options, UID, self.gid, **arguments)
 
@@ -423,6 +433,45 @@ class MountTest(unittest.TestCase):
         self.records.append({"target": str(self.preboot_dir)})
         with self.assertRaisesRegex(ValueError, "not empty"):
             self.preboot()
+
+    def test_caller_acl_bytes_are_exactly_root_rwx_caller_x_nobody_else(self):
+        undefined = 0xFFFFFFFF
+        value = cryptex.caller_acl(1234)
+        self.assertEqual(struct.unpack("<I", value[:4])[0], 2)
+        entries = [struct.unpack("<HHI", value[4 + 8 * i:12 + 8 * i]) for i in range(5)]
+        self.assertEqual(entries, [(0x01, 7, undefined), (0x02, 1, 1234), (0x04, 0, undefined), (0x10, 1, undefined), (0x20, 0, undefined)])
+        self.assertEqual(len(value), 4 + 5 * 8)
+
+    def test_uid_directory_is_private_with_an_acl_for_the_caller_only(self):
+        destination = self.preboot()
+        uid_dir = destination.parent
+        self.assertEqual(self.acls, {str(uid_dir): cryptex.caller_acl(UID)})
+        self.assertEqual(stat.S_IMODE(uid_dir.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(self.runtime.stat().st_mode), 0o755)
+
+    def test_acl_is_applied_before_the_mount_point_exists_and_again_on_reuse(self):
+        def check_first(path, name, value):
+            self.assertFalse(self.preboot_dir.exists())
+            self.set_acl(path, name, value)
+        args = (UID, str(self.runtime), self.root_owned)
+        cryptex.prepare_preboot_directory(*args, check_first, self.get_acl)
+        calls = []
+        cryptex.prepare_preboot_directory(*args, lambda *a: calls.append(a) or self.set_acl(*a), self.get_acl)
+        self.assertEqual(len(calls), 1)
+
+    def test_missing_acl_support_fails_closed_before_any_mount(self):
+        import errno
+        def unsupported(path, name, value):
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+        with self.assertRaisesRegex(ValueError, "POSIX ACL.*refusing to mount"):
+            self.preboot(setxattr=unsupported)
+        self.assertFalse(any(c[0] == self.trusted[0] for c in self.calls))
+        self.assertFalse(self.preboot_dir.exists())
+
+    def test_acl_that_reads_back_differently_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "not applied as requested"):
+            self.preboot(getxattr=lambda path, name: b"\x02\x00\x00\x00")
+        self.assertFalse(any(c[0] == self.trusted[0] for c in self.calls))
 
     def test_untrusted_tool_creates_no_directories(self):
         def tools():
