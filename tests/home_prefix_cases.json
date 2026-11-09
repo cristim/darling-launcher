@@ -12,5 +12,7 @@
   {"name": "sibling with the same prefix", "home": "@ALIAS@/me", "root": "@ALIAS@/mex/x", "expect": "@ALIAS@/mex/x"},
   {"name": "dot-dot leaves home", "home": "@ALIAS@/me", "root": "@ALIAS@/me/../you/x", "expect": "@ALIAS@/you/x"},
   {"name": "real home needs no rewrite", "home": "@REAL@/me", "root": "@REAL@/me/x", "expect": "@REAL@/me/x"},
+  {"name": "missing home below a symlinked prefix", "home": "@ALIAS@/absent", "root": "@ALIAS@/absent/x", "expect": "@REAL@/absent/x"},
+  {"name": "missing home and missing parents below a symlinked prefix", "home": "@ALIAS@/absent/deeper", "root": "@ALIAS@/absent/deeper/x/y", "expect": "@REAL@/absent/deeper/x/y"},
   {"name": "missing home is left alone", "home": "@REAL@/absent", "root": "@REAL@/absent/x", "expect": "@REAL@/absent/x"}
 ]

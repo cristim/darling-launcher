@@ -85,10 +85,21 @@ bool makeCommand(const MacPartition &partition, const QString &directory, MountB
 }
 
 QString resolveHomePrefix(const QString &mountRoot, const QString &home) {
-    const QString root = QDir::cleanPath(mountRoot), cleanHome = QDir::cleanPath(home), resolved = QFileInfo(cleanHome).canonicalFilePath();
-    if (cleanHome.isEmpty() || resolved.isEmpty() || (root != cleanHome && !root.startsWith(cleanHome + "/"))) return root;
-    return resolved + root.mid(cleanHome.size());
+    const QString root = QDir::cleanPath(mountRoot), cleanHome = QDir::cleanPath(home);
+    if (cleanHome.isEmpty() || (root != cleanHome && !root.startsWith(cleanHome + "/"))) return root;
+    // Like Python's realpath: resolve the longest existing prefix and keep the missing tail as written.
+    QString existing = cleanHome, tail;
+    while (existing != "/" && !QFileInfo::exists(existing)) {
+        const int slash = existing.lastIndexOf('/');
+        if (slash < 0) return root;
+        tail = existing.mid(slash) + tail; existing = slash == 0 ? QStringLiteral("/") : existing.left(slash);
+    }
+    QString resolved = QFileInfo(existing).canonicalFilePath();
+    if (resolved.isEmpty()) return root;
+    if (resolved == "/") resolved.clear();
+    return resolved + tail + root.mid(cleanHome.size());
 }
+
 
 QString passwdHome() {
     struct passwd entry {}; struct passwd *found = nullptr; QByteArray buffer(4096, 0);
