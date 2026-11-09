@@ -1762,7 +1762,8 @@ def environment_accesses(source):
     SAFE_ENV_NAMES comprehension may index by its own loop variable (its constants are read from the tuple)."""
     tree = ast.parse(source)
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
-    is_environ = lambda n: (isinstance(n, ast.Name) and n.id == "environ") or (isinstance(n, ast.Attribute) and n.attr == "environ")
+    def is_environ(n):
+        return (isinstance(n, ast.Name) and n.id == "environ") or (isinstance(n, ast.Attribute) and n.attr == "environ")
     names, computed = set(), []
 
     def key(node, where):
