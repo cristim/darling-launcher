@@ -138,7 +138,10 @@ class Redactor:
     # label separated by whitespace only: the next word if it is long enough to be a secret rather than prose ("the password field")
     SPACED = re.compile(r"(?i)\b" + LABELS + r"\b\s+(?P<v>(?!<redacted>)[^\s\"'=:]{6,})")
     # The name ends at a delimiter, so PATH=/home/a/bin:/usr/bin and (/home/a) keep their separators.
-    USERINFO = re.compile(r"(?<=://)(?P<v>[^/\s@\"']+:[^/\s@\"']+)(?=@)")
+    # scheme://user:password@host. Every quantifier is bounded and the user class cannot contain ':', so each '://' costs at
+    # most ~640 steps and the whole scan is linear. The password may hold '@' and '/' (the last '@' wins, so nothing leaks);
+    # "host:8080/..." is a port, not a password; bracketed IPv6 hosts cannot start a user name.
+    USERINFO = re.compile(r"(?<=://)(?P<v>[^/\s@\"':\[\]]{0,128}:(?!\d{1,5}(?:[/\s\"']|$))[^\s\"']{0,512})(?=@)")
     GENERIC_HOME = re.compile(r"(?i)/(?:home|Users|run/media)/(?P<v>[^/\s\"'`:;,()\[\]{}<>|&=*?\\]+)")
     MAX_DECODE_DEPTH = 5
 

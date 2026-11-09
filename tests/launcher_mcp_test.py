@@ -714,6 +714,21 @@ class RedactionTest(ToolTestCase):
                 self.assertNotIn(leaked, result)
         self.assertEqual(redactor.text("https://example.com/a@b and mailto:x@y"), "https://example.com/a@b and mailto:x@y")
 
+    def test_userinfo_with_at_signs_slashes_and_empty_users_is_fully_redacted(self):
+        redactor = mcp.Redactor("/home/alice")
+        cases = {"https://bob:p@ss@host": "https://<redacted>@host", "https://bob:pa/ss@host": "https://<redacted>@host", "redis://:secretpw@host": "redis://<redacted>@host",
+                 "see https://bob:p@ss@host/x now": "see https://<redacted>@host/x now", "http://host:8080@x": "http://<redacted>@x", "amqp://u:@h": "amqp://<redacted>@h"}
+        for text, expected in cases.items():
+            self.assertEqual(redactor.text(text), expected, text)
+            for leaked in ("ss@", "pa/", "secretpw"):
+                self.assertNotIn(leaked, redactor.text(text))
+
+    def test_urls_without_credentials_are_left_alone(self):
+        redactor = mcp.Redactor("/home/alice")
+        for plain in ("http://[::1]:8080/path@x", "http://[2001:db8::1]:80/", "http://host:8080/user@x", "https://example.com:443/a@b", "git@github.com:x/y.git", "ssh://git@host",
+                      "ssh://git@host:22/repo", "postgres://host:5432/db", "http://localhost:3000", "mailto:a@b", "https://user@host:80/p@x", "https://example.com:443 and a@b", "file:///etc/x@y"):
+            self.assertEqual(redactor.text(plain), plain)
+
     def test_json_escaped_slashes_and_unicode_escapes_are_found_without_decoding_the_output(self):
         redactor = mcp.Redactor("/home/alice")
         self.assertEqual(redactor.text("\\/home\\/alice\\/x"), "~\\/x")
