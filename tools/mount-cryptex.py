@@ -444,7 +444,13 @@ def mount_preboot(options, uid, gid, run_command=None, emit_event=emit, check_de
     existing = mount_records(run_command)
     state = mount_state(destination, existing)
     if state == "alive":
-        # Reuse it: only this script mounts under the root-owned /run chain.
+        # Reuse it: only this script mounts under the root-owned /run chain. A mount left by an earlier
+        # build or helper may sit under a looser <uid> directory, so tighten it now; the leaf is the caller's.
+        parent = destination.parent
+        if os.path.realpath(parent) != str(parent):
+            raise ValueError(f"{parent} must not involve symlinks")
+        _require_root_chain(str(parent), lstat)
+        restrict_to_caller(parent, uid, setxattr, getxattr)
         record = next(r for r in existing if r.get("target") == str(destination))
         emit_event("mounted", role="preboot", path=str(destination), device=record.get("source") or "")
         return destination
