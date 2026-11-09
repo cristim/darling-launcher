@@ -982,9 +982,17 @@ def build_tools(server):
                                 "run `sudo cmake --install <build directory>` for the launcher first"
                                 + ("; the cryptex script ships with the cryptex mount action." if kind == "cryptex" else "."))
             else:
-                argv = [system_tool("python3"), "-I", script, "--mount-root", str(root), "--apfs-fuse", system_tool("apfs-fuse")]
+                argv = [system_tool("python3"), "-I", script, "--mount-root", str(root)]
+                if kind == "cryptex":
+                    argv += ["--apfs-fuse", system_tool("apfs-fuse")]
+                else:
+                    # Explicit empty values keep the script from falling back to a PATH lookup; HFS-only machines still work.
+                    for flag, tool in (("--apfs-fuse", "apfs-fuse"), ("--apfsutil", "apfsutil")):
+                        found = trusted_file(TRUSTED_DIRECTORIES, tool, True)
+                        argv += [flag, found or ""]
+                        if found is None:
+                            warnings.append(f"{tool} was not found in {' or '.join(TRUSTED_DIRECTORIES)}; APFS partitions will report an error (HFS partitions are unaffected)")
                 if kind == "batch":
-                    argv += ["--apfsutil", system_tool("apfsutil")]
                     description = "Mount every detected macOS partition read-only. The script asks for one pkexec authorization itself; run it in a desktop terminal."
                 else:
                     if "device" in args:
