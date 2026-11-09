@@ -61,6 +61,28 @@ qint64 matchingPrefix(int srcFd, int dstFd, qint64 limit, const DyldCacheCopy::O
     return limit;
 }
 
+// A store file that exists before the manifest does (a copy cut short after renaming it) is trusted only after it is
+// compared with the source: another process of this user could have planted a file with a valid header.
+DyldCopy checkDoneFile(const QString &sourceDir, const QString &root, const QString &id, const Item &item, const DyldCacheCopy::Options &opt,
+                       const DyldCacheCopy::ProgressFn &progress, const std::atomic<bool> *cancel, Tally *tally) {
+    QString err;
+    Fd src(SafeFs::openRead(sourceDir, item.name, nullptr, &err));
+    if (src.fd < 0) return failed(err);
+    Fd dst(SafeFs::openRead(root, id + "/" + item.name, nullptr, &err)); // its size was checked when it was found
+    if (dst.fd < 0) return failed(err);
+    QByteArray buf(int(qMin(opt.blockBytes, item.size ? item.size : qint64(1))), Qt::Uninitialized);
+    const qint64 base = tally->done;
+    const qint64 same = matchingPrefix(src.fd, dst.fd, item.size, opt, cancel, &buf, [&](qint64 pos) {
+        if (progress) progress({tally->index, tally->count, item.name, pos, item.size, base + pos, tally->total});
+    });
+    if (same == kCancelled) { DyldCopy c; c.result = DyldCacheCopy::Result::Cancelled; return c; }
+    if (same < 0) return failed("Cannot compare " + item.name + " in the store with the source");
+    if (same != item.size) return failed(item.name + " in the store differs from the source. Move the store directory aside and copy again.");
+    tally->done += item.size;
+    DyldCopy ok; ok.result = DyldCacheCopy::Result::Done;
+    return ok;
+}
+
 // Copies one file into <id>/<name>.partial and renames it into place. Returns Done, Cancelled or Failed.
 DyldCopy copyFile(const QString &sourceDir, const QString &root, const QString &id, const QString &arch, const Item &item,
                   const DyldCacheCopy::Options &opt, const DyldCacheCopy::ProgressFn &progress, const std::atomic<bool> *cancel, Tally *tally) {
@@ -186,7 +208,11 @@ Outcome copyCache(const QString &sourceDir, const QString &arch, const QString &
 
     for (int i = 0; i < items.size(); ++i) {
         tally.index = i + 1;
-        if (finalDone[i]) { tally.done += items[i].size; continue; }
+        if (finalDone[i]) {
+            const Outcome r = checkDoneFile(sourceDir, storeRoot, id, items[i], opt, progress, cancel, &tally);
+            if (r.result != Result::Done) { Outcome o = r; o.storeId = id; return o; }
+            continue;
+        }
         const Outcome r = copyFile(sourceDir, storeRoot, id, arch, items[i], opt, progress, cancel, &tally);
         if (r.result != Result::Done) { Outcome o = r; o.storeId = id; return o; }
     }
