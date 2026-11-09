@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "dyldcacheheader.h"
+#include "discovery.h"
 #include <QByteArray>
 #include <QList>
 #include <QString>
@@ -47,7 +48,8 @@ QString configuredRoot();
 QString storeId(const QString &arch, const QString &uuidHex);
 bool validStoreId(const QString &id);
 // Creates the root (0700) when missing and refuses one that is not owned by this user or is open to group/others.
-bool ensureRoot(const QString &root, QString *error);
+// Also refuses a root that is a symlink, and any directory between dataRoot and the root that is one.
+bool ensureRoot(const QString &root, QString *error, const QString &dataRoot = LauncherDiscovery::dataRoot());
 
 bool parseManifest(const QByteArray &json, StoreManifest *out, QString *error);
 QByteArray renderManifest(const StoreManifest &m);

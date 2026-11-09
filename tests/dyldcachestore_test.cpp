@@ -18,6 +18,21 @@ private slots:
         QVERIFY(!ensureRoot(root, &err)); QCOMPARE(modeOf(root), 0755); // refused, never chmod-ed
         QVERIFY(!ensureRoot("relative/dir", &err));
     }
+    void ensureRootRefusesSymlinkedRootAndSymlinkedDataSubdirectories() {
+        QTemporaryDir d, real; QString err;
+        const QString data = d.path() + "/data";
+        QVERIFY(QDir().mkpath(data));
+        QVERIFY(QFile::link(real.path(), data + "/dyld-cache"));            // the root itself
+        QVERIFY(!ensureRoot(data + "/dyld-cache", &err, data)); QVERIFY(err.contains("symbolic link")); QVERIFY(!err.contains(d.path()));
+        QVERIFY(QFile::link(real.path(), data + "/sub"));                    // a parent between the data directory and the root
+        QVERIFY(!ensureRoot(data + "/sub/dyld-cache", &err, data));
+        QVERIFY(QDir(real.path()).isEmpty());                                 // nothing was created through either link
+        QTemporaryDir other;                                                  // the data directory itself, and paths outside it, may be links
+        QVERIFY(QFile::link(other.path(), d.path() + "/datalink"));
+        QVERIFY2(ensureRoot(d.path() + "/datalink/dyld-cache", &err, d.path() + "/datalink"), qPrintable(err));
+        QVERIFY(QFile::link(other.path(), d.path() + "/outside"));
+        QVERIFY2(ensureRoot(d.path() + "/outside/x", &err, data), qPrintable(err));
+    }
     void manifestRoundTripAndRejections() {
         QTemporaryDir d;
         const QString id = makeFakeStore(d.path(), "arm64e", 1, {".01", ".02"});

@@ -43,9 +43,16 @@ bool validStoreId(const QString &id) {
     return re.match(id).hasMatch();
 }
 
-bool ensureRoot(const QString &root, QString *error) {
+bool ensureRoot(const QString &root, QString *error, const QString &dataRoot) {
     const QFileInfo info(root);
     if (!info.isAbsolute() || root.contains(QChar(0))) return fail(error, "The store location must be an absolute path");
+    const QString clean = QDir::cleanPath(root), data = QDir::cleanPath(dataRoot);
+    for (QString dir = clean;; ) {
+        if (QFileInfo(dir).isSymLink()) return fail(error, "The store location, or a directory on the way to it inside the launcher data directory, is a symbolic link; choose a real directory");
+        const QString up = QFileInfo(dir).absolutePath();
+        if (up == dir || !up.startsWith(data + "/")) break;
+        dir = up;
+    }
     const QString parent = info.absolutePath();
     if (!QDir().mkpath(parent)) return fail(error, "Cannot create the parent of the store location");
     if (::mkdir(QFile::encodeName(root).constData(), 0700) != 0 && errno != EEXIST) return fail(error, "Cannot create the store location");
