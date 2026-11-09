@@ -116,6 +116,10 @@ private slots:
         QVERIFY(QFile::link(d.path(), link.path() + "/l"));
         QVERIFY(guestDir(link.path() + "/l", id, &guest, &err)); QVERIFY(!guest.contains("/l/")); // symlinked root is resolved
         QVERIFY(!guestDir(d.path(), "arm64e-" + QString(32, 'f'), &guest, &err));   // missing
+        for (const QString &name : {QString("with\nnewline"), QString("with\x7f" "del"), QString("with\ttab")}) { // dyld rejects these in SPLIT_DIR, so refuse them here
+            const QString odd = d.path() + "/" + name; const QString oddId = makeFakeStore(odd, "arm64e", 1, {});
+            QVERIFY2(!guestDir(odd, oddId, &guest, &err), qPrintable(name)); QVERIFY(err.contains("control character"));
+        }
         QString deep = d.path(); while (deep.size() < 190) deep += "/dddddddddd";
         const QString deepId = makeFakeStore(deep, "arm64e", 1, {});
         QVERIFY(!guestDir(deep, deepId, &guest, &err)); QVERIFY(err.contains("200"));
