@@ -191,4 +191,25 @@ Outcome copyCache(const QString &sourceDir, const QString &arch, const QString &
     Outcome o; o.result = Result::Done; o.storeId = id;
     return o;
 }
+
+Outcome verifyStore(const QString &storeRoot, const QString &id, const ProgressFn &progress, const std::atomic<bool> *cancel) {
+    const auto st = status(storeRoot, id);
+    if (st.state == StoreState::Missing || st.state == StoreState::Partial) return failed("The store is not complete");
+    if (st.state == StoreState::Corrupt) return failed(st.detail);
+    Tally tally; tally.count = int(st.manifest.files.size());
+    for (const auto &f : st.manifest.files) tally.total += f.size;
+    QString err;
+    for (const auto &f : st.manifest.files) {
+        ++tally.index;
+        QString hex; const qint64 base = tally.done;
+        const bool ok = sha256Of(storeRoot, id + "/" + f.name, &hex, cancel, &err, [&](qint64 n) {
+            tally.done += n;
+            if (progress) progress({tally.index, tally.count, f.name, tally.done - base, f.size, tally.done, tally.total});
+        });
+        if (!ok) { if (cancelled(cancel)) { Outcome o; o.result = Result::Cancelled; return o; } return failed(err); }
+        if (hex != f.sha256) return failed(f.name + " differs from the recorded checksum");
+    }
+    Outcome o; o.result = Result::Done; o.storeId = id;
+    return o;
+}
 }
