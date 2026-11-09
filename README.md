@@ -220,6 +220,75 @@ ownership. It never writes filesystem data to the macOS device or unlocks encryp
 volumes. Mounts remain present until explicitly unmounted. Apple payloads and
 filesystem metadata are private local data and are not uploaded.
 
+### Mount the cryptex OS image (dyld shared cache)
+
+**Settings → Mount macOS source… → Mount cryptex OS (Preboot + os.dmg)** runs
+`tools/mount-cryptex.py`, which automates two read-only mounts.
+
+**Install first.** The scripts need Python 3.8 or newer, and root runs them with an interpreter that the launcher
+picks when CMake configures it. There are three outcomes:
+
+1. *Found.* The first of `/usr/bin/python3`, the interpreter `find_package(Python3)` found, `/usr/local/bin/python3`,
+   then `/usr/bin/python3.8` to `/usr/bin/python3.20` that is root-owned along its whole path (a symlink needs root
+   ownership and a trusted target), not group- or world-writable, runs, and reports 3.8 or newer is baked in.
+   PATH and home-directory interpreters are never used.
+2. *Explicit override.* `-DLAUNCHER_PYTHON=<path>` uses only that path under the same rule; if it fails, configuration
+   stops with the reason (you asked for it).
+3. *None found.* Without an override, configuration succeeds with a CMake warning that lists every candidate and why
+   it was rejected, and bakes no interpreter. The launcher builds and runs, but the cryptex and Preboot actions are
+   disabled with the message "No trusted Python 3.8+ was found when the launcher was configured" and never reach
+   `pkexec`. Install a system Python (or pass `-DLAUNCHER_PYTHON`) and reconfigure. The script tests then run with
+   the Python that `find_package` found, unprivileged.
+
+The dialog and the script re-check the interpreter at run time. Root runs the script, so the launcher only uses a copy that only root
+can change. `sudo cmake --install <build directory>` puts `mount-cryptex.py` and its helper
+`mount-macos.py` (only those) into `<libexecdir>/darling-launcher` (default
+`/usr/local/libexec/darling-launcher`; `-DLAUNCHER_MOUNT_CRYPTEX_SCRIPT=<path>` moves it).
+Before any `pkexec` request, and again when it starts as root, the script checks that both
+files and every parent directory (after resolving symlinks) are owned by root and not group-
+or world-writable; the helper is compiled from that verified source instead of imported, so a
+planted `__pycache__` is never used. Run from a source or build tree the action is disabled
+and the dialog prints the install commands. `apfs-fuse` and `apfsutil` must also be installed
+as root in `/usr/local/bin` or `/usr/bin` (same ownership rules); a copy in your home is used
+only for step 2.
+
+1. One `pkexec` request mounts the macOS Preboot volume. The privileged step takes no path
+   from the launcher. Preboot is mounted at `/run/darling-launcher/<uid>/macos-preboot`, a
+   chain created by root: `/run/darling-launcher` is 0755 and `<uid>` is `root:root` 0700 with
+   a POSIX ACL entry that lets only your uid traverse it (the mount uses `allow_other` and
+   holds FileVault user records, so other local users must not reach it). If the ACL cannot be
+   set the action stops and mounts nothing. The command is
+   `apfs-fuse -o allow_other,uid=<you>,gid=<you> -v <index> <partition> /run/darling-launcher/<uid>/macos-preboot`.
+   The partition and volume index are found by running `apfsutil` on APFS partitions
+   of real disks that no other driver has mounted (volumes of the same container that
+   apfs-fuse already mounted, for example by the batch action, are fine) (loop devices and other non-disk parents are never examined, even when
+   selected) and selecting the volume named `Preboot`. Select a partition to restrict the
+   search to it. A Preboot mount whose apfs-fuse daemon has died is unmounted and replaced in
+   the same request.
+2. As you, without privileges, it mounts
+   `<preboot>/root/<UUID>/cryptex1/current/os.dmg` with
+   `apfs-fuse -o uid=<you>,gid=<you> -v 0 <os.dmg> <root>/macos-cryptex-os`, where
+   `<root>` is the mount root: a directory below your home (a symlinked home prefix such
+   as `/home -> /var/home` is resolved; symlinks below it are refused) or
+   `/run/user/<uid>`. The `<UUID>` directory is found by listing; this mount has no
+   `allow_other`.
+
+When `<cryptex-os>/root/System/Library/dyld/` exists, its path is reported in the
+dialog output. A missing tool, no Preboot volume, several Preboot volumes or images,
+or an image path that resolves outside the Preboot mount stops the action with an
+error; nothing is guessed. If Preboot is already mounted and responding, it is reused and no authorization is
+requested.
+
+`apfs-fuse` can use several GB of memory while it reads the cryptex image. Use
+**Unmount cryptex OS** (no authorization needed), then **Unmount Preboot** (one `pkexec`
+request; it unmounts only your `/run/darling-launcher/<uid>/macos-preboot` with the
+root-owned `/usr/bin/umount`). The same script runs from a desktop terminal once installed:
+`python3 -I /usr/local/libexec/darling-launcher/mount-cryptex.py --mount-root DIR --apfs-fuse PATH [--device /dev/...]`
+(`--unmount` for Preboot). A polkit action pinned to the installed script is not provided; the
+generic `pkexec` prompt names the Python interpreter.
+The real mount and the `pkexec` prompt are not covered by the automated tests, which
+use fixtures and fake commands.
+
 ## Diagnostic log
 
 The launcher appends to `~/.darling-launcher/logs/launcher.log` (rotated at 8 MB to a
