@@ -48,7 +48,9 @@ def _require_root_chain(path, lstat):
     for part in [""] + list(Path(path).parts[1:]):
         current = current / part
         info = lstat(current)
-        if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        # Linux reports 0777 for every symlink; the real target chain is checked separately.
+        writable = not stat.S_ISLNK(info.st_mode) and info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        if info.st_uid != 0 or writable:
             raise ValueError(f"{current} must be owned by root and not group- or world-writable")
 
 
