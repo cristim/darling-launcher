@@ -302,8 +302,8 @@ class MountRootTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "owned by the caller"):
             self.check(self.home / "mounts/inner")
 
-    def test_prepare_root_creates_directories_for_the_caller(self):
-        root = cryptex.prepare_root(str(self.home / "a/mounts"), UID, os.getgid(), str(self.home))
+    def test_prepare_root_creates_private_directories(self):
+        root = cryptex.prepare_root(str(self.home / "a/mounts"), UID, str(self.home))
         self.assertTrue(root.is_dir())
         self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
 
@@ -316,10 +316,14 @@ class MountTest(unittest.TestCase):
         self.home = self.root / "home"
         self.home.mkdir()
         self.mounts = self.home / "mounts"
+        self.runtime = self.root / "run/darling-launcher"
+        self.runtime.parent.mkdir()
+        self.preboot_dir = self.runtime / str(UID) / "macos-preboot"
         self.fuse = self.root / "user-fuse"
         self.fuse.write_text("fixture")
         self.fuse.chmod(0o700)
         self.options = SimpleNamespace(mount_root=str(self.mounts), apfs_fuse=str(self.fuse), device="")
+        self.root_owned = fake_lstat()
         self.trusted = ("/usr/local/bin/apfs-fuse", "/usr/local/bin/apfsutil")
         self.calls, self.records, self.events = [], [], []
         self.gid = os.getgid()
@@ -342,12 +346,13 @@ class MountTest(unittest.TestCase):
         return ""
 
     def preboot(self, **overrides):
-        arguments = dict(run_command=self.fake_run, emit_event=self.emit, check_device=lambda _: None, tools=lambda: self.trusted)
+        arguments = dict(run_command=self.fake_run, emit_event=self.emit, check_device=lambda _: None, tools=lambda: self.trusted,
+                         lstat=self.root_owned, runtime_parent=str(self.runtime))
         arguments.update(overrides)
-        return cryptex.mount_preboot(self.options, UID, self.gid, str(self.home), **arguments)
+        return cryptex.mount_preboot(self.options, UID, self.gid, **arguments)
 
     def cryptex(self, **overrides):
-        arguments = dict(run_command=self.fake_run, emit_event=self.emit, sleep=lambda _: None)
+        arguments = dict(run_command=self.fake_run, emit_event=self.emit, sleep=lambda _: None, runtime_parent=str(self.runtime))
         arguments.update(overrides)
         return cryptex.mount_cryptex(self.options, UID, self.gid, str(self.home), **arguments)
 
@@ -355,7 +360,8 @@ class MountTest(unittest.TestCase):
         destination = self.preboot()
         fuse = [c for c in self.calls if c[0] == self.trusted[0]]
         self.assertEqual(fuse, [[self.trusted[0], "-o", f"allow_other,uid={UID},gid={self.gid}", "-v", "3", "/dev/synthetic2", str(destination)]])
-        self.assertEqual(destination, self.mounts / "macos-preboot")
+        self.assertEqual(destination, self.preboot_dir)
+        self.assertTrue(destination.is_dir())
         self.assertEqual(self.events[-1], {"event": "mounted", "role": "preboot", "path": str(destination), "device": "/dev/synthetic2"})
 
     def test_privileged_step_ignores_caller_supplied_binaries(self):
@@ -372,19 +378,58 @@ class MountTest(unittest.TestCase):
             self.preboot(tools=tools)
         self.assertFalse(any(c[0] == self.trusted[0] for c in self.calls))
 
-    def test_preboot_step_refuses_mount_root_outside_home(self):
-        self.options.mount_root = str(self.root / "outside/mounts")
-        with self.assertRaisesRegex(ValueError, "below your home"):
-            self.preboot()
-        self.assertEqual(self.calls, [])
-        self.assertFalse((self.root / "outside").exists())
+    def test_privileged_step_never_touches_the_caller_mount_root(self):
+        victim = self.root / "victim/mounts"
+        self.options.mount_root = str(victim)
+        destination = self.preboot()
+        self.assertFalse((self.root / "victim").exists())
+        self.assertEqual(destination, self.preboot_dir)
+        self.assertNotIn(str(victim), " ".join(" ".join(c) for c in self.calls))
 
-    def test_preboot_step_refuses_symlinked_root_component(self):
-        (self.home / "link").symlink_to(self.root, target_is_directory=True)
-        self.options.mount_root = str(self.home / "link/mounts")
-        with self.assertRaisesRegex(ValueError, "symlink"):
+    def test_preboot_directory_chain_is_not_caller_modifiable(self):
+        for overrides, message in (({str(self.runtime / str(UID)): (UID, False)}, "owned by root"),
+                                   ({str(self.runtime): (0, True)}, "not group- or world-writable"),
+                                   ({str(self.preboot_dir): (0, True)}, "not group- or world-writable")):
+            self.calls.clear()
+            with self.assertRaisesRegex(ValueError, message):
+                self.preboot(lstat=fake_lstat(overrides))
+            self.assertFalse(any(c[0] == self.trusted[0] for c in self.calls))
+
+    def test_symlink_planted_in_the_runtime_chain_is_refused_and_its_target_untouched(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        self.runtime.mkdir(parents=True)
+        (self.runtime / str(UID)).symlink_to(elsewhere, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symlinks"):
             self.preboot()
-        self.assertEqual(self.calls, [])
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertFalse(any(c[0] == self.trusted[0] for c in self.calls))
+
+    def test_planted_symlink_at_the_mount_point_is_refused(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        self.preboot_dir.parent.mkdir(parents=True)
+        self.preboot_dir.symlink_to(elsewhere, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symlinks"):
+            self.preboot()
+        self.assertFalse(any(c[0] == self.trusted[0] for c in self.calls))
+
+    def test_non_empty_or_mounted_preboot_directory_is_refused(self):
+        self.preboot_dir.mkdir(parents=True)
+        (self.preboot_dir / "leftover").write_text("x")
+        with self.assertRaisesRegex(ValueError, "not empty"):
+            self.preboot()
+        (self.preboot_dir / "leftover").unlink()
+        self.records.append({"target": str(self.preboot_dir)})
+        with self.assertRaisesRegex(ValueError, "not empty"):
+            self.preboot()
+
+    def test_untrusted_tool_creates_no_directories(self):
+        def tools():
+            raise ValueError("untrusted")
+        with self.assertRaises(ValueError):
+            self.preboot(tools=tools)
+        self.assertFalse(self.runtime.exists())
 
     def test_preboot_mount_that_does_not_verify_fails(self):
         def run(argv):
@@ -401,7 +446,7 @@ class MountTest(unittest.TestCase):
             self.cryptex()
 
     def test_cryptex_step_refuses_missing_apfs_fuse(self):
-        preboot = self.mounts / "macos-preboot"
+        preboot = self.preboot_dir
         make_dmg(preboot)
         self.records.append({"target": str(preboot)})
         self.options.apfs_fuse = str(self.root / "absent")
@@ -409,7 +454,7 @@ class MountTest(unittest.TestCase):
             self.cryptex()
 
     def test_cryptex_step_mounts_dmg_and_reports_dyld(self):
-        preboot = self.mounts / "macos-preboot"
+        preboot = self.preboot_dir
         image = make_dmg(preboot)
         self.records.append({"source": "/dev/synthetic2", "target": str(preboot)})
         dyld = self.cryptex()
@@ -422,14 +467,14 @@ class MountTest(unittest.TestCase):
         self.assertIn("GB", self.events[kinds.index("warning")]["message"])
 
     def test_already_mounted_cryptex_is_not_mounted_twice(self):
-        preboot, target = self.mounts / "macos-preboot", self.mounts / "macos-cryptex-os"
+        preboot, target = self.preboot_dir, self.mounts / "macos-cryptex-os"
         (target / "root/System/Library/dyld").mkdir(parents=True)
         self.records += [{"target": str(preboot)}, {"target": str(target)}]
         self.cryptex()
         self.assertFalse(any(c[0] == str(self.fuse) for c in self.calls))
 
     def test_missing_dyld_directory_fails_after_waiting(self):
-        preboot = self.mounts / "macos-preboot"
+        preboot = self.preboot_dir
         make_dmg(preboot)
         self.records.append({"target": str(preboot)})
         sleeps = []
@@ -466,7 +511,7 @@ class MainTest(unittest.TestCase):
             options = step.call_args.args[0]
             self.assertNotIn("tools", step.call_args.kwargs)
             self.assertEqual(options.apfs_fuse, "/tmp/fuse")
-            self.assertEqual(step.call_args.args[3], str(self.home))
+            self.assertEqual(step.call_args.args[1:], (UID, os.getgid()))
 
     def test_privileged_mode_with_untrusted_tool_fails_loudly(self):
         with patch.object(cryptex, "caller_identity", return_value=(UID, os.getgid())), \
@@ -491,7 +536,8 @@ class MainTest(unittest.TestCase):
             self.assertEqual(command[:3], ["/usr/bin/pkexec", "/trusted/python3", "-I"])
             self.assertEqual(command[command.index("--device") + 1], "/dev/sda2")
             self.assertIn("--privileged", command)
-            self.assertIn(str(self.home / "path with spaces"), command)
+            self.assertNotIn("--mount-root", command)
+            self.assertNotIn(str(self.home / "path with spaces"), command)
             self.assertNotIn("--apfs-fuse", command)
             self.assertNotIn("/tmp/fuse", command)
             self.assertEqual(step.call_count, 1)
@@ -520,7 +566,7 @@ class MainTest(unittest.TestCase):
             self.assertIn("below your home", emit.call_args.kwargs["message"])
 
     def test_mounted_preboot_skips_authorization(self):
-        records = [{"target": str(self.home / "path with spaces/macos-preboot")}]
+        records = [{"target": f"/run/darling-launcher/{UID}/macos-preboot"}]
         with patch.object(cryptex.base, "mounted_records", return_value=records), \
              patch.object(cryptex.subprocess, "call") as call, patch.object(cryptex, "mount_cryptex") as step:
             self.assertEqual(cryptex.main(self.args), 0)

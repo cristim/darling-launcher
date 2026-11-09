@@ -225,21 +225,26 @@ filesystem metadata are private local data and are not uploaded.
 **Settings → Mount macOS source… → Mount cryptex OS (Preboot + os.dmg)** runs
 `tools/mount-cryptex.py`, which automates two read-only mounts:
 
-1. One `pkexec` request mounts the macOS Preboot volume. The privileged step
-   ignores any helper path you pass: it uses only `apfs-fuse` and `apfsutil` found in
-   `/usr/local/bin` or `/usr/bin`, and refuses them unless the binary and every parent
-   directory are owned by root and not group- or world-writable (install them there
-   as root; a copy in your home is only used for step 2). The mount root must be a
-   directory below your home or `/run/user/<uid>`, owned by you, with no symlink
-   components. The command is
-   `apfs-fuse -o allow_other,uid=<you>,gid=<you> -v <index> <partition> <root>/macos-preboot`.
+1. One `pkexec` request mounts the macOS Preboot volume. The privileged step takes
+   no path from the launcher: it ignores any helper or mount-root argument. It uses only
+   `apfs-fuse` and `apfsutil` found in `/usr/local/bin` or `/usr/bin`, and refuses them
+   unless the file and every parent directory are owned by root and not group- or
+   world-writable (symlinks need to be root-owned and resolve to such a target; install
+   the tools there as root, a copy in your home is only used for step 2). Preboot is
+   mounted at `/run/darling-launcher/<uid>/macos-preboot`, a directory chain owned by
+   root that you cannot modify, so a path cannot be swapped between the check and the
+   mount. The command is
+   `apfs-fuse -o allow_other,uid=<you>,gid=<you> -v <index> <partition> /run/darling-launcher/<uid>/macos-preboot`.
    The partition and volume index are found by running `apfsutil` on unmounted APFS
    partitions and selecting the volume named `Preboot`. Select a partition in the
    dialog to restrict the search to it.
 2. As you, without privileges, it mounts
    `<preboot>/root/<UUID>/cryptex1/current/os.dmg` with
-   `apfs-fuse -o uid=<you>,gid=<you> -v 0 <os.dmg> <root>/macos-cryptex-os`. The
-   `<UUID>` directory is found by listing; this mount has no `allow_other`.
+   `apfs-fuse -o uid=<you>,gid=<you> -v 0 <os.dmg> <root>/macos-cryptex-os`, where
+   `<root>` is the mount root: a directory below your home (a symlinked home prefix such
+   as `/home -> /var/home` is resolved; symlinks below it are refused) or
+   `/run/user/<uid>`. The `<UUID>` directory is found by listing; this mount has no
+   `allow_other`.
 
 When `<cryptex-os>/root/System/Library/dyld/` exists, its path is reported in the
 dialog output. A missing tool, no Preboot volume, several Preboot volumes or images,
