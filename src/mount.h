@@ -31,6 +31,8 @@ QString exitDescription(int code);
 QString cryptexMountDirectory(const QString &mountRoot);
 // Mirrors resolve_home_prefix in tools/mount-cryptex.py: resolves a symlinked home prefix (/home -> /var/home).
 QString resolveHomePrefix(const QString &mountRoot, const QString &home);
+// The passwd entry's home directory, cleaned: the script uses the same source, never $HOME. Empty if there is none.
+QString passwdHome();
 bool makeCryptexCommand(const QString &python, const QString &script, const QString &mountRoot,
                         const QString &apfsFuse, const QString &device,
                         MountCommand *command, QString *error);

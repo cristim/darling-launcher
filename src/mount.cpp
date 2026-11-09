@@ -7,7 +7,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <pwd.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 bool fail(QString *error, const QString &message) { if (error) *error = message; return false; }
@@ -83,9 +85,15 @@ bool makeCommand(const MacPartition &partition, const QString &directory, MountB
 }
 
 QString resolveHomePrefix(const QString &mountRoot, const QString &home) {
-    const QString resolved = QFileInfo(home).canonicalFilePath();
-    if (resolved.isEmpty() || (mountRoot != home && !mountRoot.startsWith(home + "/"))) return mountRoot;
-    return resolved + mountRoot.mid(home.size());
+    const QString root = QDir::cleanPath(mountRoot), cleanHome = QDir::cleanPath(home), resolved = QFileInfo(cleanHome).canonicalFilePath();
+    if (cleanHome.isEmpty() || resolved.isEmpty() || (root != cleanHome && !root.startsWith(cleanHome + "/"))) return root;
+    return resolved + root.mid(cleanHome.size());
+}
+
+QString passwdHome() {
+    struct passwd entry {}; struct passwd *found = nullptr; QByteArray buffer(4096, 0);
+    if (::getpwuid_r(::getuid(), &entry, buffer.data(), buffer.size(), &found) != 0 || !found) return {};
+    return QDir::cleanPath(QString::fromLocal8Bit(entry.pw_dir));
 }
 
 QString trustedFile(const QString &path, unsigned extraOwner, bool executable, QString *error) {

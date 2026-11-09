@@ -316,6 +316,16 @@ class MountRootTest(unittest.TestCase):
         self.assertEqual(self.check(alias / "me/a/mounts", home=alias / "me"), self.home / "a/mounts")
         self.assertEqual(cryptex.resolve_home_prefix(str(alias / "me"), str(alias / "me")), str(self.home))
 
+    def test_shared_cases_match_the_cpp_implementation_inputs(self):
+        real = self.root / "real"
+        (real / "me").mkdir(parents=True)
+        (self.root / "alias").symlink_to(real, target_is_directory=True)
+        cases = json.loads((Path(__file__).resolve().parent / "home_prefix_cases.json").read_text())
+        self.assertGreater(len(cases), 5)
+        for case in cases:
+            fill = lambda text: text.replace("@ALIAS@", str(self.root / "alias")).replace("@REAL@", str(real))
+            self.assertEqual(cryptex.resolve_home_prefix(fill(case["root"]), fill(case["home"])), fill(case["expect"]), case["name"])
+
     def test_symlink_below_a_symlinked_home_prefix_is_still_refused(self):
         alias = self.root / "alias"
         alias.symlink_to(self.root / "home", target_is_directory=True)

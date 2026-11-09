@@ -125,12 +125,19 @@ def system_tools():
     return system_tool("apfs-fuse"), system_tool("apfsutil")
 
 
+def normalise(path):
+    """Collapse repeated slashes (POSIX normpath keeps a leading //), '.' and '..'; mirrored by QDir::cleanPath."""
+    return os.path.normpath(re.sub(r"/{2,}", "/", path))
+
+
 def resolve_home_prefix(mount_root, home):
-    """Rewrite a leading home path to its resolved form so a symlinked home prefix (/home -> /var/home) is allowed."""
-    raw = os.path.normpath(home)
-    if mount_root == raw or mount_root.startswith(raw.rstrip("/") + "/"):
-        return os.path.realpath(home) + mount_root[len(raw):]
-    return mount_root
+    """Rewrite a leading home path to its resolved form so a symlinked home prefix (/home -> /var/home) is allowed.
+
+    Mirrored by LauncherMount::resolveHomePrefix; tests/home_prefix_cases.json holds the shared cases."""
+    raw, root = normalise(home), normalise(mount_root)
+    if root == raw or root.startswith(raw.rstrip("/") + "/"):
+        return os.path.realpath(raw) + root[len(raw):]
+    return root
 
 
 def checked_root(mount_root, uid, home, lstat=os.lstat):

@@ -2,6 +2,9 @@
 #include "mount.h"
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -65,16 +68,23 @@ private slots:
         QVERIFY(!LauncherMount::makeCryptexCommand(tool, temporary.path() + "/missing.py", root, tool, {}, &command, &error));
         QVERIFY(!error.isEmpty());
     }
-    void symlinkedHomePrefixIsResolved() {
+    void homePrefixMatchesTheScriptOnSharedCases() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
-        const QString real = QFileInfo(temporary.path()).canonicalFilePath() + "/var/home/me", alias = temporary.path() + "/home";
-        QVERIFY(QDir().mkpath(real)); QVERIFY(QFile::link(QFileInfo(real).path(), alias));
-        const QString home = alias + "/me";
-        QCOMPARE(LauncherMount::resolveHomePrefix(home + "/.darling-launcher/mounts", home), real + "/.darling-launcher/mounts");
-        QCOMPARE(LauncherMount::resolveHomePrefix(home, home), real);
-        QCOMPARE(LauncherMount::resolveHomePrefix("/run/user/1000/mounts", home), QString("/run/user/1000/mounts"));
-        QCOMPARE(LauncherMount::resolveHomePrefix(home + "x/mounts", home), home + "x/mounts");
-        QCOMPARE(LauncherMount::resolveHomePrefix("/x/mounts", temporary.path() + "/missing"), QString("/x/mounts"));
+        const QString real = QFileInfo(temporary.path()).canonicalFilePath() + "/real", alias = temporary.path() + "/alias";
+        QVERIFY(QDir().mkpath(real + "/me")); QVERIFY(QFile::link(real, alias));
+        QFile file(QStringLiteral(TEST_SOURCE_DIR) + "/tests/home_prefix_cases.json"); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto cases = QJsonDocument::fromJson(file.readAll()).array(); QVERIFY(!cases.isEmpty());
+        auto fill = [&](QString text) { return text.replace("@ALIAS@", alias).replace("@REAL@", real); };
+        for (const auto &value : cases) {
+            const auto entry = value.toObject();
+            QCOMPARE(LauncherMount::resolveHomePrefix(fill(entry["root"].toString()), fill(entry["home"].toString())), fill(entry["expect"].toString()));
+        }
+    }
+    void passwdHomeIsCleanAndIgnoresTheEnvironment() {
+        const QByteArray saved = qgetenv("HOME"); qputenv("HOME", "/somewhere/else/");
+        const QString home = LauncherMount::passwdHome();
+        if (saved.isNull()) qunsetenv("HOME"); else qputenv("HOME", saved);
+        QVERIFY(!home.isEmpty()); QVERIFY(QDir::isAbsolutePath(home)); QCOMPARE(home, QDir::cleanPath(home)); QVERIFY(home != "/somewhere/else");
     }
     void rootRunFilesMustBeRootOwnedAndNotWritable() {
         // Production accepts only root (extraOwner 0); the tests use a tree under HOME owned by the test user as the stand-in root.
