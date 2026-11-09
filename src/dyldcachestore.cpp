@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "dyldcachestore.h"
+#include "core.h"
+#include "discovery.h"
+#include "safefs.h"
+#include <QDir>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QRegularExpression>
+#include <QSet>
+#include <cerrno>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <unistd.h>
+
+namespace {
+using LauncherCore::fail;
+const qint64 kMaxManifestBytes = 1 << 20;
+const QString kManifestName = QStringLiteral("store.json");
+const QRegularExpression &hexRe(int n) {
+    static const QRegularExpression h32("^[0-9a-f]{32}$"), h64("^[0-9a-f]{64}$");
+    return n == 32 ? h32 : h64;
+}
+bool validFileName(const QString &name, const QString &arch) {
+    const QString base = DyldCache::mainFileName(arch);
+    if (name == base) return true;
+    static const QRegularExpression suffix("^\\.[A-Za-z0-9._-]+$");
+    return name.startsWith(base) && name.size() < base.size() + 32 && suffix.match(name.mid(base.size())).hasMatch() && !name.contains("..");
+}
+}
+
+namespace DyldCacheStore {
+const char *const kGuestHostRoot = "/Volumes/SystemRoot";
+
+QString defaultRoot() { return LauncherDiscovery::dataRoot() + "/dyld-cache"; }
+QString storeId(const QString &arch, const QString &uuidHex) { return arch + "-" + uuidHex; }
+bool validStoreId(const QString &id) {
+    static const QRegularExpression re("^(arm64e?)-[0-9a-f]{32}$");
+    return re.match(id).hasMatch();
+}
+
+bool ensureRoot(const QString &root, QString *error) {
+    const QFileInfo info(root);
+    if (!info.isAbsolute() || root.contains(QChar(0))) return fail(error, "The store location must be an absolute path");
+    const QString parent = info.absolutePath();
+    if (!QDir().mkpath(parent)) return fail(error, "Cannot create the parent of the store location");
+    if (::mkdir(QFile::encodeName(root).constData(), 0700) != 0 && errno != EEXIST) return fail(error, "Cannot create the store location");
+    return SafeFs::checkPrivateDir(parent, info.fileName(), error);
+}
+
+QByteArray renderManifest(const StoreManifest &m) {
+    QJsonArray files;
+    for (const auto &f : m.files) files.append(QJsonObject{{"name", f.name}, {"size", double(f.size)}, {"uuid", f.uuid}, {"sha256", f.sha256}});
+    return QJsonDocument(QJsonObject{{"version", 1}, {"arch", m.arch}, {"uuid", m.uuid}, {"buildLabel", m.buildLabel},
+                                     {"copiedAt", m.copiedAt}, {"files", files}}).toJson(QJsonDocument::Indented);
+}
+
+bool parseManifest(const QByteArray &json, StoreManifest *out, QString *error) {
+    QJsonParseError parse;
+    const auto doc = QJsonDocument::fromJson(json, &parse);
+    if (parse.error != QJsonParseError::NoError || !doc.isObject()) return fail(error, "store.json is not valid JSON");
+    const auto o = doc.object();
+    if (!o.value("version").isDouble() || o.value("version").toInt(-1) != 1) return fail(error, "Unsupported store.json version");
+    for (const char *key : {"arch", "uuid", "buildLabel", "copiedAt"})
+        if (!o.value(key).isString()) return fail(error, QString("store.json field '%1' must be a string").arg(key));
+    StoreManifest m;
+    m.arch = o.value("arch").toString(); m.uuid = o.value("uuid").toString();
+    m.buildLabel = o.value("buildLabel").toString().left(64); m.copiedAt = o.value("copiedAt").toString().left(64);
+    if (m.arch != "arm64" && m.arch != "arm64e") return fail(error, "store.json has an unsupported architecture");
+    if (!hexRe(32).match(m.uuid).hasMatch()) return fail(error, "store.json has an invalid UUID");
+    if (!o.value("files").isArray()) return fail(error, "store.json field 'files' must be an array");
+    const auto files = o.value("files").toArray();
+    if (files.isEmpty() || files.size() > DyldCache::kMaxFiles) return fail(error, "store.json lists an invalid number of files");
+    QSet<QString> names;
+    for (const auto &v : files) {
+        const auto f = v.toObject();
+        if (!v.isObject() || !f.value("name").isString() || !f.value("uuid").isString() || !f.value("sha256").isString() || !f.value("size").isDouble())
+            return fail(error, "store.json file entry is malformed");
+        StoreFile sf{f.value("name").toString(), qint64(f.value("size").toDouble(-1)), f.value("uuid").toString(), f.value("sha256").toString()};
+        if (!validFileName(sf.name, m.arch) || names.contains(sf.name)) return fail(error, "store.json has an invalid or repeated file name");
+        if (sf.size <= 0 || !hexRe(32).match(sf.uuid).hasMatch() || !hexRe(64).match(sf.sha256).hasMatch()) return fail(error, "store.json file entry has invalid fields");
+        names.insert(sf.name); m.files.append(sf);
+    }
+    if (m.files.first().name != DyldCache::mainFileName(m.arch) || m.files.first().uuid != m.uuid) return fail(error, "store.json does not start with its main file");
+    *out = m;
+    return true;
+}
+
+bool saveManifest(const QString &root, const QString &id, const StoreManifest &m, QString *error) {
+    if (!validStoreId(id)) return fail(error, "Invalid store id");
+    return SafeFs::writeFile(root, id + "/" + kManifestName, renderManifest(m), 0400, 0700, true, error);
+}
+
+bool readHead(const QString &root, const QString &relPath, qint64 window, QByteArray *head, qint64 *fileSize, QString *error) {
+    qint64 size = 0;
+    const int fd = SafeFs::openRead(root, relPath, &size, error);
+    if (fd < 0) return false;
+    QByteArray buf(int(qMin(window, size)), Qt::Uninitialized);
+    qint64 off = 0;
+    while (off < buf.size()) {
+        const ssize_t n = ::pread(fd, buf.data() + off, size_t(buf.size() - off), off);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { ::close(fd); return fail(error, "Cannot read the start of " + QFileInfo(relPath).fileName()); }
+        off += n;
+    }
+    ::close(fd);
+    *head = buf; *fileSize = size;
+    return true;
+}
+
+StoreStatus status(const QString &root, const QString &id, const QString &sourceUuidHex) {
+    StoreStatus st;
+    if (!validStoreId(id)) { st.state = StoreState::Corrupt; st.detail = "Invalid store id"; return st; }
+    const QFileInfo dir(root + "/" + id);
+    if (!dir.exists() && !dir.isSymLink()) return st;
+    QString err; QByteArray raw; bool exists = false;
+    if (dir.isSymLink() || !dir.isDir()) { st.state = StoreState::Corrupt; st.detail = "The store entry is not a directory"; return st; }
+    if (!SafeFs::readFile(root, id + "/" + kManifestName, kMaxManifestBytes, &raw, &exists, &err)) { st.state = StoreState::Corrupt; st.detail = "store.json is unreadable"; return st; }
+    if (!exists) { st.state = StoreState::Partial; st.detail = "The copy is incomplete"; return st; }
+    st.state = StoreState::Corrupt;
+    if (!parseManifest(raw, &st.manifest, &err)) { st.detail = err; st.manifest = {}; return st; }
+    if (DyldCacheStore::storeId(st.manifest.arch, st.manifest.uuid) != id) { st.detail = "store.json does not belong to this store"; return st; }
+    for (const auto &f : st.manifest.files) {
+        QByteArray head; qint64 size = 0;
+        if (!readHead(root, id + "/" + f.name, 0x58 + 16, &head, &size, &err)) { st.detail = "Cannot read " + f.name; return st; }
+        if (size != f.size) { st.detail = f.name + " has the wrong size"; return st; }
+        QString arch; QByteArray uuid;
+        if (!DyldCache::parseFileHeader(head, &arch, &uuid, &err) || arch != st.manifest.arch || DyldCache::uuidHex(uuid) != f.uuid) { st.detail = f.name + " does not match the manifest"; return st; }
+    }
+    st.state = (!sourceUuidHex.isEmpty() && sourceUuidHex != st.manifest.uuid) ? StoreState::Stale : StoreState::Ready;
+    st.detail = st.state == StoreState::Stale ? "The source holds a newer macOS cache build" : QString();
+    return st;
+}
+
+QStringList listStores(const QString &root) {
+    QStringList ids;
+    for (const auto &e : QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name))
+        if (validStoreId(e.fileName())) ids << e.fileName();
+    return ids;
+}
+
+qint64 freeBytes(const QString &existingDir) {
+    struct statvfs sv;
+    if (::statvfs(QFile::encodeName(existingDir).constData(), &sv) != 0) return -1;
+    return qint64(sv.f_bavail) * qint64(sv.f_frsize);
+}
+
+bool checkFreeSpace(const QString &root, qint64 neededBytes, qint64 marginBytes, QString *error, const FreeBytesFn &fn) {
+    QFileInfo probe(root);
+    while (!probe.exists() && probe.absolutePath() != probe.absoluteFilePath()) probe = QFileInfo(probe.absolutePath());
+    const qint64 free = fn(probe.absoluteFilePath());
+    if (free < 0) return fail(error, "Cannot determine the free space at the store location");
+    if (free < neededBytes + marginBytes)
+        return fail(error, QString("Not enough free space: %1 MiB needed plus a %2 MiB margin, %3 MiB free")
+                               .arg((neededBytes + (1 << 20) - 1) >> 20).arg(marginBytes >> 20).arg(free >> 20));
+    return true;
+}
+
+bool guestDir(const QString &root, const QString &id, QString *guestPath, QString *error) {
+    if (!validStoreId(id)) return fail(error, "Invalid store id");
+    const QFileInfo dir(root + "/" + id);
+    const QString canonical = dir.canonicalFilePath();
+    if (canonical.isEmpty() || !QFileInfo(canonical).isDir()) return fail(error, "The store directory does not exist");
+    for (const QChar c : canonical) if (c.unicode() < 0x20 || c.unicode() == 0x7f) return fail(error, "The store path contains a control character");
+    const QString guest = QString::fromLatin1(kGuestHostRoot) + canonical;
+    if (guest.toUtf8().size() > kMaxGuestDirChars)
+        return fail(error, "The store location is too deep: the guest path would exceed " + QString::number(kMaxGuestDirChars) + " characters; choose a shorter location");
+    *guestPath = guest;
+    return true;
+}
+}

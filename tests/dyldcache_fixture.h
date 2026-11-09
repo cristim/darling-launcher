@@ -44,3 +44,20 @@ static inline QByteArray makeFakeCache(const QString &dir, const QString &arch, 
     for (int i = 0; i < subs.size(); ++i) write(DyldCache::mainFileName(arch) + subs[i].suffix, fakeFile(arch, subs[i].uuid, fileSize, {}, seed + i + 1));
     return mainUuid;
 }
+
+// A complete synthetic store <root>/<id>/ (files plus store.json). Returns the id.
+#include "dyldcachestore.h"
+static inline QString makeFakeStore(const QString &root, const QString &arch, int seed, const QStringList &suffixes, qint64 fileSize = 4096) {
+    const QByteArray uuid = fakeUuid(seed * 100);
+    const QString id = DyldCacheStore::storeId(arch, DyldCache::uuidHex(uuid));
+    makeFakeCache(root + "/" + id, arch, seed, suffixes, fileSize);
+    QDir().mkpath(root);
+    StoreManifest m; m.arch = arch; m.uuid = DyldCache::uuidHex(uuid); m.copiedAt = "2026-01-01T00:00:00Z";
+    const QString shaz(64, 'a');
+    m.files.append({DyldCache::mainFileName(arch), fileSize, m.uuid, shaz});
+    for (int i = 0; i < suffixes.size(); ++i) m.files.append({DyldCache::mainFileName(arch) + suffixes[i], fileSize, DyldCache::uuidHex(fakeUuid(seed * 100 + i + 1)), shaz});
+    QFile f(root + "/" + id + "/store.json");
+    if (!f.open(QIODevice::WriteOnly)) return {};
+    f.write(DyldCacheStore::renderManifest(m));
+    return id;
+}
