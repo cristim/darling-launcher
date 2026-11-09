@@ -679,6 +679,19 @@ class RedactionTest(ToolTestCase):
         for plain in ("100% done", "tokens are fine", "the password field", "/dev/sda1 mounted", "path /home/ and 50%2 left", "basically fine"):
             self.assertEqual(redactor.text(plain), plain)
 
+    def test_separators_next_to_a_home_or_user_path_survive_redaction(self):
+        redactor = mcp.Redactor("/home/alice")
+        cases = {"PATH=/home/alice/bin:/home/alice:/usr/bin": "PATH=~/bin:~:/usr/bin", "(/home/alice)": "(~)", "/home/bob:/x": "/home/<user>:/x",
+                 "[/home/bob]": "[/home/<user>]", "a,/home/bob,b": "a,/home/<user>,b", "/home/bob;ls": "/home/<user>;ls", "x=/Users/bob|y": "x=/Users/<user>|y",
+                 "<a href=/home/bob>": "<a href=/home/<user>>", "/home/alice:/home/bob:/home/carol": "~:/home/<user>:/home/<user>", "{\"p\":\"/home/bob\"}": "{\"p\":\"/home/<user>\"}"}
+        for text, expected in cases.items():
+            self.assertEqual(redactor.text(text), expected, text)
+
+    def test_overlapping_paths_do_not_widen_into_a_union_but_secrets_still_do(self):
+        redactor = mcp.Redactor("/home/alice")
+        self.assertEqual(redactor.text("/home/alice/x"), "~/x")
+        self.assertEqual(redactor.text("password=/home/alice/x tail"), "password=<redacted> tail")
+
     def test_a_user_name_is_only_redacted_as_a_home_path_component(self):
         redactor = mcp.Redactor("/home/dev")
         self.assertEqual(redactor.text("/dev/sda1 mounted by dev at /home/dev/x and /home/other/y"), "/dev/sda1 mounted by dev at ~/x and /home/<user>/y")
