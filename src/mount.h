@@ -21,6 +21,11 @@ QList<MacPartition> parsePartitions(const QByteArray &json, QString *error);
 bool makeCommand(const MacPartition &partition, const QString &directory, MountBackend backend,
                  int volumeIndex, unsigned uid, unsigned gid, const QString &pkexec,
                  const QString &mountTool, MountCommand *command, QString *error);
+// Canonical path of a regular file (executable when asked) whose whole resolved path only root, or extraOwner
+// when non-zero, can change; empty with error set otherwise.
+QString trustedFile(const QString &path, unsigned extraOwner, bool executable, QString *error);
+// The cryptex script and its sibling mount-macos.py must both pass trustedFile; root loads them both.
+bool trustedCryptexScript(const QString &script, unsigned extraOwner, QString *error);
 QString exitDescription(int code);
 // The directory names are mirrored in tools/mount-cryptex.py.
 QString cryptexMountDirectory(const QString &mountRoot);

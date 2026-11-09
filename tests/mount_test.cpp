@@ -5,6 +5,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <unistd.h>
 
 class MountTest : public QObject {
     Q_OBJECT
@@ -74,6 +75,34 @@ private slots:
         QCOMPARE(LauncherMount::resolveHomePrefix("/run/user/1000/mounts", home), QString("/run/user/1000/mounts"));
         QCOMPARE(LauncherMount::resolveHomePrefix(home + "x/mounts", home), home + "x/mounts");
         QCOMPARE(LauncherMount::resolveHomePrefix("/x/mounts", temporary.path() + "/missing"), QString("/x/mounts"));
+    }
+    void rootRunFilesMustBeRootOwnedAndNotWritable() {
+        // Production accepts only root (extraOwner 0); the tests use a tree under HOME owned by the test user as the stand-in root.
+        QTemporaryDir temporary(QDir::homePath() + "/.launcher-trust-XXXXXX"); QVERIFY(temporary.isValid());
+        const QString directory = QFileInfo(temporary.path()).canonicalFilePath() + "/libexec", script = directory + "/mount-cryptex.py", helper = directory + "/mount-macos.py";
+        QVERIFY(QDir().mkpath(directory));
+        for (const QString &path : {script, helper}) { QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); file.close(); }
+        const auto exec = QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::ReadGroup | QFile::ExeGroup | QFile::ReadOther | QFile::ExeOther;
+        QVERIFY(QFile::setPermissions(script, exec)); QVERIFY(QFile::setPermissions(helper, exec & ~QFile::ExeOwner & ~QFile::ExeGroup & ~QFile::ExeOther));
+        const unsigned owner = ::getuid(); QString error;
+        QVERIFY(LauncherMount::trustedFile(script, 0, true, &error).isEmpty()); QVERIFY(error.contains("not root-owned"));
+        QVERIFY(!LauncherMount::trustedCryptexScript(script, 0, &error));
+        QCOMPARE(LauncherMount::trustedFile(script, owner, true, &error), script);
+        QVERIFY(LauncherMount::trustedCryptexScript(script, owner, &error));
+        QVERIFY(LauncherMount::trustedFile(helper, owner, true, &error).isEmpty());
+        QVERIFY(LauncherMount::trustedFile(directory + "/missing.py", owner, false, &error).isEmpty());
+        QVERIFY(LauncherMount::trustedFile("relative.py", owner, false, &error).isEmpty());
+        // group- or world-writable file, directory or ancestor
+        QVERIFY(QFile::setPermissions(helper, exec | QFile::WriteGroup)); QVERIFY(!LauncherMount::trustedCryptexScript(script, owner, &error)); QVERIFY(error.contains("helper") || error.contains("mount-macos"));
+        QVERIFY(QFile::setPermissions(helper, exec & ~QFile::ExeOwner & ~QFile::ExeGroup & ~QFile::ExeOther));
+        QVERIFY(QFile::setPermissions(directory, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::ReadGroup | QFile::WriteGroup | QFile::ExeGroup));
+        QVERIFY(!LauncherMount::trustedCryptexScript(script, owner, &error));
+        QVERIFY(QFile::setPermissions(directory, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::ReadOther | QFile::WriteOther | QFile::ExeOther));
+        QVERIFY(LauncherMount::trustedFile(script, owner, true, &error).isEmpty());
+        QVERIFY(QFile::setPermissions(directory, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::ReadGroup | QFile::ExeGroup));
+        // a symlink is resolved and its target judged, not the link
+        const QString link = temporary.path() + "/link.py"; QVERIFY(QFile::link(script, link));
+        QCOMPARE(LauncherMount::trustedFile(link, owner, true, &error), script);
     }
     void cryptexUnmountTargetsOnlyTheCryptexDirectory() {
         MountCommand command; QString error;

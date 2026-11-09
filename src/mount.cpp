@@ -1,14 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "mount.h"
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <sys/stat.h>
 
 namespace {
 bool fail(QString *error, const QString &message) { if (error) *error = message; return false; }
+// lstat every component of a canonical path; returns the first that is a symlink, not owned by root (or
+// extraOwner when non-zero) or writable by group/others, or an empty string.
+QString untrustedComponent(const QString &resolved, unsigned extraOwner, struct stat *last) {
+    QStringList components{"/"};
+    for (const QString &part : resolved.split('/', Qt::SkipEmptyParts))
+        components << (components.last() == "/" ? "/" : components.last() + "/") + part;
+    for (const QString &component : components)
+        if (::lstat(QFile::encodeName(component).constData(), last) != 0 || S_ISLNK(last->st_mode)
+            || (last->st_uid != 0 && (extraOwner == 0 || last->st_uid != extraOwner)) || (last->st_mode & (S_IWGRP | S_IWOTH)))
+            return component;
+    return {};
+}
 bool validRoot(const QString &root) {
     return QDir::isAbsolutePath(root) && QDir::cleanPath(root) == root && root != "/";
 }
@@ -72,6 +86,23 @@ QString resolveHomePrefix(const QString &mountRoot, const QString &home) {
     const QString resolved = QFileInfo(home).canonicalFilePath();
     if (resolved.isEmpty() || (mountRoot != home && !mountRoot.startsWith(home + "/"))) return mountRoot;
     return resolved + mountRoot.mid(home.size());
+}
+
+QString trustedFile(const QString &path, unsigned extraOwner, bool executable, QString *error) {
+    const QString resolved = QDir::isAbsolutePath(path) ? QFileInfo(path).canonicalFilePath() : QString();
+    if (resolved.isEmpty()) { fail(error, "Required file is missing or not an absolute path: " + path); return {}; }
+    struct stat status {};
+    if (const QString bad = untrustedComponent(resolved, extraOwner, &status); !bad.isEmpty()) {
+        fail(error, "Refusing to run " + path + " as root: " + bad + " is not root-owned or is writable by others");
+        return {};
+    }
+    if (!S_ISREG(status.st_mode) || (executable && !(status.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)))) { fail(error, "Not a usable file: " + path); return {}; }
+    return resolved;
+}
+
+bool trustedCryptexScript(const QString &script, unsigned extraOwner, QString *error) {
+    const QString resolved = trustedFile(script, extraOwner, true, error);
+    return !resolved.isEmpty() && !trustedFile(QFileInfo(resolved).absolutePath() + "/mount-macos.py", extraOwner, false, error).isEmpty();
 }
 
 QString cryptexMountDirectory(const QString &mountRoot) { return mountRoot + "/macos-cryptex-os"; }

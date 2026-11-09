@@ -498,9 +498,18 @@ class MainTest(unittest.TestCase):
         patcher = patch.object(cryptex.pwd, "getpwuid", return_value=SimpleNamespace(pw_dir=str(self.home), pw_gid=os.getgid()))
         patcher.start()
         self.addCleanup(patcher.stop)
+        self.verify = patch.object(cryptex, "verify_installed")
+        self.verify.start()
+        self.addCleanup(self.verify.stop)
+        self.loader = patch.object(cryptex, "load_helper", return_value=cryptex.base)
+        self.loader.start()
+        self.addCleanup(self.loader.stop)
+        keep = patch.object(cryptex, "base", cryptex.base)
+        keep.start()
+        self.addCleanup(keep.stop)
 
     def test_privileged_mode_requires_pkexec_identity(self):
-        with patch.object(cryptex.os, "geteuid", return_value=1000), patch.object(cryptex.base, "emit") as emit:
+        with patch.object(cryptex.os, "geteuid", return_value=1000), patch.object(cryptex, "emit") as emit:
             self.assertEqual(cryptex.main(["--privileged", *self.args]), 1)
             self.assertIn("pkexec", emit.call_args.kwargs["message"])
 
@@ -517,7 +526,7 @@ class MainTest(unittest.TestCase):
         with patch.object(cryptex, "caller_identity", return_value=(UID, os.getgid())), \
              patch.object(cryptex, "system_tools", side_effect=ValueError("must be owned by root")), \
              patch.object(cryptex.base, "run", return_value="{}"), \
-             patch.object(cryptex.base, "emit") as emit:
+             patch.object(cryptex, "emit") as emit:
             self.assertEqual(cryptex.main(["--privileged", *self.args]), 1)
             self.assertIn("owned by root", emit.call_args.kwargs["message"])
 
@@ -545,7 +554,7 @@ class MainTest(unittest.TestCase):
     def test_cancel_or_denial_stops_without_retry_or_cryptex_step(self):
         for code in (1, 126, 127):
             which, trust, records, call = self.authorize(code)
-            with which, trust, records, call as call, patch.object(cryptex, "mount_cryptex") as step, patch.object(cryptex.base, "emit"):
+            with which, trust, records, call as call, patch.object(cryptex, "mount_cryptex") as step, patch.object(cryptex, "emit"):
                 self.assertEqual(cryptex.main(self.args), code)
                 self.assertEqual(call.call_count, 1)
                 step.assert_not_called()
@@ -554,13 +563,13 @@ class MainTest(unittest.TestCase):
         with patch.object(cryptex.shutil, "which", return_value="/usr/bin/pkexec"), \
              patch.object(cryptex.base, "mounted_records", return_value=[]), \
              patch.object(cryptex, "require_root_owned", side_effect=ValueError("must be owned by root")), \
-             patch.object(cryptex.subprocess, "call") as call, patch.object(cryptex.base, "emit"):
+             patch.object(cryptex.subprocess, "call") as call, patch.object(cryptex, "emit"):
             self.assertEqual(cryptex.main(self.args), 1)
             call.assert_not_called()
 
     def test_mount_root_outside_home_is_refused_before_pkexec(self):
         with patch.object(cryptex.base, "mounted_records", return_value=[]), \
-             patch.object(cryptex.subprocess, "call") as call, patch.object(cryptex.base, "emit") as emit:
+             patch.object(cryptex.subprocess, "call") as call, patch.object(cryptex, "emit") as emit:
             self.assertEqual(cryptex.main(["--mount-root", "/etc/mounts"]), 1)
             call.assert_not_called()
             self.assertIn("below your home", emit.call_args.kwargs["message"])
@@ -575,9 +584,99 @@ class MainTest(unittest.TestCase):
 
     def test_missing_pkexec_fails_loudly(self):
         with patch.object(cryptex.shutil, "which", return_value=None), patch.object(cryptex.base, "mounted_records", return_value=[]), \
-             patch.object(cryptex.base, "emit") as emit:
+             patch.object(cryptex, "emit") as emit:
             self.assertEqual(cryptex.main(self.args), 1)
             self.assertIn("pkexec", emit.call_args.kwargs["message"])
+
+
+class InstallTest(unittest.TestCase):
+    """Root must never run, or load, anything the user can rewrite."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(os.path.realpath(self.tmp.name)) / "libexec/darling-launcher"
+        self.dir.mkdir(parents=True)
+        self.script, self.helper = self.dir / "mount-cryptex.py", self.dir / "mount-macos.py"
+        self.script.write_text("# script\n")
+        self.helper.write_text("MARK = 'good'\n")
+
+    def verify(self, overrides=None):
+        cryptex.verify_installed(self.script, self.helper, fake_lstat(overrides))
+
+    def test_root_owned_install_is_accepted(self):
+        self.verify()
+
+    def test_user_owned_script_or_helper_is_refused_with_the_install_hint(self):
+        for path in (self.script, self.helper):
+            with self.assertRaisesRegex(ValueError, "owned by root.*cmake --install"):
+                self.verify({str(path): (1000, False)})
+
+    def test_group_writable_install_directory_is_refused(self):
+        for path in (self.dir, self.dir.parent):
+            with self.assertRaisesRegex(ValueError, "not group- or world-writable"):
+                self.verify({str(path): (0, True)})
+
+    def test_writable_script_file_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "not group- or world-writable"):
+            self.verify({str(self.helper): (0, True)})
+
+    def test_trusted_read_checks_ownership_before_returning_source(self):
+        self.assertEqual(cryptex.read_trusted(self.helper, fake_lstat()), "MARK = 'good'\n")
+        with self.assertRaisesRegex(ValueError, "owned by root"):
+            cryptex.read_trusted(self.helper, fake_lstat({str(self.helper): (1000, False)}))
+
+    def test_trusted_load_refuses_a_user_owned_helper_without_running_it(self):
+        self.helper.write_text("raise SystemExit('executed')\n")
+        with self.assertRaisesRegex(ValueError, "owned by root"):
+            cryptex.load_helper(self.helper, trusted=True, lstat=fake_lstat({str(self.helper): (1000, False)}))
+
+    def test_planted_pycache_is_not_executed(self):
+        import importlib.util as util
+        import py_compile
+        evil = Path(self.tmp.name) / "evil.py"
+        evil.write_text("MARK = 'evil'\n")
+        cache = Path(util.cache_from_source(str(self.helper)))
+        cache.parent.mkdir()
+        py_compile.compile(str(evil), cfile=str(cache), doraise=True, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+        spec = util.spec_from_file_location("imported", self.helper)
+        imported = util.module_from_spec(spec)
+        spec.loader.exec_module(imported)
+        self.assertEqual(imported.MARK, "evil")  # the attack is real for a normal import
+        self.assertEqual(cryptex.load_helper(self.helper, trusted=True, lstat=fake_lstat()).MARK, "good")
+
+    def test_bytecode_is_never_written(self):
+        self.assertTrue(cryptex.sys.dont_write_bytecode)
+        cryptex.load_helper(self.helper, trusted=True, lstat=fake_lstat())
+        self.assertFalse((self.dir / "__pycache__").exists())
+
+    def test_privileged_entry_verifies_before_loading_anything(self):
+        order = []
+        with patch.object(cryptex, "verify_installed", side_effect=lambda *a, **k: order.append("verify")), \
+             patch.object(cryptex, "load_helper", side_effect=lambda *a, **k: order.append("load") or cryptex.base), \
+             patch.object(cryptex, "caller_identity", return_value=(UID, os.getgid())), \
+             patch.object(cryptex, "mount_preboot"), patch.object(cryptex, "base", cryptex.base):
+            self.assertEqual(cryptex.main(["--privileged"]), 0)
+        self.assertEqual(order, ["verify", "load"])
+
+    def test_privileged_entry_stops_on_untrusted_install(self):
+        with patch.object(cryptex, "verify_installed", side_effect=ValueError("not root-owned")), \
+             patch.object(cryptex, "load_helper") as load, patch.object(cryptex, "mount_preboot") as step, \
+             patch.object(cryptex, "emit") as emit:
+            self.assertEqual(cryptex.main(["--privileged"]), 1)
+            load.assert_not_called()
+            step.assert_not_called()
+            self.assertIn("not root-owned", emit.call_args.kwargs["message"])
+
+    def test_unprivileged_run_refuses_before_pkexec_when_not_installed(self):
+        home = Path(self.tmp.name) / "home"
+        home.mkdir()
+        with patch.object(cryptex.pwd, "getpwuid", return_value=SimpleNamespace(pw_dir=str(home), pw_gid=os.getgid())), \
+             patch.object(cryptex.base, "mounted_records", return_value=[]), \
+             patch.object(cryptex, "verify_installed", side_effect=ValueError("not root-owned")), \
+             patch.object(cryptex.subprocess, "call") as call, patch.object(cryptex, "emit"):
+            self.assertEqual(cryptex.main(["--mount-root", str(home / "mounts")]), 1)
+            call.assert_not_called()
 
 
 if __name__ == "__main__":

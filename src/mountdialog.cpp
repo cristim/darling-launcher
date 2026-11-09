@@ -28,6 +28,29 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifndef LAUNCHER_PYTHON
+#define LAUNCHER_PYTHON "/usr/bin/python3"
+#endif
+
+namespace {
+// Test builds run user-owned fake helpers; production accepts only root-owned ones.
+unsigned helperOwner() {
+#ifdef LAUNCHER_TEST_USER_OWNED_HELPERS
+    return getuid();
+#else
+    return 0;
+#endif
+}
+QString installHint() {
+    return "Root runs the cryptex mount script, so it must be installed root-owned. Either run\n"
+           "  sudo cmake --install <build directory>\n"
+           "or copy the two files by hand:\n"
+           "  sudo install -D -o root -g root -m 0755 tools/mount-cryptex.py " LAUNCHER_MOUNT_CRYPTEX_SCRIPT "\n"
+           "  sudo install -o root -g root -m 0644 tools/mount-macos.py " + QFileInfo(QStringLiteral(LAUNCHER_MOUNT_CRYPTEX_SCRIPT)).absolutePath() + "/mount-macos.py\n"
+           "Manual alternative from a terminal: mount Preboot as root with apfs-fuse (see the README), then run the os.dmg mount as yourself.";
+}
+}
+
 MountDialog::MountDialog(QWidget *parent, std::function<QList<SourceMount>()> provider) : QDialog(parent), mountProvider(std::move(provider)) {
     setWindowTitle("Mount macOS source — read-only"); resize(650, 440);
     auto *layout = new QVBoxLayout(this);
@@ -129,6 +152,9 @@ MountDialog::MountDialog(QWidget *parent, std::function<QList<SourceMount>()> pr
     auto *cryptexNote = new QLabel("The cryptex action mounts Preboot with one authorization request (select a partition to pin it), then mounts os.dmg as you.\nThe privileged step only uses root-owned apfs-fuse and apfsutil from /usr/local/bin or /usr/bin and mounts Preboot under /run/darling-launcher/<uid>.\napfs-fuse can use several GB of memory while reading it: unmount the cryptex OS first, then Preboot (session mounts), if the system slows down.");
     cryptexNote->setWordWrap(true); layout->addWidget(cryptexNote);
     output = new QTextEdit; output->setReadOnly(true); output->setObjectName("mountOutput"); layout->addWidget(output);
+    if (QString problem; !LauncherMount::trustedCryptexScript(QStringLiteral(LAUNCHER_MOUNT_CRYPTEX_SCRIPT), helperOwner(), &problem)) {
+        cryptexButton->setEnabled(false); output->append("Cryptex OS mount is disabled: " + problem + "\n" + installHint());
+    }
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close); connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject); layout->addWidget(buttons);
     connect(&discovery, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
         QString previousDevice; int previous = partitions->currentData().toInt(); if (previous >= 0 && previous < detected.size()) previousDevice = detected[previous].device;
@@ -203,7 +229,11 @@ void MountDialog::mountCryptex(const QString &requestedRoot, const QString &apfs
     const int selected = partitions->currentData().toInt();
     const QString device = selected >= 0 && selected < detected.size() ? detected[selected].device : QString();
     MountCommand command; QString error;
-    if (!LauncherMount::makeCryptexCommand(QStandardPaths::findExecutable("python3"), QStringLiteral(LAUNCHER_MOUNT_CRYPTEX_SCRIPT),
+    const QString python = LauncherMount::trustedFile(QStringLiteral(LAUNCHER_PYTHON), helperOwner(), true, &error);
+    if (python.isEmpty() || !LauncherMount::trustedCryptexScript(QStringLiteral(LAUNCHER_MOUNT_CRYPTEX_SCRIPT), helperOwner(), &error)) {
+        cryptexButton->setEnabled(false); output->append(error + "\n" + installHint()); return;
+    }
+    if (!LauncherMount::makeCryptexCommand(python, QStringLiteral(LAUNCHER_MOUNT_CRYPTEX_SCRIPT),
                                            root, apfsFuse, device, &command, &error)) { output->append(error); return; }
     auto *process = new QProcess(this); process->setProcessChannelMode(QProcess::MergedChannels);
     mountBusy = true; cryptexButton->setEnabled(false); mountButton->setEnabled(false);

@@ -4,16 +4,18 @@
 
 Everything is read-only (apfs-fuse cannot write). Reuses the read-only helpers of mount-macos.py.
 
-Privileged step: it takes no path from the caller. apfs-fuse and apfsutil come from fixed
-root-owned locations and Preboot is mounted at /run/darling-launcher/<uid>/macos-preboot, a
-directory chain owned by root that the caller cannot modify, so there is no check-then-use
-window on a caller-controlled path. Not covered: the script and mount-macos.py are run as
-root from wherever they are installed, and the device nodes come from lsblk.
+Privileged step: root runs this script, so it must be installed root-owned (the launcher's
+install step puts it and mount-macos.py in <libexecdir>/darling-launcher); a copy anywhere a
+user can write is refused before any pkexec request and again at privileged entry. The helper
+is compiled from its verified source, never imported, so a planted __pycache__ is not used.
+The step takes no path from the caller: apfs-fuse and apfsutil come from fixed root-owned
+locations and Preboot is mounted at /run/darling-launcher/<uid>/macos-preboot, a directory
+chain owned by root that the caller cannot modify, so there is no check-then-use window on a
+caller-controlled path. Not covered: the device nodes come from lsblk.
 Unprivileged step: runs as the caller under the mount root (a canonical directory below the
 home or /run/user/<uid>, validated by name), so it gains no privileges.
 """
 import argparse
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -24,10 +26,17 @@ import stat
 import subprocess
 import sys
 import time
+import types
 
-_spec = importlib.util.spec_from_file_location("mount_macos", Path(__file__).resolve().with_name("mount-macos.py"))
-base = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(base)
+sys.dont_write_bytecode = True
+HELPER = Path(__file__).resolve().with_name("mount-macos.py")
+INSTALL_HINT = "install tools/mount-cryptex.py and tools/mount-macos.py root-owned into the same directory (sudo cmake --install <build directory>)"
+base = None  # set by load_helper(); main() does it after the privileged trust checks
+
+
+def emit(kind, **fields):
+    print(json.dumps({"event": kind, **fields}), flush=True)
+
 
 # Mirrored in src/mount.cpp (LauncherMount::cryptexMountDirectory).
 PREBOOT_DIRECTORY = "macos-preboot"
@@ -68,6 +77,34 @@ def require_root_owned(path, lstat=os.lstat):
     _require_root_chain(os.path.normpath(path), lstat)
     _require_root_chain(resolved, lstat)
     return resolved
+
+
+def read_trusted(path, lstat=os.lstat):
+    """Return the text of a root-owned, not group/world-writable regular file under a root-owned chain."""
+    resolved = require_root_owned(str(path), lstat)
+    descriptor = os.open(resolved, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "r") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ValueError(f"{resolved} is not a regular file")
+        return handle.read()
+
+
+def load_helper(path=HELPER, trusted=False, lstat=os.lstat):
+    """Compile the helper source directly: importing it would run a planted __pycache__ pyc."""
+    text = read_trusted(path, lstat) if trusted else Path(path).read_text()
+    module = types.ModuleType("mount_macos")
+    module.__file__ = str(path)
+    exec(compile(text, str(path), "exec"), module.__dict__)
+    return module
+
+
+def verify_installed(script=None, helper=HELPER, lstat=os.lstat):
+    """Refuse to continue unless this script and its helper are where only root can change them."""
+    for path in (script or Path(__file__).resolve(), helper):
+        try:
+            require_root_owned(str(path), lstat)
+        except ValueError as error:
+            raise ValueError(f"{error}; {INSTALL_HINT}") from None
 
 
 def system_tool(name, directories=TRUSTED_DIRECTORIES, lstat=os.lstat):
@@ -247,9 +284,10 @@ def is_mounted(records, target):
     return any(r.get("target") == str(target) for r in records)
 
 
-def mount_preboot(options, uid, gid, run_command=base.run, emit_event=base.emit, check_device=require_block_device,
+def mount_preboot(options, uid, gid, run_command=None, emit_event=emit, check_device=require_block_device,
                   tools=None, lstat=os.lstat, runtime_parent=RUNTIME_PARENT):
     """Privileged step. Only options.device is used; binaries and the mount point are chosen here."""
+    run_command = run_command or base.run
     apfs_fuse, apfsutil = (tools or system_tools)()
     inventory = json.loads(run_command(["/usr/bin/lsblk", "--json", "--output", "PATH,FSTYPE,LABEL,MOUNTPOINTS"]))
     existing = base.mounted_records(run_command)
@@ -265,11 +303,12 @@ def mount_preboot(options, uid, gid, run_command=base.run, emit_event=base.emit,
     return destination
 
 
-def mount_cryptex(options, uid, gid, home, run_command=base.run, emit_event=base.emit, sleep=time.sleep,
+def mount_cryptex(options, uid, gid, home, run_command=None, emit_event=emit, sleep=time.sleep,
                   runtime_parent=RUNTIME_PARENT):
     """Unprivileged step: mount os.dmg from the mounted Preboot volume and report the dyld directory."""
     if os.geteuid() == 0:
         raise ValueError("The cryptex image is mounted as the user, never as root")
+    run_command = run_command or base.run
     root = prepare_root(options.mount_root, uid, home)
     preboot = preboot_path(uid, runtime_parent)
     existing = base.mounted_records(run_command)
@@ -295,7 +334,12 @@ def mount_cryptex(options, uid, gid, home, run_command=base.run, emit_event=base
     raise RuntimeError(f"Mounted, but {dyld} did not appear within {DYLD_WAIT_SECONDS} seconds")
 
 
+if __name__ != "__main__":
+    base = load_helper()
+
+
 def main(argv=None):
+    global base
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mount-root", default="", help="where the unprivileged image mount goes")
     parser.add_argument("--apfs-fuse", default=shutil.which("apfs-fuse") or "", help="used for the unprivileged image mount only")
@@ -304,24 +348,28 @@ def main(argv=None):
     options = parser.parse_args(argv)
     try:
         if options.privileged:
+            verify_installed()
+            base = load_helper(trusted=True)
             mount_preboot(options, *caller_identity())
             return 0
         uid, gid = os.getuid(), os.getgid()
         if uid == 0:
             raise ValueError("Run as the desktop user; the script requests root itself")
+        base = base or load_helper()
         home = pwd.getpwuid(uid).pw_dir
         options.mount_root = str(checked_root(options.mount_root, uid, home))
         if not is_mounted(base.mounted_records(base.run), preboot_path(uid)):
+            verify_installed()
             # Exactly one authorization request; no retries or privilege fallbacks.
             code = subprocess.call(authorization_command(options))
             if code in (126, 127):
-                base.emit("error", message="Authorization cancelled or denied; stopped without retry")
+                emit("error", message="Authorization cancelled or denied; stopped without retry")
             if code:
                 return code
         mount_cryptex(options, uid, gid, home)
         return 0
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
-        base.emit("error", message=str(error))
+        emit("error", message=str(error))
         return 1
 
 
