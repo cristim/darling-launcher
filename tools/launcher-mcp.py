@@ -137,36 +137,39 @@ class Redactor:
             pass
         self.homes = [re.compile(re.escape(h) + r"(?![A-Za-z0-9_.-])", re.IGNORECASE) for h in sorted(homes, key=len, reverse=True) if h not in ("", "/")]
 
-    def scrub(self, value):
+    def scrub(self, value, paths):
         for pattern in self.TOKENS:
             value = pattern.sub("<redacted>", value)
         value = self.SCHEME.sub(r"\1 <redacted>", value)
         value = self.LABELLED.sub(r"\1\2<redacted>", value)
+        if not paths:
+            return value
         for pattern in self.homes:
             value = pattern.sub("~", value)
         return self.GENERIC_HOME.sub(lambda m: f"/{m.group(1)}/<user>", value)
 
-    def text(self, value):
-        """Scrubs value, and its percent-decoded forms (also double-encoded), so %2Fhome%2Fme and password%3Dx do not slip through."""
-        result = self.scrub(value)
+    def text(self, value, paths=True):
+        """Scrubs value, and its percent-decoded forms (also double-encoded), so %2Fhome%2Fme and password%3Dx do not slip through.
+        paths=False leaves home and user-name paths alone and removes only secrets (for the shell string, which hides them itself)."""
+        result = self.scrub(value, paths)
         decoded = value
         for _ in range(2):
             if "%" not in decoded:
                 break
             decoded = urllib.parse.unquote(decoded)
-            scrubbed = self.scrub(decoded)
+            scrubbed = self.scrub(decoded, paths)
             if scrubbed != decoded:
                 return scrubbed
         return result
 
-    def obj(self, value, keep=()):
-        """Redacts every string except the values of dict keys named in keep (user-local, copy-paste material)."""
+    def obj(self, value, secrets_only=()):
+        """Redacts every string; the values of dict keys named in secrets_only lose secrets but keep their paths."""
         if isinstance(value, str):
             return self.text(value)
         if isinstance(value, list):
-            return [self.obj(v, keep) for v in value]
+            return [self.obj(v, secrets_only) for v in value]
         if isinstance(value, dict):
-            return {k: v if k in keep else self.obj(v, keep) for k, v in value.items()}
+            return {k: self.text(v, paths=False) if k in secrets_only and isinstance(v, str) else self.obj(v, secrets_only) for k, v in value.items()}
         return value
 
 
@@ -326,6 +329,34 @@ def system_tool(name):
     raise ToolError(f"{name} was not found in {' or '.join(TRUSTED_DIRECTORIES)}; install it there as root")
 
 
+USER_PATH_COMPONENT = re.compile(r"(?i)/(home|Users|run/media)/[^/]+")
+
+
+def home_expansions(home):
+    """Shell expressions for the home directory, longest spelling first: "$HOME" and, when HOME is a symlink, its resolved form."""
+    home = str(home)
+    result = [('"$HOME"', home)]
+    resolved = os.path.realpath(home)
+    if resolved != home:
+        result.append(('"$(realpath -- "$HOME")"', resolved))
+    return sorted((r for r in result if r[1] != "/"), key=lambda r: -len(r[1]))
+
+
+def shell_word(arg, homes):
+    """One argv element as a shell word that runs when pasted but names neither the home directory nor a user.
+    Under the home directory it becomes "$HOME" plus the quoted rest; a /home/<name>-style component elsewhere
+    becomes the quoted placeholder '<user>' (never bare, which a shell would parse as redirection)."""
+    for expression, base in homes:
+        if arg == base or arg.startswith(base + "/"):
+            rest = arg[len(base):]
+            return expression + (shlex.quote(rest) if rest else "")
+    word, last = "", 0
+    for match in USER_PATH_COMPONENT.finditer(arg):
+        word += shlex.quote(arg[last:match.start()] + "/" + match.group(1) + "/") + "'<user>'"
+        last = match.end()
+    return word + (shlex.quote(arg[last:]) if arg[last:] else "") if last else shlex.quote(arg)
+
+
 def child_env(extra=None):
     """A fixed allowlist, so tokens and DYLD_* variables in the server's environment never reach a child."""
     env = {name: os.environ[name] for name in SAFE_ENV_NAMES if name in os.environ}
@@ -367,9 +398,9 @@ def run_capped(argv, env, timeout, kill_on_timeout, cap=MAX_CHILD_OUTPUT):
 
 
 class Tool:
-    def __init__(self, name, title, description, properties, required, handler, read_only, output_properties, destructive=False, user_local=()):
+    def __init__(self, name, title, description, properties, required, handler, read_only, output_properties, destructive=False, shell_fields=()):
         self.name = name
-        self.user_local = frozenset(user_local)
+        self.shell_fields = frozenset(shell_fields)
         self.handler = handler
         self.input_schema = {"type": "object", "properties": properties, "required": list(required), "additionalProperties": False}
         self.output_schema = {"type": "object", "properties": output_properties, "additionalProperties": True}
@@ -530,7 +561,7 @@ class Server:
         except Exception as error:  # noqa: BLE001
             log(f"tool {name} crashed: {self.redact.text(repr(error))}")
             return self.failure(f"internal error in {name}: {type(error).__name__}")
-        data = self.redact.obj(data, tool.user_local)
+        data = self.redact.obj(data, tool.shell_fields)
         text = self.redact.text(summary) + "\n\n" + json.dumps(data, indent=2, ensure_ascii=False)
         if len(text) > MAX_RESULT_CHARS:
             text = text[:MAX_RESULT_CHARS] + "\n[truncated]"
@@ -874,9 +905,14 @@ def build_tools(server):
             directory = resolve_under(config.mount_root, args["directory"], "directory", False)
             directory_warnings(directory, False)
             commands.append({"description": f"Unmount {directory}.", "run_as": "root via pkexec", "argv": [system_tool("pkexec"), system_tool("umount"), "--", str(directory)]})
+        homes = home_expansions(config.home)
+        notes = ['The "shell" strings use "$HOME" for your home directory: paste them into your own shell. The "argv" lists are for reading and show ~ instead.']
         for command in commands:
-            command["shell"] = shlex.join(command["argv"])  # from the real argv: redaction would corrupt quoting
-        data = {"kind": kind, "executed": False, "commands": commands, "warnings": warnings}
+            words = [shell_word(arg, homes) for arg in command["argv"]]
+            command["shell"] = " ".join(words)
+            if any("'<user>'" in word for word in words):
+                notes.append("A user name was replaced by the quoted placeholder '<user>' in a shell string: replace it with your user name before running it.")
+        data = {"kind": kind, "executed": False, "commands": commands, "warnings": warnings, "notes": list(dict.fromkeys(notes))}
         return data, f"Plan for {kind}: {len(commands)} command(s). Nothing was run; the user must run them."
 
     read_only_note = "Read-only. "
@@ -912,7 +948,9 @@ def build_tools(server):
              "'partition' (one partition with pkexec mount or apfs-fuse), 'cryptex' (Preboot plus os.dmg) or 'unmount'. All mounts are read-only with nodev, nosuid and "
              "noexec. This server never calls sudo or pkexec. Helper programs (pkexec, mount, umount, python3, apfs-fuse, apfsutil) are only taken from root-owned "
              "files in /usr/local/bin or /usr/bin and cannot be chosen by the caller. Directories must be inside the launcher mount root; any other argument is rejected. "
-             "The argv and shell fields hold the user's real local paths, unredacted, so they can be pasted into the user's own terminal.",
+             "Fields are redacted like every result (home paths shown as ~); the 'shell' string of each command is the copy-paste form for the user's own terminal "
+             "and refers to the home directory as \"$HOME\", so run it in the user's shell. A user-name component that had to be hidden appears as the quoted "
+             "placeholder '<user>' and is listed in notes.",
              {"kind": {"type": "string", "enum": list(MOUNT_PLAN_ARGUMENTS)},
               "mount_root": {"type": "string", "maxLength": 1024, "description": "kinds batch, cryptex: mount root, default the launcher mount root."},
               "device": {"type": "string", "maxLength": 256, "description": "kinds partition, cryptex: block device such as /dev/nvme0n1p5."},
@@ -920,7 +958,7 @@ def build_tools(server):
               "backend": {"type": "string", "enum": ["kernel", "apfs-fuse"], "description": "kind partition."},
               "volume_index": {"type": "integer", "minimum": 0, "maximum": 99, "description": "kind partition: APFS container volume index (required for apfs)."},
               "directory": {"type": "string", "maxLength": 1024, "description": "kinds partition (mount directory) and unmount (directory to unmount), inside the mount root."}},
-             ["kind"], mount_plan, True, {"executed": {"type": "boolean"}, "commands": {"type": "array"}, "warnings": {"type": "array"}}, user_local=("argv", "shell")),
+             ["kind"], mount_plan, True, {"executed": {"type": "boolean"}, "commands": {"type": "array"}, "warnings": {"type": "array"}}, shell_fields=("shell",)),
         Tool("launch_app", "Launch imported app",
              disabled_note + "Starts an imported app through the prefix's darling binary like the launcher's Launch button "
              "(`darling exec /Applications/<App>.app/Contents/MacOS/<executable>` with DPREFIX set). Waits up to wait_seconds, then reports whether it "
