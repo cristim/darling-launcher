@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "troubleshooting.h"
+#include "dyldcache_fixture.h"
+#include "dyldcacheconfig.h"
 #include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QComboBox>
@@ -15,6 +17,7 @@
 #include <QTextDocument>
 #include <QTimer>
 #include <QPointer>
+#include <QSettings>
 #include <QtTest>
 Q_DECLARE_METATYPE(FixVerification)
 class TroubleshootingTest : public QObject {
@@ -142,6 +145,38 @@ private slots:
         QFile report(workspace + "/LAUNCHER-VERIFICATION.json"); QVERIFY(report.open(QIODevice::ReadOnly)); const auto saved = QJsonDocument::fromJson(report.readAll()).object();
         QCOMPARE(saved.value("verified").toBool(), verified); if (verified) QCOMPARE(saved.value("proposalCommit").toString(), "patched-sha");
         if (mode == "stays-running") QTRY_VERIFY(QFileInfo::exists(prefix + "/stopped"));
+    }
+    // A fix is verified in the environment of a real launch of that prefix: the app run gets the dyld cache variables
+    // (it is the user's app launch), the shutdown that ends it does not, and an unusable store stops the verification.
+    void verifierUsesTheAppLaunchEnvironmentOfThePrefix() {
+        QTemporaryDir temporary, cfg, stores, proc; QVERIFY(temporary.isValid());
+        QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, cfg.path()); QSettings("cristim", "darling-launcher").setValue("dyldCacheRoot", stores.path());
+        const QString id = makeFakeStore(stores.path(), "arm64e", 1, {".01"});
+        const QString workspace = temporary.path() + "/work", prefix = temporary.path() + "/prefix"; QVERIFY(QDir().mkpath(prefix)); QVERIFY(QDir().mkpath(workspace + "/image"));
+        auto write = [&](const QString &path, const QByteArray &contents) { QDir().mkpath(QFileInfo(path).absolutePath()); QFile file(path); if (!file.open(QIODevice::WriteOnly)) return false; file.write(contents); file.close(); return file.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner); };
+        QVERIFY(write(temporary.path() + "/bin/git", "#!/bin/sh\necho patched-sha\n"));
+        const auto previousPath = qgetenv("PATH"); const auto restore = qScopeGuard([=] { qputenv("PATH", previousPath); qunsetenv("DYLD_INSERT_LIBRARIES"); });
+        qputenv("PATH", (temporary.path() + "/bin:" + QString::fromLocal8Bit(previousPath)).toLocal8Bit()); qputenv("DYLD_INSERT_LIBRARIES", "/evil.dylib");
+        QVERIFY(write(workspace + "/build/darling", "#!/bin/sh\nif [ \"$1\" = shutdown ]; then env | grep '^DYLD_' | sort > \"$DPREFIX/shutdown.env\"; touch \"$DPREFIX/stopped\"; exit 0; fi\nenv | grep '^DYLD_' | sort > \"$DPREFIX/run.env\"\nexec sleep 30\n"));
+        QVERIFY(QDir().mkpath(workspace + "/clone/.git"));
+        QVERIFY(write(workspace + "/proposal.json", QJsonDocument(QJsonObject{{"source", workspace + "/clone"}}).toJson()));
+        DyldCacheConfig config; config.enabled = true; config.mode = DyldCacheMode::AllowList; config.store = id; config.served = {"/usr/lib/libz.1.dylib"};
+        PrefixState::ProcFs procFs; procFs.procRoot = proc.path(); procFs.socketMayBeLive = [](const QString &) { return false; };
+        QString err; QVERIFY2(DyldCacheConfigFile::save(prefix, config, &err, procFs), qPrintable(err));
+        const QJsonObject diagnostic{{"prefix", prefix}, {"bundle", "Applications/Fixture.app"}, {"executable", "Fixture"}, {"launcher", workspace + "/build/darling"}, {"runtime", workspace + "/image"}};
+        {
+            FixVerifier verifier(workspace, diagnostic, 1);
+            QSignalSpy spy(&verifier, &FixVerifier::finished); verifier.start(); QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 8000);
+            QVERIFY2(spy.first().first().value<FixVerification>().verified, qPrintable(spy.first().first().value<FixVerification>().reason));
+            QTRY_VERIFY(QFileInfo::exists(prefix + "/stopped"));
+            QFile run(prefix + "/run.env"); QVERIFY(run.open(QIODevice::ReadOnly)); const QString env = QString::fromLocal8Bit(run.readAll());
+            QVERIFY2(env.contains("DYLD_SHARED_CACHE_SPLIT_DIR=/Volumes/SystemRoot") && env.contains("DYLD_SHARED_CACHE_SPLIT_POLICY=/.darling-launcher/dyld-cache.policy") && !env.contains("INSERT"), qPrintable(env));
+            QFile stop(prefix + "/shutdown.env"); QVERIFY(stop.open(QIODevice::ReadOnly)); QVERIFY(stop.readAll().isEmpty());
+        }
+        QVERIFY(QFile::remove(stores.path() + "/" + id + "/store.json"));
+        FixVerifier broken(workspace, diagnostic, 1);
+        QSignalSpy spy(&broken, &FixVerifier::finished); broken.start(); QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 8000);
+        const auto result = spy.first().first().value<FixVerification>(); QVERIFY(!result.verified); QVERIFY2(result.reason.contains("not usable"), qPrintable(result.reason));
     }
     void agentScriptsRefuseHostileInput() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("HOME", temporary.path().toUtf8());
