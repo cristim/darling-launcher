@@ -23,6 +23,7 @@ import pwd
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import time
@@ -46,6 +47,7 @@ UUID = re.compile(r"[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")
 DYLD_WAIT_SECONDS = 30
 TRUSTED_DIRECTORIES = ("/usr/local/bin", "/usr/bin")
 RUNTIME_PARENT = "/run/darling-launcher"
+ACL_NAME = "system.posix_acl_access"
 
 
 def validate_device(device):
@@ -181,8 +183,44 @@ def preboot_path(uid, parent=RUNTIME_PARENT):
     return Path(parent) / str(uid) / PREBOOT_DIRECTORY
 
 
-def prepare_preboot_directory(uid, parent=RUNTIME_PARENT, lstat=os.lstat):
-    """Create the root-owned Preboot mount point; refuse anything the caller could have influenced."""
+def caller_acl(uid):
+    """system.posix_acl_access value: root rwx, only <uid> --x, nobody else (Linux POSIX ACL xattr version 2)."""
+    undefined = 0xFFFFFFFF
+    entries = ((0x01, 7, undefined),  # user::rwx
+               (0x02, 1, uid),        # user:<uid>:--x
+               (0x04, 0, undefined),  # group::---
+               (0x10, 1, undefined),  # mask::--x
+               (0x20, 0, undefined))  # other::---
+    return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries)
+
+
+def _set_acl(path, name, value):
+    os.setxattr(path, name, value, follow_symlinks=False)
+
+
+def _get_acl(path, name):
+    return os.getxattr(path, name, follow_symlinks=False)
+
+
+def restrict_to_caller(directory, uid, setxattr=_set_acl, getxattr=_get_acl):
+    """Make <directory> root:root 0700 plus an ACL entry that lets only the caller traverse it; fail closed."""
+    os.chmod(directory, 0o700)  # before the ACL: chmod would reset the ACL mask
+    acl = caller_acl(uid)
+    try:
+        setxattr(str(directory), ACL_NAME, acl)
+        applied = getxattr(str(directory), ACL_NAME)
+    except OSError as error:
+        raise ValueError(f"Cannot restrict {directory} to your account with a POSIX ACL ({error.strerror or error}); "
+                         "refusing to mount Preboot where other local users could read it") from None
+    if applied != acl:
+        raise ValueError(f"The POSIX ACL on {directory} was not applied as requested; refusing to mount Preboot")
+
+
+def prepare_preboot_directory(uid, parent=RUNTIME_PARENT, lstat=os.lstat, setxattr=_set_acl, getxattr=_get_acl):
+    """Create the root-owned Preboot mount point; refuse anything the caller could have influenced.
+
+    /run/darling-launcher is 0755, /run/darling-launcher/<uid> is 0700 with an ACL for the caller only (the
+    mounted volume uses allow_other and holds FileVault records, so other local users must not reach it)."""
     destination = preboot_path(uid, parent)
     if os.path.realpath(destination.parent.parent.parent) != str(destination.parent.parent.parent):
         raise ValueError(f"{destination.parent.parent.parent} must not involve symlinks")
@@ -191,8 +229,11 @@ def prepare_preboot_directory(uid, parent=RUNTIME_PARENT, lstat=os.lstat):
             if stat.S_ISLNK(os.lstat(directory).st_mode):
                 raise ValueError(f"{directory} must not involve symlinks")
         else:
-            os.mkdir(directory, 0o755)
-            os.chmod(directory, 0o755)
+            os.mkdir(directory, 0o700 if directory == destination.parent else 0o755)
+            os.chmod(directory, 0o700 if directory == destination.parent else 0o755)
+        if directory == destination.parent:
+            _require_root_chain(str(directory), lstat)
+            restrict_to_caller(directory, uid, setxattr, getxattr)
     _require_root_chain(str(destination), lstat)
     if not stat.S_ISDIR(lstat(destination).st_mode):
         raise ValueError(f"{destination} is not a directory")
@@ -285,14 +326,14 @@ def is_mounted(records, target):
 
 
 def mount_preboot(options, uid, gid, run_command=None, emit_event=emit, check_device=require_block_device,
-                  tools=None, lstat=os.lstat, runtime_parent=RUNTIME_PARENT):
+                  tools=None, lstat=os.lstat, runtime_parent=RUNTIME_PARENT, setxattr=_set_acl, getxattr=_get_acl):
     """Privileged step. Only options.device is used; binaries and the mount point are chosen here."""
     run_command = run_command or base.run
     apfs_fuse, apfsutil = (tools or system_tools)()
     inventory = json.loads(run_command(["/usr/bin/lsblk", "--json", "--output", "PATH,FSTYPE,LABEL,MOUNTPOINTS"]))
     existing = base.mounted_records(run_command)
     device, index = find_preboot(inventory, run_command, apfsutil, existing, check_device, options.device or None)
-    destination = prepare_preboot_directory(uid, runtime_parent, lstat)
+    destination = prepare_preboot_directory(uid, runtime_parent, lstat, setxattr, getxattr)
     if is_mounted(existing, destination) or any(destination.iterdir()):
         raise ValueError(f"{destination} is mounted or not empty")
     emit_event("progress", message=f"Mounting Preboot (volume {index} of {device}) read-only")
