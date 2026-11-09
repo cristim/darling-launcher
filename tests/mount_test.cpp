@@ -72,12 +72,15 @@ private slots:
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         const QString real = QFileInfo(temporary.path()).canonicalFilePath() + "/real", alias = temporary.path() + "/alias";
         QVERIFY(QDir().mkpath(real + "/me")); QVERIFY(QFile::link(real, alias));
+        const QString dangling = temporary.path() + "/dangling"; QVERIFY(QFile::link(temporary.path() + "/gone", dangling));
         QFile file(QStringLiteral(TEST_SOURCE_DIR) + "/tests/home_prefix_cases.json"); QVERIFY(file.open(QIODevice::ReadOnly));
         const auto cases = QJsonDocument::fromJson(file.readAll()).array(); QVERIFY(!cases.isEmpty());
-        auto fill = [&](QString text) { return text.replace("@ALIAS@", alias).replace("@REAL@", real); };
+        auto fill = [&](QString text) { return text.replace("@ALIAS@", alias).replace("@REAL@", real).replace("@DANGLING@", dangling); };
         for (const auto &value : cases) {
             const auto entry = value.toObject();
-            QCOMPARE(LauncherMount::resolveHomePrefix(fill(entry["root"].toString()), fill(entry["home"].toString())), fill(entry["expect"].toString()));
+            // A null expectation means the script raises; the C++ side returns an empty string.
+            const QString expected = entry["expect"].isNull() ? QString() : fill(entry["expect"].toString());
+            QCOMPARE(LauncherMount::resolveHomePrefix(fill(entry["root"].toString()), fill(entry["home"].toString())), expected);
         }
     }
     void passwdHomeIsCleanAndIgnoresTheEnvironment() {

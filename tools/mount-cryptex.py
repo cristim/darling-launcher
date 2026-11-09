@@ -145,12 +145,24 @@ def normalise(path):
     return os.path.normpath(re.sub(r"/{2,}", "/", path))
 
 
+def has_dangling_symlink(path):
+    current = "/"
+    for part in Path(path).parts[1:]:
+        current = os.path.join(current, part)
+        if os.path.islink(current) and not os.path.exists(current):
+            return True
+    return False
+
+
 def resolve_home_prefix(mount_root, home):
     """Rewrite a leading home path to its resolved form so a symlinked home prefix (/home -> /var/home) is allowed.
 
-    Mirrored by LauncherMount::resolveHomePrefix; tests/home_prefix_cases.json holds the shared cases."""
+    Mirrored by LauncherMount::resolveHomePrefix (which returns an empty string where this raises);
+    tests/home_prefix_cases.json holds the shared cases."""
     raw, root = normalise(home), normalise(mount_root)
     if root == raw or root.startswith(raw.rstrip("/") + "/"):
+        if has_dangling_symlink(raw):
+            raise ValueError(f"{home} passes through a dangling symlink")
         return os.path.realpath(raw) + root[len(raw):]
     return root
 
