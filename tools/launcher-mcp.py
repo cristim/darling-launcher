@@ -137,11 +137,11 @@ class Redactor:
     LABELLED = re.compile(r"""(?i)\b""" + LABELS + r"""\b["']?\s*[=:]\s*(?P<v>(?!<redacted>)(?:"[^"]*"|'[^']*'|[^\s"']+))""")
     # label separated by whitespace only: the next word if it is long enough to be a secret rather than prose ("the password field")
     SPACED = re.compile(r"(?i)\b" + LABELS + r"\b\s+(?P<v>(?!<redacted>)[^\s\"'=:]{6,})")
-    # The name ends at a delimiter, so PATH=/home/a/bin:/usr/bin and (/home/a) keep their separators.
     # scheme://user:password@host. Every quantifier is bounded and the user class cannot contain ':', so each '://' costs at
     # most ~640 steps and the whole scan is linear. The password may hold '@' and '/' (the last '@' wins, so nothing leaks);
     # "host:8080/..." is a port, not a password; bracketed IPv6 hosts cannot start a user name.
     USERINFO = re.compile(r"(?<=://)(?P<v>[^/\s@\"':\[\]]{0,128}:(?!\d{1,5}(?:[/\s\"']|$))[^\s\"']{0,512})(?=@)")
+    # The name ends at a delimiter, so PATH=/home/a/bin:/usr/bin and (/home/a) keep their separators.
     GENERIC_HOME = re.compile(r"(?i)/(?:home|Users|run/media)/(?P<v>[^/\s\"'`:;,()\[\]{}<>|&=*?\\]+)")
     MAX_DECODE_DEPTH = 5
     # Hard cap on what one call scans, so no input (a guest app's output, a settings value) can stall the single-threaded server.
@@ -990,9 +990,10 @@ def build_tools(server):
             script = trusted_file(INSTALLED_SCRIPT_DIRECTORIES, script_name, False)
             if script is None:
                 warnings.append(f"No command is offered for kind {kind!r}: {script_name} is not installed in {' or '.join(INSTALLED_SCRIPT_DIRECTORIES)}. "
-                                "The script runs as root through pkexec, so a copy in a checkout or home directory is never used; "
-                                "run `sudo cmake --install <build directory>` for the launcher first"
-                                + ("; the cryptex script ships with the cryptex mount action." if kind == "cryptex" else "."))
+                                "The script runs as root through pkexec, so a copy in a checkout or home directory is never used. "
+                                "This launcher build has no install rule for it yet: the script plans become available once the launcher's install rule "
+                                "(the cryptex mount action, PR #24) is merged and `sudo cmake --install <build directory>` has been run. "
+                                "The per-partition kinds 'partition' and 'unmount' need no script and work now.")
             else:
                 argv = [system_tool("python3"), "-I", script, "--mount-root", str(root)]
                 if kind == "cryptex":
@@ -1088,7 +1089,8 @@ def build_tools(server):
              "'partition' (one partition with pkexec mount or apfs-fuse), 'cryptex' (Preboot plus os.dmg) or 'unmount'. All mounts are read-only with nodev, nosuid and "
              "noexec. This server never calls sudo or pkexec. Helper programs (pkexec, mount, umount, python3, apfs-fuse, apfsutil) are only taken from root-owned "
              "files in /usr/local/bin or /usr/bin and cannot be chosen by the caller. The mount scripts of kinds 'batch' and 'cryptex' run as root through pkexec, so those kinds "
-             "return a command only when the script is installed root-owned in <libexecdir>/darling-launcher (cmake --install); otherwise they return a warning and no command. Directories must be inside the launcher mount root; any other argument is rejected. "
+             "return a command only when the script is installed root-owned in <libexecdir>/darling-launcher, which needs the launcher's install rule from PR #24 (until it is merged "
+             "and installed they return a warning and no command; kinds 'partition' and 'unmount' work now). Directories must be inside the launcher mount root; any other argument is rejected. "
              "Fields are redacted like every result (home paths shown as ~); the 'shell' string of each command is the copy-paste form for the user's own terminal "
              "and refers to the home directory as \"$HOME\", so run it in the user's shell. A user-name component that had to be hidden appears as the quoted "
              "placeholder '<user>' and is listed in notes.",

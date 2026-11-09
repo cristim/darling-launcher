@@ -57,6 +57,8 @@ The **Opt in: source fix workflow** action opens the troubleshooting dialog desc
 
 App scanning includes subdirectories of `Applications` and `System/Applications`, including Utilities, and requires a usable `CFBundleExecutable` in `Info.plist`. It skips directory symlinks and does not scan inside app bundles. It does not configure native Homebrew or resolve failures for which the loader supplies no absolute `Expected in` path. Framework imports copy a whole framework bundle. A successful Darling exit proves the launcher invocation completed, not that the guest app's UI worked. Real import and launch verification needs a user-selected mounted macOS source and an appropriate Darling runtime.
 
+Known issue: the GUI's mount-all action runs the checkout's `tools/mount-macos.py`, which asks `pkexec` to run itself as root, so a copy of that script the user can modify runs with root privileges. This predates the MCP server and is tracked in PR #24 and PR #11; the MCP server's `mount_plan` does not offer that script from a checkout.
+
 ### Guided path setup
 
 On startup, a single usable mounted macOS source is selected automatically.
@@ -260,9 +262,11 @@ Safety model:
   caller cannot choose these paths; a missing tool is an error that says where to install it.
   The `batch` and `cryptex` plans run a launcher script that asks `pkexec` to run itself as
   root, so they are offered only when that script is installed root-owned in
-  `/usr/local/libexec/darling-launcher` or `/usr/libexec/darling-launcher` (`sudo cmake
-  --install`); a copy in a checkout is never used. Otherwise the result has a warning and no
-  command, while the per-partition `pkexec mount` and `umount` plans need no script.
+  `/usr/local/libexec/darling-launcher` or `/usr/libexec/darling-launcher`; a copy in a
+  checkout is never used. This branch has no `install()` rule for the scripts (the rule is
+  part of the cryptex mount action, PR #24), so until that is merged and installed with
+  `sudo cmake --install`, these two kinds return a warning and no command. The
+  per-partition `pkexec mount` and `umount` plans need no script and work now.
   If `apfs-fuse` or `apfsutil` is not in those directories, the `batch` plan passes an explicit
   empty value for it (so the script does not search `PATH`) and warns; HFS-only machines still work. The cryptex plan mirrors the documented command of the cryptex mount
   action; its script is present only on a checkout that includes it, and the plan says so.
