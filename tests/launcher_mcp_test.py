@@ -702,6 +702,8 @@ class RedactionTest(ToolTestCase):
         redactor = mcp.Redactor("/home/alice")
         self.assertEqual(redactor.text("/home/alice/x"), "~/x")
         self.assertEqual(redactor.text("password=/home/alice/x tail"), "password=<redacted> tail")
+        partial = mcp.Redactor("/home/bob").text("see /home/bob@corp now")
+        self.assertEqual(partial, "see ~<user> now")  # the home span ends where the user-name span runs on: no union
 
     def test_url_userinfo_is_redacted(self):
         redactor = mcp.Redactor("/home/alice")
