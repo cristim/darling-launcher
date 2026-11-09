@@ -820,11 +820,17 @@ class ActionToolsTest(unittest.TestCase):
         self.assertNotIn("Calculator", contents[slow["log_file"]])
         self.assertEqual(oct(os.stat(self.fx.data / "logs/mcp-launch" / calc["log_file"]).st_mode & 0o777), "0o600")
 
-    def test_only_the_newest_launch_logs_are_kept(self):
+    def launch_logs_with_ages(self, ages):
         directory = self.fx.data / "logs/mcp-launch"
         directory.mkdir(parents=True)
-        for index in range(25):
-            (directory / f"20200101T0000{index:02d}-{index:08x}.log").write_text("old\n")
+        for index, age in enumerate(ages):
+            path = directory / f"20200101T0000{index:02d}-{index:08x}.log"
+            path.write_text("old\n")
+            os.utime(path, (time.time() - age, time.time() - age))
+        return directory
+
+    def test_only_old_logs_beyond_the_newest_are_pruned(self):
+        directory = self.launch_logs_with_ages([7200] * 25)
         (directory / "keep-me.txt").write_text("not ours")
         data = self.ok("launch_app", {"prefix": "default", "app": "Calc", "confirm": True})
         names = sorted(n for n in os.listdir(directory) if n.endswith(".log"))
@@ -832,6 +838,19 @@ class ActionToolsTest(unittest.TestCase):
         self.assertEqual(names[-1], data["log_file"])
         self.assertTrue((directory / "keep-me.txt").exists())
         self.assertNotIn("20200101T000000-00000000.log", names)
+
+    def test_logs_written_within_the_hour_are_never_pruned_even_beyond_the_limit(self):
+        directory = self.launch_logs_with_ages([10] * 25)
+        self.ok("launch_app", {"prefix": "default", "app": "Calc", "confirm": True})
+        self.assertEqual(len([n for n in os.listdir(directory) if n.endswith(".log")]), 26)
+
+    def test_mixed_ages_delete_exactly_the_old_ones_outside_the_newest_twenty(self):
+        directory = self.launch_logs_with_ages([7200] * 3 + [10] * 3 + [7200] * 19)
+        self.ok("launch_app", {"prefix": "default", "app": "Calc", "confirm": True})
+        names = sorted(n for n in os.listdir(directory) if n.endswith(".log"))
+        self.assertEqual(len(names), 26 - 3)
+        self.assertNotIn("20200101T000000-00000000.log", names)
+        self.assertIn("20200101T000003-00000003.log", names)
 
     def test_a_symlinked_launch_log_directory_is_refused_before_anything_starts(self):
         outside = self.fx.root / "elsewhere"
