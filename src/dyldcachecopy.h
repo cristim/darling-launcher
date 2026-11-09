@@ -39,4 +39,7 @@ struct Outcome {
 // reported as Done without reading the source files again. Never replaces or deletes an existing store file.
 Outcome copyCache(const QString &sourceDir, const QString &arch, const QString &storeRoot, const Options &options = {},
                   const ProgressFn &progress = {}, const std::atomic<bool> *cancel = nullptr);
+
+// Re-checks a store from its own files only (size, header UUID, sha256); never reads the source.
+Outcome verifyStore(const QString &storeRoot, const QString &id, const ProgressFn &progress = {}, const std::atomic<bool> *cancel = nullptr);
 }

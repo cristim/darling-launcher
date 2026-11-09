@@ -43,6 +43,7 @@ private slots:
         QCOMPARE(DyldCacheStore::status(fx.root(), fx.id).state, StoreState::Ready);
         QVERIFY(!seen.isEmpty()); QCOMPARE(seen.last().totalBytes, seen.last().totalSize); QCOMPARE(seen.last().totalSize, qint64(4 * 4096));
         qint64 last = 0; for (const auto &p : seen) { QVERIFY(p.totalBytes >= last); last = p.totalBytes; }
+        const auto v = verifyStore(fx.root(), fx.id); QVERIFY2(v.result == Result::Done, qPrintable(v.error));
     }
     void readsInWindowsAndBlocksWithPauses() {
         Fx fx; fx.opt.pauseMs = 5; int pauses = 0; QList<qint64> lens; qint64 maxStep = 0, prev = 0; QString prevFile;
@@ -129,6 +130,14 @@ private slots:
         Fx fx; // a guest process shares the user id and can write the partial
         fx.opt.onWindow = [&](const QString &n, qint64 off, qint64) { if (n == kMain + ".01" && off == 3072) { QFile w(fx.dst(kMain + ".01.partial")); w.open(QIODevice::ReadWrite); w.resize(5000); } };
         const auto r = fx.run(); QCOMPARE(r.result, Result::Failed); QVERIFY(r.error.contains("wrong size")); QVERIFY(!QFileInfo::exists(fx.dst(kMain + ".01")));
+    }
+    void verifyCatchesAFlippedByteThatTheQuickCheckMisses() {
+        Fx fx; QVERIFY(fx.run().result == Result::Done);
+        QFile f(fx.dst(kMain + ".03")); QVERIFY(f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)); QVERIFY(f.open(QIODevice::ReadWrite));
+        f.seek(3000); const QByteArray b = f.read(1); f.seek(3000); f.write(QByteArray(1, char(b[0] ^ 0xff))); f.close();
+        QCOMPARE(DyldCacheStore::status(fx.root(), fx.id).state, StoreState::Ready);
+        const auto v = verifyStore(fx.root(), fx.id); QCOMPARE(v.result, Result::Failed); QVERIFY(v.error.contains("checksum"));
+        std::atomic<bool> cancel(true); QCOMPARE(verifyStore(fx.root(), fx.id, {}, &cancel).result, Result::Cancelled);
     }
 };
 QTEST_APPLESS_MAIN(DyldCacheCopyTest)
