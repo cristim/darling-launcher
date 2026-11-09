@@ -14,7 +14,6 @@ import csv
 import json
 import os
 from pathlib import Path
-import pwd
 import re
 import shlex
 import stat
@@ -69,12 +68,11 @@ class ConfigError(Exception):
 
 
 class Config:
-    def __init__(self, home, data_dir, config_file, allow_actions, user):
+    def __init__(self, home, data_dir, config_file, allow_actions):
         self.home = Path(home)
         self.data_dir = Path(data_dir)
         self.config_file = Path(config_file)
         self.allow_actions = allow_actions
-        self.user = user
 
     @property
     def prefix_root(self):
@@ -112,15 +110,12 @@ class Config:
         flag = environ.get("DARLING_LAUNCHER_MCP_ALLOW_ACTIONS", "")
         if flag not in ("", "0", "1"):
             raise ConfigError("DARLING_LAUNCHER_MCP_ALLOW_ACTIONS must be 0 or 1 when set")
-        try:
-            user = pwd.getpwuid(os.getuid()).pw_name
-        except KeyError:
-            user = environ.get("USER", "")
-        return cls(home, data_dir, config_file, flag == "1", user)
+        return cls(home, data_dir, config_file, flag == "1")
 
 
 class Redactor:
-    """Removes the home directory, user name and token-shaped strings from everything sent to the client."""
+    """Removes the home directory, the user-name component of /home/<name>, /Users/<name> and /run/media/<name> paths, and token-shaped
+    strings from everything sent to the client. A bare word is never taken for a user name (user "dev" vs /dev/sda1)."""
 
     TOKENS = [
         re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
@@ -131,14 +126,13 @@ class Redactor:
     ]
     LABELLED = re.compile(r"(?i)\b((?:bearer|api[_-]?key|token|secret|password|passwd)\s*[=:]?\s*)(?!<redacted>)[A-Za-z0-9._~+/=-]{6,}")
 
-    def __init__(self, home, user):
+    def __init__(self, home):
         homes = {str(home)}
         try:
             homes.add(os.path.realpath(home))
         except OSError:
             pass
         self.homes = [re.compile(re.escape(h) + r"(?![A-Za-z0-9_.-])") for h in sorted(homes, key=len, reverse=True) if h not in ("", "/")]
-        self.user = re.compile(r"(?<![A-Za-z0-9_.-])" + re.escape(user) + r"(?![A-Za-z0-9_-])") if user and user != "root" and len(user) > 1 else None
 
     def text(self, value):
         for pattern in self.TOKENS:
@@ -146,9 +140,7 @@ class Redactor:
         value = self.LABELLED.sub(r"\1<redacted>", value)
         for pattern in self.homes:
             value = pattern.sub("~", value)
-        value = re.sub(r"/(home|Users)/[^/\s\"']+", r"/\1/<user>", value)
-        if self.user:
-            value = self.user.sub("<user>", value)
+        value = re.sub(r"/(home|Users|run/media)/[^/\s\"']+", r"/\1/<user>", value)
         return value
 
     def obj(self, value, keep=()):
@@ -419,7 +411,7 @@ def conforms(schema, value):
 class Server:
     def __init__(self, config):
         self.config = config
-        self.redact = Redactor(config.home, config.user)
+        self.redact = Redactor(config.home)
         self.initialize_seen = False
         self.initialized = False
         self.children = []
@@ -879,7 +871,7 @@ def build_tools(server):
     return [
         Tool("launcher_status", "Launcher status",
              read_only_note + "Reports the installed prebuilt runtime tags and whether one is usable, the selected prefix/darling/runtime/volume from the launcher settings, "
-             "the default prefix, the mount root, whether action tools are enabled, and the last log lines (home paths and user name redacted).",
+             "the default prefix, the mount root, whether action tools are enabled, and the last log lines (home directory paths redacted).",
              {}, [], launcher_status, True,
              {"actions_enabled": {"type": "boolean"}, "runtime": {"type": "object"}, "recent_log": {"type": "array"}}),
         Tool("list_prefixes", "List prefixes",
@@ -895,7 +887,7 @@ def build_tools(server):
              {}, [], mount_status, True, {"mounts": {"type": "array"}, "mount_root": {"type": "string"}}),
         Tool("tail_log", "Tail launcher log",
              read_only_note + "Returns the last lines of the launcher log (source 'launcher') or of the log of apps started by this server (source 'mcp-launch'), "
-             "with home directory paths, the user name and token-like strings redacted.",
+             "with home directory paths and token-like strings redacted.",
              {"lines": {"type": "integer", "minimum": 1, "maximum": MAX_LOG_LINES, "description": "Number of lines, default 50."},
               "source": {"type": "string", "enum": list(LOG_SOURCES), "description": "Which log, default 'launcher'."}},
              [], tail_log, True, {"lines": {"type": "array"}, "source": {"type": "string"}}),
