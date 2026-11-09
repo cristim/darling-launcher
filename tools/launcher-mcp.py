@@ -125,9 +125,14 @@ class Redactor:
         re.compile(r"AKIA[0-9A-Z]{16}"),
         re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}"),
     ]
-    SCHEME = re.compile(r"(?i)\b(bearer|basic)\s+(?!<redacted>)[^\s\"']+")
-    LABELLED = re.compile(r"""(?i)\b(api[_-]?key|access[_-]?key|token|secret|password|passwd|authorization)\b(["']?\s*[=:]\s*)(?!<redacted>)(?:"[^"]*"|'[^']*'|[^\s"']+)""")
-    GENERIC_HOME = re.compile(r"(?i)/(home|Users|run/media)/[^/\s\"']+")
+    SCHEME = re.compile(r"(?i)\b(?:bearer|basic)\s+(?P<v>(?!<redacted>)[^\s\"']+)")
+    LABELS = r"(?:api[_-]?key|access[_-]?key|token|secret|password|passwd|authorization)"
+    # label, optional quote, = or :, then the whole value (a quoted string or up to whitespace/quote)
+    LABELLED = re.compile(r"""(?i)\b""" + LABELS + r"""\b["']?\s*[=:]\s*(?P<v>(?!<redacted>)(?:"[^"]*"|'[^']*'|[^\s"']+))""")
+    # label separated by whitespace only: the next word if it is long enough to be a secret rather than prose ("the password field")
+    SPACED = re.compile(r"(?i)\b" + LABELS + r"\b\s+(?P<v>(?!<redacted>)[^\s\"'=:]{6,})")
+    GENERIC_HOME = re.compile(r"(?i)/(?:home|Users|run/media)/(?P<v>[^/\s\"']+)")
+    MAX_DECODE_DEPTH = 5
 
     def __init__(self, home):
         homes = {str(home)}
@@ -137,39 +142,73 @@ class Redactor:
             pass
         self.homes = [re.compile(re.escape(h) + r"(?![A-Za-z0-9_.-])", re.IGNORECASE) for h in sorted(homes, key=len, reverse=True) if h not in ("", "/")]
 
-    def scrub(self, value, paths):
-        for pattern in self.TOKENS:
-            value = pattern.sub("<redacted>", value)
-        value = self.SCHEME.sub(r"\1 <redacted>", value)
-        value = self.LABELLED.sub(r"\1\2<redacted>", value)
-        if not paths:
-            return value
-        for pattern in self.homes:
-            value = pattern.sub("~", value)
-        return self.GENERIC_HOME.sub(lambda m: f"/{m.group(1)}/<user>", value)
+    def spans(self, text, paths, secret):
+        """(start, end, replacement) for everything to hide in text."""
+        found = [(m.start(), m.end(), secret) for pattern in self.TOKENS for m in pattern.finditer(text)]
+        found += [m.span("v") + (secret,) for pattern in (self.SCHEME, self.LABELLED, self.SPACED) for m in pattern.finditer(text)]
+        if paths:
+            found += [m.span() + ("~",) for pattern in self.homes for m in pattern.finditer(text)]
+            found += [m.span("v") + ("<user>",) for m in self.GENERIC_HOME.finditer(text)]
+        return found
+
+    @staticmethod
+    def decode_once(text, origin):
+        """Percent-decodes ASCII %XX. origin[i] is the (start, end) in the original string of character i of text."""
+        out, out_origin, i = [], [], 0
+        while i < len(text):
+            code = int(text[i + 1:i + 3], 16) if text[i] == "%" and re.fullmatch(r"[0-9A-Fa-f]{2}", text[i + 1:i + 3]) else 128
+            if code < 128:
+                out.append(chr(code))
+                out_origin.append((origin[i][0], origin[i + 2][1]))
+                i += 3
+            else:
+                out.append(text[i])
+                out_origin.append(origin[i])
+                i += 1
+        return "".join(out), out_origin
 
     def text(self, value, paths=True):
-        """Scrubs value, and its percent-decoded forms (also double-encoded), so %2Fhome%2Fme and password%3Dx do not slip through.
-        paths=False leaves home and user-name paths alone and removes only secrets (for the shell string, which hides them itself)."""
-        result = self.scrub(value, paths)
-        decoded = value
-        for _ in range(2):
-            if "%" not in decoded:
+        """Hides secrets and, if paths, home and user-name paths. The text is also searched percent-decoded to a fixed point
+        (at most MAX_DECODE_DEPTH layers) but the ORIGINAL text is what is returned, with every match redacted whole, so a
+        decoded fragment never appears in the output. paths=False keeps paths and uses a replacement without shell
+        metacharacters, for words that are quoted afterwards: redaction must never run over an already quoted string."""
+        secret = "<redacted>" if paths else "REDACTED"
+        current, origin = value, [(i, i + 1) for i in range(len(value))]
+        found = self.spans(current, paths, secret)
+        for _ in range(self.MAX_DECODE_DEPTH):
+            if "%" not in current:
                 break
-            decoded = urllib.parse.unquote(decoded)
-            scrubbed = self.scrub(decoded, paths)
-            if scrubbed != decoded:
-                return scrubbed
-        return result
+            decoded, decoded_origin = self.decode_once(current, origin)
+            if decoded == current:
+                break
+            current, origin = decoded, decoded_origin
+            found += [(origin[a][0], origin[b - 1][1], repl) for a, b, repl in self.spans(current, paths, secret) if b > a]
+        if not found:
+            return value
+        found.sort(key=lambda f: (f[0], -f[1]))
+        merged = [list(found[0])]
+        for start, end, repl in found[1:]:
+            last = merged[-1]
+            if start < last[1]:
+                if repl == secret or (last[2] != secret and end - start > last[1] - last[0]):
+                    last[2] = repl
+                last[1] = max(last[1], end)
+            else:
+                merged.append([start, end, repl])
+        result, position = [], 0
+        for start, end, repl in merged:
+            result += [value[position:start], repl]
+            position = end
+        return "".join(result) + value[position:]
 
-    def obj(self, value, secrets_only=()):
-        """Redacts every string; the values of dict keys named in secrets_only lose secrets but keep their paths."""
+    def obj(self, value, exempt=()):
+        """Redacts every string except the values of dict keys named in exempt, which the tool has already made safe."""
         if isinstance(value, str):
             return self.text(value)
         if isinstance(value, list):
-            return [self.obj(v, secrets_only) for v in value]
+            return [self.obj(v, exempt) for v in value]
         if isinstance(value, dict):
-            return {k: self.text(v, paths=False) if k in secrets_only and isinstance(v, str) else self.obj(v, secrets_only) for k, v in value.items()}
+            return {k: v if k in exempt else self.obj(v, exempt) for k, v in value.items()}
         return value
 
 
@@ -355,6 +394,28 @@ def shell_word(arg, homes):
         word += shlex.quote(arg[last:match.start()] + "/" + match.group(1) + "/") + "'<user>'"
         last = match.end()
     return word + (shlex.quote(arg[last:]) if arg[last:] else "") if last else shlex.quote(arg)
+
+
+def word_value(word, homes):
+    """What a POSIX shell (HOME set) makes of one word built by shell_word, without running anything."""
+    for expression, base in homes:
+        if word.startswith(expression):
+            tail = shlex.split("x" + word[len(expression):])
+            return base + tail[0][1:] if len(tail) == 1 else None
+    parts = shlex.split(word)
+    return parts[0] if len(parts) == 1 else None
+
+
+def check_shell_word(arg, word, homes):
+    """Invariant of the builder: the word must expand to exactly arg, or arg with its user-name component hidden."""
+    under_home = any(arg == base or arg.startswith(base + "/") for _, base in homes)
+    expected = arg if under_home else USER_PATH_COMPONENT.sub(lambda m: f"/{m.group(1)}/<user>", arg)
+    try:
+        value = word_value(word, homes)
+    except ValueError:
+        value = None
+    if value != expected:
+        raise ToolError("cannot build a safe shell string for this plan because one path contains characters that cannot be quoted safely; use the argv list instead")
 
 
 def child_env(extra=None):
@@ -908,7 +969,13 @@ def build_tools(server):
         homes = home_expansions(config.home)
         notes = ['The "shell" strings use "$HOME" for your home directory: paste them into your own shell. The "argv" lists are for reading and show ~ instead.']
         for command in commands:
-            words = [shell_word(arg, homes) for arg in command["argv"]]
+            # Secrets leave each element before it is quoted; nothing is ever redacted after quoting.
+            safe = [server.redact.text(arg, paths=False) for arg in command["argv"]]
+            if safe != command["argv"]:
+                notes.append("Text in a path that looks like a secret was replaced by REDACTED in the shell string, so that command will not work until you correct it.")
+            words = [shell_word(arg, homes) for arg in safe]
+            for arg, word in zip(safe, words):
+                check_shell_word(arg, word, homes)
             command["shell"] = " ".join(words)
             if any("'<user>'" in word for word in words):
                 notes.append("A user name was replaced by the quoted placeholder '<user>' in a shell string: replace it with your user name before running it.")

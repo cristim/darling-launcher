@@ -529,6 +529,70 @@ class RedactionTest(ToolTestCase):
             self.assertNotRegex(text, r"(?i)alice")
             self.assertTrue(text.startswith("see ") and text.endswith(" now"), text)
 
+    def test_percent_decoded_matches_redact_the_original_and_never_return_decoded_text(self):
+        redactor = mcp.Redactor("/home/alice")
+        cases = {
+            "x %2Fhome%2Falice%2Fdoc y": ("x ~%2Fdoc y", ("/home", "alice")),
+            "x %252Fhome%252Falice%252Fdoc y": ("x ~%252Fdoc y", ("/home", "alice", "%2Fhome")),
+            "x %2Fhome%2Fbob y": ("x %2Fhome%2F<user> y", ("/home", "bob")),
+            "password%3Dhunter2xyz tail": ("password%3D<redacted> tail", ("hunter", "password=")),
+            "password%253Dhunter2xyz tail": ("password%253D<redacted> tail", ("hunter", "password=")),
+            "pass%77ord=hunter2xyz": ("pass%77ord=<redacted>", ("hunter",)),
+            "token%3A%20abc123def": ("token%3A%20<redacted>", ("abc123",)),
+            "%255Cx %2Fhome%2Falice": ("%255Cx ~", ("alice", "/home")),
+        }
+        for text, (expected, absent) in cases.items():
+            result = redactor.text(text)
+            self.assertEqual(result, expected, text)
+            for fragment in absent:
+                self.assertNotIn(fragment, result, text)
+
+    def test_mixed_encoded_and_plain_matches_in_one_string_are_all_redacted(self):
+        redactor = mcp.Redactor("/home/alice")
+        text = "a password%3Dhunter2xyz b password=plainsecret c /home/bob/x d %2Fhome%2Fcarol%2Fy e Bearer tok123456 f %2Fhome%2Falice g token=%2525abc"
+        result = redactor.text(text)
+        for leaked in ("hunter", "plainsecret", "bob", "carol", "alice", "tok123456", "abc", "/home/c", "%2Fhome%2Fa"):
+            self.assertNotIn(leaked, result)
+        self.assertEqual(result, "a password%3D<redacted> b password=<redacted> c /home/<user>/x d %2Fhome%2F<user>%2Fy e Bearer <redacted> f ~ g token=<redacted>")
+
+    def test_decoding_goes_to_a_fixed_point_with_a_depth_cap(self):
+        redactor = mcp.Redactor("/home/alice")
+        secret = "password=hunter2xyz"
+        encoded = secret
+        for layer in range(1, mcp.Redactor.MAX_DECODE_DEPTH + 1):
+            encoded = encoded.replace("%", "%25").replace("=", "%3D") if layer == 1 else encoded.replace("%", "%25")
+            self.assertNotIn("hunter", redactor.text(encoded), f"layer {layer}")
+            self.assertNotIn("hunter", redactor.text("pre " + encoded + " post"), f"layer {layer}")
+
+    def test_a_secret_split_across_decode_layers_is_not_half_returned(self):
+        redactor = mcp.Redactor("/home/alice")
+        for text in ("%2Fhome%2Fal%252Fice%2Fx", "token=abc%2525def", "password=a%2Fb%252Fc"):
+            result = redactor.text(text)
+            self.assertNotRegex(result, r"ice|abc|def|a%2Fb|%252Fc", text)
+
+    def test_whitespace_separated_labelled_secrets_are_redacted(self):
+        redactor = mcp.Redactor("/home/alice")
+        for text, secret in (("password hunter2xyz", "hunter2"), ("token abcdef123456", "abcdef"), ("Authorization Basic dXNlcjpwYXNz", "dXNlcjpw"),
+                             ("authorization Bearer abc.def.ghi", "abc.def"), ("Bearer abcdef123", "abcdef"), ("secret   s3cr3tvalue", "s3cr3t"),
+                             ("API-KEY abcd1234efgh", "abcd1234"), ("passwd  longerpass", "longerpass"), ("PASSWORD\thunter2xyz", "hunter2"), ("access_key AKIA0000", "AKIA0000")):
+            result = redactor.text(f"before {text} after")
+            self.assertNotIn(secret, result, text)
+            self.assertTrue(result.startswith("before ") and result.endswith(" after"), result)
+
+    def test_ordinary_prose_with_the_labels_is_not_mangled_beyond_one_following_word(self):
+        redactor = mcp.Redactor("/home/alice")
+        untouched = ("the password field is empty", "This token is invalid", "tokens and passwords are listed", "Please enter your password to continue", "a secret to everybody",
+                     "no authorization yet", "password: ", "set the token later")
+        for plain in untouched:
+            self.assertEqual(redactor.text(plain), plain)
+        self.assertEqual(redactor.text("the password confirmation mismatch was shown"), "the password <redacted> mismatch was shown")
+        self.assertEqual(redactor.text("token expired yesterday, token fine"), "token <redacted> yesterday, token fine")
+
+    def test_redaction_is_idempotent(self):
+        redactor = mcp.Redactor("/home/alice")
+        once = redactor.text("password=hunter2xyz /home/bob/x %2Fhome%2Fcarol Bearer abcdef123 password confirmation")
+        self.assertEqual(redactor.text(once), once)
+
     def test_labelled_secrets_are_redacted_whole_whatever_they_contain(self):
         redactor = mcp.Redactor("/home/alice")
         for secret_text in ("password=ab!cdefgh", "PASSWORD: s3cr3t!!", "Authorization: Basic dXNlcjpwYXNzd29yZA==", "authorization=Bearer abc.def", "token=a b",
@@ -1008,6 +1072,46 @@ class MountPlanShellTest(MountPlanBase):
                 self.assertTrue(syntax_ok(command["shell"]))
                 self.assertEqual(shell_words(command["shell"], self.fx.home, cwd), [hide_user(a) if not a.startswith(str(self.fx.home)) else a for a in command["argv"]])
 
+    ADVERSARIAL = ("a b", "q'uote", '"dq"', "$(touch pwned)", "`touch pwned`", "x;touch pwned", "a&&touch pwned", "a|b", "a>b<c", "%27", "100%", "a%27b%3Btouch%20pwned",
+                   "%2Fhome%2Falice", "password=x y", "token='a b'", "tok='; touch pwned; '", "Bearer abc def", 'x password="a b" y', "password='x", "pass'word=abc def",
+                   "token=a'b c", "x token ' y; touch z; ' abcdefgh", "ghp_" + "A1b2C3d4E5" * 3, "sk-" + "a" * 24, "password hunter2xyz", "-rf", "~", "~root", "a\\b",
+                   "'", '"', "''", "'\"'\"'", "*", "{a,b}", "a#b", "!x", "a=b", "$HOME", "${HOME}", "$'x'")
+
+    def test_the_shell_string_always_expands_to_exactly_the_final_argv(self):
+        redact = self.fx.server.redact
+        with tempfile.TemporaryDirectory() as cwd:
+            for name in self.ADVERSARIAL:
+                directory = self.directory(name)
+                raw = self.raw(kind="unmount", directory=str(directory))["commands"][0]
+                shell = raw["shell"]
+                final = [hide_user(redact.text(a, paths=False)) if not a.startswith(str(self.fx.home)) else redact.text(a, paths=False) for a in raw["argv"]]
+                self.assertTrue(syntax_ok(shell), name)
+                self.assertEqual(shell_words(shell, self.fx.home, cwd), final, name)
+                self.assertEqual(os.listdir(cwd), [], name)
+                self.assertEqual(shlex.split(shell.replace('"$HOME"', "'" + str(self.fx.home).replace("'", "'\"'\"'") + "'")), final, name)
+                self.assertEqual(self.fx.call("mount_plan", {"kind": "unmount", "directory": str(directory)})["structuredContent"]["commands"][0]["shell"], shell,
+                                 f"{name}: nothing may rewrite the shell string after it was quoted")
+
+    def test_secret_like_text_in_a_path_is_removed_before_quoting_not_after(self):
+        for name, absent in (("ghp_" + "A1b2C3d4E5" * 3, "ghp_"), ("password=hunter2hunter2", "hunter2"), ("Bearer abcdef123", "abcdef123"), ("password hunter2xyz", "hunter2")):
+            command = self.raw(kind="unmount", directory=str(self.directory(name)))["commands"][0]
+            self.assertNotIn(absent, command["shell"])
+            self.assertIn("REDACTED", command["shell"])
+            self.assertNotIn("<redacted>", command["shell"])
+        result = self.fx.call("mount_plan", {"kind": "unmount", "directory": str(self.directory("password=zzzzzz"))})["structuredContent"]
+        self.assertTrue(any("REDACTED" in note and "will not work" in note for note in result["notes"]))
+
+    def test_the_builder_refuses_a_plan_whose_shell_string_would_not_match_the_argv(self):
+        directory = self.directory("d")
+        with patch.object(mcp, "shell_word", lambda arg, homes: arg):
+            spaced = self.directory("has space")
+            self.refused("mount_plan", {"kind": "unmount", "directory": str(spaced)}, "cannot build a safe shell string")
+        with patch.object(mcp, "shlex") as fake:
+            fake.quote = lambda arg: "'" + arg + "'"
+            fake.split = mcp.shlex.split
+            self.refused("mount_plan", {"kind": "unmount", "directory": str(self.directory("q'uote"))}, "cannot build a safe shell string")
+        self.ok("mount_plan", {"kind": "unmount", "directory": str(directory)})
+
     def test_newlines_and_control_characters_in_names_are_refused(self):
         directory = self.fx.data / "mounts" / "bad\nname"
         directory.mkdir(parents=True)
@@ -1024,7 +1128,9 @@ class MountPlanShellTest(MountPlanBase):
         directory = self.directory("password=hunter2hunter2")
         shell = self.ok("mount_plan", {"kind": "unmount", "directory": str(directory)})["commands"][0]["shell"]
         self.assertNotIn("hunter2", shell)
-        self.assertIn("<redacted>", shell)
+        self.assertIn("password=REDACTED", shell)
+        self.assertNotIn("<redacted>", shell)
+        self.assertTrue(syntax_ok(shell))
 
     def test_the_shell_field_is_the_only_exemption(self):
         self.assertEqual(self.fx.server.tools["mount_plan"].shell_fields, frozenset({"shell"}))
@@ -1055,6 +1161,19 @@ class MountPlanOutsideHomeTest(MountPlanBase):
 
 
 class ShellWordTest(unittest.TestCase):
+    def test_nasty_arguments_expand_to_themselves_including_newlines_and_percent_sequences(self):
+        homes = mcp.home_expansions("/home/alice")
+        with tempfile.TemporaryDirectory() as cwd:
+            for arg in ("/x/a\nb", "/x/$(id)\n`id`;&&|", "/x/%27%22%0A", "/x/'", "/x/'\"'\"'", "/home/alice/a\nb c", "/home/alice/%27;$(x)", "/home/alice/'", "/Users/bob/\n$x", "-n", "", "/x/\\", "/x/\t"):
+                word = mcp.shell_word(arg, homes)
+                mcp.check_shell_word(arg, word, homes)
+                expected = arg if arg.startswith("/home/alice") else hide_user(arg)
+                self.assertTrue(syntax_ok("cmd " + word), repr(arg))
+                self.assertEqual(shell_words(word, "/home/alice", cwd), [expected], repr(arg))
+                self.assertEqual(mcp.word_value(word, homes), expected)
+            self.assertEqual(os.listdir(cwd), [])
+
+
     def test_a_symlinked_home_is_expanded_through_realpath(self):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as cwd:
             real = Path(os.path.realpath(root)) / "real home"
