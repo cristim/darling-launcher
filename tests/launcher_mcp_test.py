@@ -700,12 +700,29 @@ class ActionToolsTest(unittest.TestCase):
         self.assertEqual([l for l in lines if ".kill(" in l], ["proc.kill()"])
 
 
+class FakeStat:
+    def __init__(self, real, uid, writable):
+        self.st_uid = uid
+        self.st_mode = real.st_mode | 0o020 if writable else real.st_mode & ~0o022
+
+
 class MountPlanTest(ToolTestCase):
+    """The fixture bin directory plays /usr/bin; the ownership rule is exercised through a fake lstat."""
+
     def setUp(self):
         super().setUp()
-        for name in ("pkexec", "sudo", "mount", "umount", "apfs-fuse", "apfsutil"):
+        for name in ("pkexec", "sudo", "mount", "umount", "apfs-fuse", "apfsutil", "python3"):
             self.fx.executable(name, f'touch "$(dirname "$0")/ran-{name}"\n')
         self.mounts = self.fx.data / "mounts"
+        self.not_root = set()
+        self.writable = set()
+        patcher = patch.multiple(mcp, TRUSTED_DIRECTORIES=(str(self.fx.bin),), LSTAT=self.fake_lstat)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fake_lstat(self, path):
+        real = os.lstat(path)
+        return FakeStat(real, 1000 if str(path) in self.not_root else 0, str(path) in self.writable)
 
     def plan(self, **arguments):
         return self.ok("mount_plan", arguments)
@@ -718,7 +735,7 @@ class MountPlanTest(ToolTestCase):
         self.assertIs(data["executed"], False)
         (command,) = data["commands"]
         argv = command["argv"]
-        self.assertTrue(argv[0].endswith("python3"))
+        self.assertTrue(argv[0].endswith("/bin/python3"))
         self.assertEqual(argv[1], "-I")
         self.assertTrue(argv[2].endswith("/tools/mount-macos.py"))
         self.assertEqual(argv[3:5], ["--mount-root", "~/.darling-launcher/mounts"])
@@ -820,26 +837,60 @@ class MountPlanTest(ToolTestCase):
         self.assertEqual(any("feat/cryptex-mount-action" in w for w in data["warnings"]), not script.is_file())
         self.assertNotIn("--device", self.plan(kind="cryptex")["commands"][0]["argv"])
         self.refused("mount_plan", {"kind": "cryptex", "device": "/dev/../x"}, "under /dev")
-        self.refused("mount_plan", {"kind": "cryptex", "apfsutil": "/x"}, "not used by kind")
+        self.refused("mount_plan", {"kind": "cryptex", "volume_index": 1}, "not used by kind")
 
-    def test_missing_tools_are_reported(self):
-        (self.fx.bin / "apfs-fuse").unlink()
-        self.refused("mount_plan", {"kind": "cryptex"}, "apfs-fuse was not found")
-        self.refused("mount_plan", {"kind": "partition", "device": "/dev/sda2", "filesystem": "apfs", "backend": "apfs-fuse", "volume_index": 0}, "apfs-fuse was not found")
-        self.assertTrue(any("apfs-fuse was not found" in w for w in self.plan(kind="batch")["warnings"]))
-        real_find = mcp.find_tool
-        with patch.object(mcp, "find_tool", lambda name: None if name == "pkexec" else real_find(name)):
-            data = self.plan(kind="unmount", directory=str(self.mounts / "d"))
-        self.assertTrue(any("pkexec was not found" in w for w in data["warnings"]))
-        self.assertEqual(data["commands"][0]["argv"][0], "/usr/bin/pkexec")
+    def test_missing_system_tools_fail_loudly(self):
+        for tool, arguments in (("apfs-fuse", {"kind": "cryptex"}), ("apfsutil", {"kind": "batch"}), ("python3", {"kind": "batch"}), ("pkexec", {"kind": "unmount", "directory": str(self.mounts / "d")}),
+                                ("umount", {"kind": "unmount", "directory": str(self.mounts / "d")}), ("mount", {"kind": "partition", "device": "/dev/sda2", "filesystem": "hfs", "backend": "kernel"}),
+                                ("apfs-fuse", {"kind": "partition", "device": "/dev/sda2", "filesystem": "apfs", "backend": "apfs-fuse", "volume_index": 0})):
+            hidden = self.fx.bin / f"{tool}.hidden"
+            (self.fx.bin / tool).rename(hidden)
+            self.refused("mount_plan", arguments, f"{tool} was not found in ")
+            hidden.rename(self.fx.bin / tool)
 
-    def test_explicit_tool_paths_must_be_executable_files(self):
-        self.refused("mount_plan", {"kind": "batch", "apfs_fuse": "relative"}, "absolute path")
-        self.refused("mount_plan", {"kind": "batch", "apfs_fuse": "/nonexistent/apfs-fuse"}, "not an executable file")
-        self.refused("mount_plan", {"kind": "batch", "apfs_fuse": f"{self.fx.bin}/../bin/apfs-fuse"}, "without '..'")
-        self.refused("mount_plan", {"kind": "batch", "apfsutil": str(self.fx.root)}, "not an executable file")
-        custom = self.fx.executable("apfs-fuse-custom", "")
-        self.assertTrue(self.plan(kind="batch", apfs_fuse=str(custom))["commands"][0]["argv"][6].endswith("/apfs-fuse-custom"))
+    def test_caller_supplied_tool_paths_are_rejected_as_unknown_arguments(self):
+        evil = self.fx.data / "prefixes/default/evil"
+        evil.parent.mkdir(parents=True)
+        evil.write_text("#!/bin/sh\n")
+        evil.chmod(0o755)
+        for name in ("apfs_fuse", "apfsutil", "pkexec", "python"):
+            for kind in ("batch", "cryptex", "partition", "unmount"):
+                self.refused("mount_plan", {"kind": kind, name: str(evil)}, "unknown argument")
+        self.never_ran()
+
+    def test_system_tools_must_be_root_owned_and_not_writable_in_the_whole_chain(self):
+        arguments = {"kind": "unmount", "directory": str(self.mounts / "d")}
+        tool = os.path.realpath(self.fx.bin / "pkexec")
+        for label, victim in (("the file", tool), ("the directory", str(self.fx.bin)), ("an ancestor", str(self.fx.root))):
+            self.not_root = {victim}
+            self.refused("mount_plan", arguments, "must be owned by root and not group- or world-writable")
+            self.not_root = set()
+            self.writable = {victim}
+            self.refused("mount_plan", arguments, "must be owned by root and not group- or world-writable")
+            self.writable = set()
+        self.plan(**arguments)
+
+    def test_a_symlink_in_a_system_directory_is_judged_by_its_target(self):
+        guest = self.fx.data / "prefixes/default/evil"
+        guest.parent.mkdir(parents=True)
+        guest.write_text("#!/bin/sh\n")
+        guest.chmod(0o755)
+        (self.fx.bin / "pkexec").unlink()
+        (self.fx.bin / "pkexec").symlink_to(guest)
+        self.not_root = {str(guest)}
+        self.refused("mount_plan", {"kind": "unmount", "directory": str(self.mounts / "d")}, "must be owned by root")
+
+    def test_system_tool_must_be_an_executable_file(self):
+        (self.fx.bin / "pkexec").chmod(0o644)
+        self.refused("mount_plan", {"kind": "unmount", "directory": str(self.mounts / "d")}, "is not an executable file")
+
+    def test_real_system_directories_pass_the_ownership_rule(self):
+        with patch.multiple(mcp, TRUSTED_DIRECTORIES=("/usr/local/bin", "/usr/bin"), LSTAT=os.lstat):
+            if not os.path.lexists("/usr/bin/sh"):
+                self.skipTest("no /usr/bin/sh")
+            self.assertTrue(os.path.isfile(mcp.system_tool("sh")))
+            with self.assertRaises(mcp.ToolError):
+                mcp.system_tool("definitely-not-installed-xyz")
 
     def test_no_tool_ever_runs_pkexec_or_sudo(self):
         fx = self.fx

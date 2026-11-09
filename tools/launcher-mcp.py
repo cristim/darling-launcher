@@ -47,9 +47,9 @@ NAME_RE = re.compile(r"^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._ +-]{0,127}$")
 TAG_RE = re.compile(r"^v(\d{4})\.(\d\d)\.(\d\d)-([0-9a-f]{7})(?:-r(\d+))?$")
 DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9_/-]+$")
 MOUNT_PLAN_ARGUMENTS = {
-    "batch": {"mount_root", "apfs_fuse", "apfsutil"},
-    "cryptex": {"mount_root", "apfs_fuse", "device"},
-    "partition": {"device", "filesystem", "backend", "volume_index", "directory", "apfs_fuse"},
+    "batch": {"mount_root"},
+    "cryptex": {"mount_root", "device"},
+    "partition": {"device", "filesystem", "backend", "volume_index", "directory"},
     "unmount": {"directory"},
 }
 
@@ -288,12 +288,33 @@ def resolve_under(root, value, label, allow_root):
     return Path(root_real).joinpath(*relative)
 
 
-def executable_path(value, label):
-    if not isinstance(value, str) or not value.startswith("/") or len(value) > 1024 or not control_free(value) or ".." in value.split("/"):
-        raise ToolError(f"{label} must be an absolute path without '..'")
-    if not os.path.isfile(value) or not os.access(value, os.X_OK):
-        raise ToolError(f"{label} is not an executable file: {value}")
-    return value
+TRUSTED_DIRECTORIES = ("/usr/local/bin", "/usr/bin")
+LSTAT = os.lstat  # replaced by the tests, which cannot create root-owned files
+
+
+def check_root_chain(path):
+    """The file and every ancestor must be owned by root and not group- or world-writable (symlink modes are ignored)."""
+    current = Path("/")
+    for part in [""] + list(Path(path).parts[1:]):
+        current = current / part
+        info = LSTAT(current)
+        if info.st_uid != 0 or (not stat.S_ISLNK(info.st_mode) and info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            raise ToolError(f"{current} must be owned by root and not group- or world-writable")
+
+
+def system_tool(name):
+    """Finds a helper only in fixed root-owned system directories. A path supplied by the client, or a binary a guest
+    could have written, never ends up in a command the user is told to run as root. Mirrors tools/mount-cryptex.py."""
+    for directory in TRUSTED_DIRECTORIES:
+        candidate = os.path.join(directory, name)
+        if os.path.lexists(candidate):
+            resolved = os.path.realpath(candidate)
+            check_root_chain(os.path.normpath(candidate))
+            check_root_chain(resolved)
+            if not stat.S_ISREG(os.stat(resolved).st_mode) or not os.access(resolved, os.X_OK):
+                raise ToolError(f"{resolved} is not an executable file")
+            return resolved
+    raise ToolError(f"{name} was not found in {' or '.join(TRUSTED_DIRECTORIES)}; install it there as root")
 
 
 def child_env(extra=None):
@@ -792,21 +813,6 @@ def build_tools(server):
             raise ToolError(f"argument(s) {', '.join(extra)} are not used by kind {kind!r}; it takes {', '.join(sorted(MOUNT_PLAN_ARGUMENTS[kind]))}")
         warnings, commands = [], []
         tools_dir = Path(os.path.realpath(__file__)).parent
-        python = find_tool("python3") or "/usr/bin/python3"
-        pkexec = find_tool("pkexec")
-        if not pkexec:
-            warnings.append("pkexec was not found on PATH; install polkit before running these commands")
-        pkexec = pkexec or "/usr/bin/pkexec"
-
-        def apfs_fuse(required):
-            if "apfs_fuse" in args:
-                return executable_path(args["apfs_fuse"], "apfs_fuse")
-            found = find_tool("apfs-fuse")
-            if not found and required:
-                raise ToolError("apfs-fuse was not found on PATH; install it or pass apfs_fuse")
-            if not found:
-                warnings.append("apfs-fuse was not found on PATH; APFS partitions will report an error")
-            return found
 
         def directory_warnings(path, must_be_empty):
             if not path.exists():
@@ -817,16 +823,9 @@ def build_tools(server):
         if kind in ("batch", "cryptex"):
             root = resolve_under(config.mount_root, args.get("mount_root", str(config.mount_root)), "mount_root", True)
             script = tools_dir / ("mount-macos.py" if kind == "batch" else "mount-cryptex.py")
-            argv = [python, "-I", str(script), "--mount-root", str(root)]
-            fuse = apfs_fuse(kind == "cryptex")
-            if fuse:
-                argv += ["--apfs-fuse", fuse]
+            argv = [system_tool("python3"), "-I", str(script), "--mount-root", str(root), "--apfs-fuse", system_tool("apfs-fuse")]
             if kind == "batch":
-                utility = executable_path(args["apfsutil"], "apfsutil") if "apfsutil" in args else find_tool("apfsutil")
-                if utility:
-                    argv += ["--apfsutil", utility]
-                else:
-                    warnings.append("apfsutil was not found on PATH; APFS partitions will report an error")
+                argv += ["--apfsutil", system_tool("apfsutil")]
                 description = "Mount every detected macOS partition read-only. The script asks for one pkexec authorization itself; run it in a desktop terminal."
             else:
                 if "device" in args:
@@ -853,18 +852,18 @@ def build_tools(server):
             directory_warnings(directory, True)
             options = f"ro,nodev,nosuid,noexec,uid={os.getuid()},gid={os.getgid()}"
             if backend == "apfs-fuse":
-                argv = [pkexec, apfs_fuse(True), "-v", str(args["volume_index"]), "-o", options + ",allow_other", device, str(directory)]
+                argv = [system_tool("pkexec"), system_tool("apfs-fuse"), "-v", str(args["volume_index"]), "-o", options + ",allow_other", device, str(directory)]
             else:
                 if filesystem == "apfs":
                     options += f",vol={args['volume_index']}"
-                argv = [pkexec, find_tool("mount") or "/usr/bin/mount", "-i", "-t", filesystem, "-o", options, "--", device, str(directory)]
+                argv = [system_tool("pkexec"), system_tool("mount"), "-i", "-t", filesystem, "-o", options, "--", device, str(directory)]
             commands.append({"description": f"Mount {device} read-only at {directory} (nodev, nosuid, noexec).", "run_as": "root via pkexec", "argv": argv})
         else:
             if "directory" not in args:
                 raise ToolError("kind 'unmount' needs directory")
             directory = resolve_under(config.mount_root, args["directory"], "directory", False)
             directory_warnings(directory, False)
-            commands.append({"description": f"Unmount {directory}.", "run_as": "root via pkexec", "argv": [pkexec, find_tool("umount") or "/usr/bin/umount", "--", str(directory)]})
+            commands.append({"description": f"Unmount {directory}.", "run_as": "root via pkexec", "argv": [system_tool("pkexec"), system_tool("umount"), "--", str(directory)]})
         for command in commands:
             command["shell"] = shlex.join(command["argv"])
         data = {"kind": kind, "executed": False, "commands": commands, "warnings": warnings}
@@ -901,16 +900,15 @@ def build_tools(server):
         Tool("mount_plan", "Plan a macOS volume mount",
              read_only_note + "Returns, and never runs, the exact command line the launcher would use so the USER can run it: kind 'batch' (mount all detected partitions), "
              "'partition' (one partition with pkexec mount or apfs-fuse), 'cryptex' (Preboot plus os.dmg) or 'unmount'. All mounts are read-only with nodev, nosuid and "
-             "noexec. This server never calls sudo or pkexec. Directories must be inside the launcher mount root; any other argument is rejected.",
+             "noexec. This server never calls sudo or pkexec. Helper programs (pkexec, mount, umount, python3, apfs-fuse, apfsutil) are only taken from root-owned "
+             "files in /usr/local/bin or /usr/bin and cannot be chosen by the caller. Directories must be inside the launcher mount root; any other argument is rejected.",
              {"kind": {"type": "string", "enum": list(MOUNT_PLAN_ARGUMENTS)},
               "mount_root": {"type": "string", "maxLength": 1024, "description": "kinds batch, cryptex: mount root, default the launcher mount root."},
               "device": {"type": "string", "maxLength": 256, "description": "kinds partition, cryptex: block device such as /dev/nvme0n1p5."},
               "filesystem": {"type": "string", "enum": ["apfs", "hfs", "hfsplus"], "description": "kind partition."},
               "backend": {"type": "string", "enum": ["kernel", "apfs-fuse"], "description": "kind partition."},
               "volume_index": {"type": "integer", "minimum": 0, "maximum": 99, "description": "kind partition: APFS container volume index (required for apfs)."},
-              "directory": {"type": "string", "maxLength": 1024, "description": "kinds partition (mount directory) and unmount (directory to unmount), inside the mount root."},
-              "apfs_fuse": {"type": "string", "maxLength": 1024, "description": "Absolute path of apfs-fuse; default: found on PATH."},
-              "apfsutil": {"type": "string", "maxLength": 1024, "description": "kind batch: absolute path of apfsutil; default: found on PATH."}},
+              "directory": {"type": "string", "maxLength": 1024, "description": "kinds partition (mount directory) and unmount (directory to unmount), inside the mount root."}},
              ["kind"], mount_plan, True, {"executed": {"type": "boolean"}, "commands": {"type": "array"}, "warnings": {"type": "array"}}),
         Tool("launch_app", "Launch imported app",
              disabled_note + "Starts an imported app through the prefix's darling binary like the launcher's Launch button "
