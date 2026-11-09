@@ -120,6 +120,8 @@ QString passwdHome() {
     return QDir::cleanPath(QString::fromLocal8Bit(entry.pw_dir));
 }
 
+QString launcherPython() { return QStringLiteral(LAUNCHER_PYTHON); }
+
 QString trustedFile(const QString &path, unsigned extraOwner, bool executable, QString *error) {
     const QString resolved = QDir::isAbsolutePath(path) ? QFileInfo(path).canonicalFilePath() : QString();
     if (resolved.isEmpty()) { fail(error, "Required file is missing or not an absolute path: " + path); return {}; }

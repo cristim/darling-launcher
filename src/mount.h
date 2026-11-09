@@ -23,6 +23,8 @@ bool makeCommand(const MacPartition &partition, const QString &directory, MountB
                  const QString &mountTool, MountCommand *command, QString *error);
 // Canonical path of a regular file (executable when asked) whose whole resolved path only root, or extraOwner
 // when non-zero, can change; empty with error set otherwise.
+// The interpreter root runs through pkexec, chosen and validated at configure time (cmake/SelectPython.cmake).
+QString launcherPython();
 QString trustedFile(const QString &path, unsigned extraOwner, bool executable, QString *error);
 // The cryptex script and its sibling mount-macos.py must both pass trustedFile; root loads them both.
 bool trustedCryptexScript(const QString &script, unsigned extraOwner, QString *error);

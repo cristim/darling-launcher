@@ -225,7 +225,13 @@ filesystem metadata are private local data and are not uploaded.
 **Settings → Mount macOS source… → Mount cryptex OS (Preboot + os.dmg)** runs
 `tools/mount-cryptex.py`, which automates two read-only mounts.
 
-**Install first.** The scripts need Python 3.8 or newer. Root runs the script, so the launcher only uses a copy that only root
+**Install first.** The scripts need Python 3.8 or newer, and root runs them with an interpreter that the launcher
+picks when CMake configures it: the first of `/usr/bin/python3`, the interpreter `find_package(Python3)`
+found, `/usr/local/bin/python3`, then `/usr/bin/python3.8` to `/usr/bin/python3.20` that is root-owned along its
+whole path (a symlink needs root ownership and a trusted target), not group- or world-writable, runs, and
+reports 3.8 or newer. That path is baked in; PATH and home-directory interpreters are never used, and
+configuration fails with the list of candidates tried if none qualifies. `-DLAUNCHER_PYTHON=<path>` picks one
+explicitly and is validated by the same rule. The dialog and the script re-check it at run time. Root runs the script, so the launcher only uses a copy that only root
 can change. `sudo cmake --install <build directory>` puts `mount-cryptex.py` and its helper
 `mount-macos.py` (only those) into `<libexecdir>/darling-launcher` (default
 `/usr/local/libexec/darling-launcher`; `-DLAUNCHER_MOUNT_CRYPTEX_SCRIPT=<path>` moves it).

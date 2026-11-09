@@ -6,6 +6,26 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Test Concurrent)
 find_package(PkgConfig REQUIRED)
+# The mount scripts need Python 3.8 (MINIMUM_PYTHON in tools/mount-cryptex.py). Root runs the interpreter chosen
+# here through pkexec, so it must be root-owned like the scripts; a find_package result is only a candidate.
+# -DLAUNCHER_PYTHON=<path> picks one explicitly and is validated by the same rule.
+include(cmake/SelectPython.cmake)
+find_package(Python3 3.8 QUIET COMPONENTS Interpreter)
+set(LAUNCHER_PYTHON "" CACHE FILEPATH "Trusted Python 3.8+ run as root through pkexec (default: chosen automatically)")
+set(LAUNCHER_PYTHON_CANDIDATES /usr/bin/python3)
+if(Python3_FOUND)
+    list(APPEND LAUNCHER_PYTHON_CANDIDATES "${Python3_EXECUTABLE}")
+endif()
+list(APPEND LAUNCHER_PYTHON_CANDIDATES /usr/local/bin/python3)
+foreach(minor RANGE 8 20)
+    list(APPEND LAUNCHER_PYTHON_CANDIDATES /usr/bin/python3.${minor})
+endforeach()
+launcher_select_python(LAUNCHER_PYTHON_EXECUTABLE LAUNCHER_PYTHON_ERROR OVERRIDE "${LAUNCHER_PYTHON}" MINIMUM 3.8
+                       CANDIDATES ${LAUNCHER_PYTHON_CANDIDATES})
+if(LAUNCHER_PYTHON_ERROR)
+    message(FATAL_ERROR "${LAUNCHER_PYTHON_ERROR}")
+endif()
+message(STATUS "Root-run Python: ${LAUNCHER_PYTHON_EXECUTABLE}")
 include(GNUInstallDirs)
 # Root runs the cryptex mount script through pkexec, so it is installed root-owned (sudo cmake --install) and the
 # launcher refuses any other location. -DLAUNCHER_MOUNT_CRYPTEX_SCRIPT=... moves it; install() follows.
@@ -17,6 +37,7 @@ get_filename_component(LAUNCHER_MOUNT_CRYPTEX_NAME "${LAUNCHER_MOUNT_CRYPTEX_SCR
 pkg_check_modules(PLIST REQUIRED IMPORTED_TARGET libplist-2.0)
 add_library(launcher_core src/log.cpp src/core.cpp src/mount.cpp src/prefixbuilder.cpp src/discovery.cpp src/sources.cpp)
 target_include_directories(launcher_core PUBLIC src)
+target_compile_definitions(launcher_core PRIVATE LAUNCHER_PYTHON="${LAUNCHER_PYTHON_EXECUTABLE}")
 target_link_libraries(launcher_core PUBLIC Qt6::Core PkgConfig::PLIST)
 add_executable(darling-launcher src/main.cpp src/window.cpp src/mountdialog.cpp src/appbrowser.cpp src/prefixdialog.cpp src/troubleshooting.cpp)
 target_link_libraries(darling-launcher PRIVATE launcher_core Qt6::Widgets Qt6::Concurrent)
@@ -31,6 +52,7 @@ add_executable(launcher-mount-tests tests/mount_test.cpp)
 target_link_libraries(launcher-mount-tests PRIVATE launcher_core Qt6::Test)
 target_compile_definitions(launcher-mount-tests PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME launcher-mount-tests COMMAND launcher-mount-tests -nocrashhandler)
+set_tests_properties(launcher-mount-tests PROPERTIES ENVIRONMENT "LAUNCHER_EXPECTED_PYTHON=${LAUNCHER_PYTHON_EXECUTABLE}")
 add_executable(launcher-prefix-tests tests/prefix_test.cpp)
 target_link_libraries(launcher-prefix-tests PRIVATE launcher_core Qt6::Test)
 target_compile_definitions(launcher-prefix-tests PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
@@ -46,11 +68,11 @@ add_test(NAME launcher-troubleshooting-tests COMMAND launcher-troubleshooting-te
 set_tests_properties(launcher-troubleshooting-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 set_tests_properties(launcher-tests launcher-mount-tests launcher-prefix-tests launcher-gui-tests PROPERTIES TIMEOUT 240)
 
-# The mount scripts need Python 3.8 (MINIMUM_PYTHON in tools/mount-cryptex.py).
-find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
-add_test(NAME launcher-mount-script-tests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/mount_script_test.py)
+add_test(NAME launcher-mount-script-tests COMMAND ${LAUNCHER_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/mount_script_test.py)
 set_tests_properties(launcher-mount-script-tests PROPERTIES TIMEOUT 30)
-add_test(NAME launcher-cryptex-script-tests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cryptex_script_test.py)
+add_test(NAME launcher-python-selection-tests COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/select_python_test.cmake)
+set_tests_properties(launcher-python-selection-tests PROPERTIES TIMEOUT 60 FAIL_REGULAR_EXPRESSION "FAILED:")
+add_test(NAME launcher-cryptex-script-tests COMMAND ${LAUNCHER_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cryptex_script_test.py)
 set_tests_properties(launcher-cryptex-script-tests PROPERTIES TIMEOUT 30)
 
 qt_add_resources(darling-launcher runtime_builder PREFIX "/launcher" FILES tools/all-vibedarling-pr-prefix.py)
