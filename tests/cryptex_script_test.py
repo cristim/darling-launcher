@@ -76,16 +76,37 @@ class DiscoveryTest(unittest.TestCase):
         self.assertEqual(self.find(lsblk(("/dev/sda2", [])), {"/dev/sda2": moved}), ("/dev/sda2", 5))
 
     def test_no_preboot_is_refused(self):
-        with self.assertRaisesRegex(ValueError, "No unmounted"):
+        with self.assertRaisesRegex(ValueError, "No APFS partition"):
             self.find(lsblk(("/dev/sda2", [])), {"/dev/sda2": OTHER})
-        with self.assertRaisesRegex(ValueError, "No unmounted"):
+        with self.assertRaisesRegex(ValueError, "No APFS partition"):
             self.find({"blockdevices": []}, {})
 
     def test_mounted_partitions_are_skipped(self):
-        with self.assertRaisesRegex(ValueError, "No unmounted"):
+        with self.assertRaisesRegex(ValueError, "No APFS partition"):
             self.find(lsblk(("/dev/sda2", ["/mnt"])), {"/dev/sda2": LIST})
-        with self.assertRaisesRegex(ValueError, "No unmounted"):
+        with self.assertRaisesRegex(ValueError, "No APFS partition"):
             self.find(lsblk(("/dev/sda2", [])), {"/dev/sda2": LIST}, existing=[{"source": "/dev/sda2", "target": "/x"}])
+
+    def test_other_volumes_mounted_by_apfs_fuse_do_not_hide_the_partition(self):
+        inventory = lsblk(("/dev/sda2", ["/home/me/mounts/sda2-volume-1"]))
+        for fstype in ("fuse", "fuse.apfs-fuse"):
+            for source in ("/dev/sda2", "apfs-fuse"):
+                records = [{"source": source, "target": "/home/me/mounts/sda2-volume-1", "fstype": fstype}]
+                self.assertEqual(self.find(inventory, {"/dev/sda2": LIST}, existing=records), ("/dev/sda2", 3), (fstype, source))
+        self.assertEqual(self.find(lsblk(("/dev/sda2", [])), {"/dev/sda2": LIST}, existing=[{"source": "/dev/sda2", "target": "/x", "fstype": "fuse"}]), ("/dev/sda2", 3))
+
+    def test_partitions_held_by_another_driver_are_refused(self):
+        cases = {
+            "kernel apfs": (lsblk(("/dev/sda2", ["/mnt/mac"])), [{"source": "/dev/sda2", "target": "/mnt/mac", "fstype": "apfs"}]),
+            "ext4": (lsblk(("/dev/sda2", ["/mnt/data"])), [{"source": "/dev/sda2", "target": "/mnt/data", "fstype": "ext4"}]),
+            "fuseblk": (lsblk(("/dev/sda2", ["/mnt/x"])), [{"source": "/dev/sda2", "target": "/mnt/x", "fstype": "fuseblk"}]),
+            "record without a type": (lsblk(("/dev/sda2", [])), [{"source": "/dev/sda2", "target": "/mnt/x"}]),
+            "lsblk mount point the table cannot explain": (lsblk(("/dev/sda2", ["/mnt/ghost"])), []),
+            "fuse volume plus a kernel mount": (lsblk(("/dev/sda2", ["/a", "/b"])), [{"source": "apfs-fuse", "target": "/a", "fstype": "fuse"}, {"source": "/dev/sda2", "target": "/b", "fstype": "apfs"}]),
+        }
+        for name, (inventory, records) in cases.items():
+            with self.assertRaisesRegex(ValueError, "No APFS partition", msg=name):
+                self.find(inventory, {"/dev/sda2": LIST}, existing=records)
 
     def test_ambiguity_is_refused_unless_pinned(self):
         inventory, listings = lsblk(("/dev/sda2", []), ("/dev/sdb2", [])), {"/dev/sda2": LIST, "/dev/sdb2": LIST}
@@ -135,7 +156,7 @@ class DiscoveryTest(unittest.TestCase):
 
     def test_inventory_without_type_information_is_refused(self):
         untyped = {"blockdevices": [{"path": "/dev/sda", "children": [{"path": "/dev/sda2", "fstype": "apfs"}]}]}
-        with self.assertRaisesRegex(ValueError, "No unmounted"):
+        with self.assertRaisesRegex(ValueError, "No APFS partition"):
             cryptex.find_preboot(untyped, lambda argv: LIST, "/util", [], lambda _: None)
 
     def test_os_dmg_uuid_discovery(self):
@@ -424,6 +445,7 @@ class MountTest(unittest.TestCase):
         self.root_owned = fake_lstat()
         self.acls = {}
         self.umount_error = False
+        self.lsblk_mountpoints = []
         self.trusted = ("/usr/local/bin/apfs-fuse", "/usr/local/bin/apfsutil")
         self.calls, self.records, self.events = [], [], []
         self.gid = os.getgid()
@@ -434,7 +456,7 @@ class MountTest(unittest.TestCase):
     def fake_run(self, argv):
         self.calls.append(argv)
         if argv[0] == "/usr/bin/lsblk":
-            return json.dumps(lsblk(("/dev/synthetic2", [])))
+            return json.dumps(lsblk(("/dev/synthetic2", self.lsblk_mountpoints)))
         if argv[0] == "/usr/bin/findmnt":
             return json.dumps({"filesystems": self.records})
         if argv[0] == self.trusted[1]:
@@ -537,15 +559,12 @@ class MountTest(unittest.TestCase):
         self.assertEqual(list(real.iterdir()), [])
         self.assertFalse(any(c[0] == self.trusted[0] for c in self.calls))
 
-    def test_non_empty_or_mounted_preboot_directory_is_refused(self):
+    def test_non_empty_unmounted_preboot_directory_is_refused(self):
         self.preboot_dir.mkdir(parents=True)
         (self.preboot_dir / "leftover").write_text("x")
         with self.assertRaisesRegex(ValueError, "not empty"):
             self.preboot()
-        (self.preboot_dir / "leftover").unlink()
-        self.records.append({"target": str(self.preboot_dir)})
-        with self.assertRaisesRegex(ValueError, "already mounted"):
-            self.preboot()
+        self.assertFalse(any(c[0] == self.trusted[0] for c in self.calls))
 
     def test_caller_acl_bytes_are_exactly_root_rwx_caller_x_nobody_else(self):
         undefined = 0xFFFFFFFF
@@ -589,12 +608,29 @@ class MountTest(unittest.TestCase):
     def umount_path(self):
         return os.path.realpath(cryptex.UMOUNT)
 
-    def test_alive_preboot_mount_is_never_mounted_over(self):
+    def test_alive_preboot_mount_is_reused_not_mounted_over(self):
         self.preboot_dir.mkdir(parents=True)
-        self.records.append({"source": "/dev/synthetic2", "target": str(self.preboot_dir)})
-        with patch.object(cryptex, "mount_state", return_value="alive"), self.assertRaisesRegex(ValueError, "already mounted"):
+        self.records.append({"source": "/dev/synthetic2", "target": str(self.preboot_dir), "fstype": "fuse"})
+        with patch.object(cryptex, "mount_state", return_value="alive"):
+            destination = self.preboot()
+        self.assertEqual(destination, self.preboot_dir)
+        self.assertEqual(self.events, [{"event": "mounted", "role": "preboot", "path": str(self.preboot_dir), "device": "/dev/synthetic2"}])
+        self.assertFalse(any(c[0] in (self.trusted[0], self.trusted[1], self.umount_path()) for c in self.calls))
+
+    def test_batch_mounted_sibling_volume_does_not_block_the_preboot_mount(self):
+        sibling = self.home / "mounts/synthetic2-volume-1"
+        self.records.append({"source": "/dev/synthetic2", "target": str(sibling), "fstype": "fuse"})
+        self.lsblk_mountpoints = [str(sibling)]
+        destination = self.preboot()
+        self.assertTrue(any(c[0] == self.trusted[0] for c in self.calls))
+        self.assertEqual(self.events[-1]["path"], str(destination))
+
+    def test_kernel_mounted_partition_blocks_the_preboot_mount(self):
+        self.records.append({"source": "/dev/synthetic2", "target": "/mnt/mac", "fstype": "apfs"})
+        self.lsblk_mountpoints = ["/mnt/mac"]
+        with self.assertRaisesRegex(ValueError, "No APFS partition"):
             self.preboot()
-        self.assertFalse(any(c[0] in (self.trusted[0], self.umount_path()) for c in self.calls))
+        self.assertFalse(any(c[0] == self.trusted[0] for c in self.calls))
 
     def test_dead_preboot_mount_is_unmounted_before_the_device_is_searched(self):
         self.preboot_dir.mkdir(parents=True)
