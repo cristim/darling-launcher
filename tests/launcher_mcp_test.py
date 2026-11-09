@@ -521,6 +521,28 @@ class RedactionTest(ToolTestCase):
         self.assertEqual(mcp.Redactor("/root").text("/root/x and root"), "~/x and root")
         self.assertEqual(mcp.Redactor("/home/a").text("a /home/a"), "a ~")
 
+    def test_encoding_and_case_do_not_defeat_path_redaction(self):
+        redactor = mcp.Redactor("/home/alice")
+        for leaked in ("%2Fhome%2Falice%2Fx", "%2fhome%2falice", "/HOME/alice/x", "/Home/Alice", "%252Fhome%252Falice%252Fx", "/home/alice", "/HOME/ALICE/x"):
+            text = redactor.text(f"see {leaked} now")
+            self.assertNotRegex(text, r"(?i)alice")
+            self.assertTrue(text.startswith("see ") and text.endswith(" now"), text)
+
+    def test_labelled_secrets_are_redacted_whole_whatever_they_contain(self):
+        redactor = mcp.Redactor("/home/alice")
+        for secret_text in ("password=ab!cdefgh", "PASSWORD: s3cr3t!!", "Authorization: Basic dXNlcjpwYXNzd29yZA==", "authorization=Bearer abc.def", "token=a b",
+                            'token: "two words"', "{\"password\": \"hunter 2\"}", "api_key=AbC/+=", "Secret = 'x y z'", "passwd=ab", "password%3Dhunter2xyz",
+                            "basic dXNlcjpwYXNz", "BEARER abcdef12345", "x-api-key: abc123def"):
+            text = redactor.text(f"before {secret_text} after")
+            self.assertIn("<redacted>", text, secret_text)
+            for fragment in ("ab!cdefgh", "s3cr3t", "dXNlcjpw", "abc.def", "two words", "hunter", "AbC/+=", "x y z", "ab ", "abcdef12345", "abc123def"):
+                self.assertNotIn(fragment, text, secret_text)
+
+    def test_ordinary_text_is_left_alone(self):
+        redactor = mcp.Redactor("/home/alice")
+        for plain in ("100% done", "tokens are fine", "the password field", "/dev/sda1 mounted", "path /home/ and 50%2 left", "basically fine"):
+            self.assertEqual(redactor.text(plain), plain)
+
     def test_a_user_name_is_only_redacted_as_a_home_path_component(self):
         redactor = mcp.Redactor("/home/dev")
         self.assertEqual(redactor.text("/dev/sda1 mounted by dev at /home/dev/x and /home/other/y"), "/dev/sda1 mounted by dev at ~/x and /home/<user>/y")
@@ -531,7 +553,7 @@ class RedactionTest(ToolTestCase):
 FAKE_DARLING = """touch "$(dirname "$0")/ran"
 case "$1" in
   exec)
-    echo "exec $2 prefix=$DPREFIX install=$DARLING_INSTALL_PREFIX token=$GITHUB_TOKEN dyld=$DYLD_LIBRARY_PATH"
+    echo "exec $2 prefix=$DPREFIX install=$DARLING_INSTALL_PREFIX leak_a=$GITHUB_TOKEN leak_b=$DYLD_LIBRARY_PATH"
     case "$2" in *Slow*) sleep 2;; *Fail*) echo "boom" >&2; exit 7;; esac ;;
   shutdown)
     echo "shutdown prefix=$DPREFIX"
@@ -593,13 +615,13 @@ class ActionToolsTest(unittest.TestCase):
         self.assertEqual(data["exit_code"], 0)
         prefix = self.fx.data / "prefixes/default"
         self.assertIn("exec /Applications/Calc.app/Contents/MacOS/Calculator prefix=~/.darling-launcher/prefixes/default install=", data["output"])
-        self.assertIn("/runtime token= dyld=", data["output"])
+        self.assertIn("/runtime leak_a= leak_b=", data["output"])
         self.assertNotIn("sekrit", json.dumps(data))
         self.assertEqual(self.ok("launch_app", {"prefix": str(prefix), "app": "Applications/Calc.app", "confirm": True, "wait_seconds": 0})["bundle"], "Applications/Calc.app")
 
     def test_launch_without_runtime_root_leaves_install_prefix_unset(self):
         data = self.ok("launch_app", {"prefix": "default", "app": "Calc", "confirm": True})
-        self.assertIn("install= token=", data["output"])
+        self.assertIn("install= leak_a=", data["output"])
 
     def test_launch_output_is_logged_and_nonzero_exit_reported(self):
         data = self.ok("launch_app", {"prefix": "default", "app": "Fail", "confirm": True})

@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 
 SERVER_NAME = "darling-launcher-mcp"
 SERVER_VERSION = "0.1.0"
@@ -124,7 +125,9 @@ class Redactor:
         re.compile(r"AKIA[0-9A-Z]{16}"),
         re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}"),
     ]
-    LABELLED = re.compile(r"(?i)\b((?:bearer|api[_-]?key|token|secret|password|passwd)\s*[=:]?\s*)(?!<redacted>)[A-Za-z0-9._~+/=-]{6,}")
+    SCHEME = re.compile(r"(?i)\b(bearer|basic)\s+(?!<redacted>)[^\s\"']+")
+    LABELLED = re.compile(r"""(?i)\b(api[_-]?key|access[_-]?key|token|secret|password|passwd|authorization)\b(["']?\s*[=:]\s*)(?!<redacted>)(?:"[^"]*"|'[^']*'|[^\s"']+)""")
+    GENERIC_HOME = re.compile(r"(?i)/(home|Users|run/media)/[^/\s\"']+")
 
     def __init__(self, home):
         homes = {str(home)}
@@ -132,16 +135,29 @@ class Redactor:
             homes.add(os.path.realpath(home))
         except OSError:
             pass
-        self.homes = [re.compile(re.escape(h) + r"(?![A-Za-z0-9_.-])") for h in sorted(homes, key=len, reverse=True) if h not in ("", "/")]
+        self.homes = [re.compile(re.escape(h) + r"(?![A-Za-z0-9_.-])", re.IGNORECASE) for h in sorted(homes, key=len, reverse=True) if h not in ("", "/")]
 
-    def text(self, value):
+    def scrub(self, value):
         for pattern in self.TOKENS:
             value = pattern.sub("<redacted>", value)
-        value = self.LABELLED.sub(r"\1<redacted>", value)
+        value = self.SCHEME.sub(r"\1 <redacted>", value)
+        value = self.LABELLED.sub(r"\1\2<redacted>", value)
         for pattern in self.homes:
             value = pattern.sub("~", value)
-        value = re.sub(r"/(home|Users|run/media)/[^/\s\"']+", r"/\1/<user>", value)
-        return value
+        return self.GENERIC_HOME.sub(lambda m: f"/{m.group(1)}/<user>", value)
+
+    def text(self, value):
+        """Scrubs value, and its percent-decoded forms (also double-encoded), so %2Fhome%2Fme and password%3Dx do not slip through."""
+        result = self.scrub(value)
+        decoded = value
+        for _ in range(2):
+            if "%" not in decoded:
+                break
+            decoded = urllib.parse.unquote(decoded)
+            scrubbed = self.scrub(decoded)
+            if scrubbed != decoded:
+                return scrubbed
+        return result
 
     def obj(self, value, keep=()):
         """Redacts every string except the values of dict keys named in keep (user-local, copy-paste material)."""
