@@ -6,6 +6,7 @@
 #include <QCryptographicHash>
 #include "core.h"
 #include "discovery.h"
+#include "launchenv.h"
 #include <QComboBox>
 #include <QCheckBox>
 #include <QDir>
@@ -112,7 +113,7 @@ void FixVerifier::start() {
     const QString prefix = diagnostic.value("prefix").toString(), bundle = diagnostic.value("bundle").toString(), executable = diagnostic.value("executable").toString();
     if (!QFileInfo(prefix).isDir() || bundle.isEmpty() || executable.isEmpty()) { finish(false, "The failed app or its prefix is no longer available."); return; }
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    for (const auto &name : env.keys()) if (name.startsWith("DYLD_")) env.remove(name);
+    QString ignored; LaunchEnv::guestEnvironment(&env, QString(), QString(), &ignored); // no prefix: strips DYLD_* only, cannot fail
     env.insert("DPREFIX", prefix); env.insert("DARLING_INSTALL_PREFIX", runtimeRoot);
     process.setProcessEnvironment(env);
     connect(&process, &QProcess::readyReadStandardOutput, this, [this] { output += QString::fromLocal8Bit(process.readAllStandardOutput()); });
