@@ -288,10 +288,11 @@ LSBLK = ["/usr/bin/lsblk", "--json", "--output", "PATH,TYPE,FSTYPE,LABEL,MOUNTPO
 
 def real_apfs_partitions(inventory):
     """APFS partitions of real disks only. Root parses these, and anyone can attach a loop device holding a
-    crafted image, so loop (and any other non-disk) parents, and devices without a type, are never examined."""
+    crafted image, so loop (and any other non-disk) parents, and devices without a type, are never examined.
+    lsblk reports TYPE=loop for loop devices; the partition path test is kept because it names the node root parses."""
     result = []
     for disk in inventory.get("blockdevices", []):
-        if disk.get("type") != "disk" or disk.get("path", "").startswith("/dev/loop"):
+        if disk.get("type") != "disk":
             continue
         for partition in disk.get("children", []):
             if partition.get("type") == "part" and partition.get("fstype") == "apfs" and not partition.get("path", "").startswith("/dev/loop"):
