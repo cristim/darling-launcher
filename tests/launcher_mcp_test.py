@@ -359,6 +359,20 @@ class ReadOnlyToolsTest(ToolTestCase):
         (prefix / ".darling-launcher/catalog.json").write_text('{"apps": 3}')
         self.refused("list_apps", {"prefix": "empty"}, "no 'apps' list")
 
+    def test_one_deeply_nested_catalog_does_not_break_the_other_prefixes(self):
+        self.fx.prefix("good", [("Calc", "Calculator")])
+        bad = self.fx.prefix("bad")
+        (bad / ".darling-launcher/catalog.json").write_text("[" * 200000)
+        data = self.ok("list_prefixes")
+        by_name = {p["name"]: p for p in data["prefixes"]}
+        self.assertEqual(by_name["good"]["app_count"], 1)
+        self.assertEqual(by_name["good"]["catalog_problem"], "")
+        self.assertIn("nested too deeply", by_name["bad"]["catalog_problem"])
+        self.refused("list_apps", {"prefix": "bad"}, "nested too deeply")
+        (bad / ".darling-launcher/catalog.json").write_text('{"apps": ' + "[" * 100000 + "]" * 100000 + "}")
+        self.refused("list_apps", {"prefix": "bad"}, "nested too deeply")
+        self.assertEqual(len(self.ok("list_apps", {"prefix": "good"})["apps"]), 1)
+
     def test_catalog_symlinks_and_size_are_refused(self):
         prefix = self.fx.prefix("default")
         catalog = prefix / ".darling-launcher/catalog.json"
@@ -448,7 +462,10 @@ class ReadOnlyToolsTest(ToolTestCase):
     def test_tail_log_limits_and_sources(self):
         fx = self.fx
         (fx.data / "logs/launcher.log").write_text("".join(f"line {i}\n" for i in range(300)) + "x" * 5000 + "\n")
-        (fx.data / "logs/mcp-launch.log").write_text("launch output\n")
+        (fx.data / "logs/mcp-launch").mkdir()
+        (fx.data / "logs/mcp-launch/20260101T000000-aaaaaaaa.log").write_text("old launch\n")
+        (fx.data / "logs/mcp-launch/20260101T000001-bbbbbbbb.log").write_text("launch output\n")
+        (fx.data / "logs/mcp-launch/notes.txt").write_text("ignored\n")
         default = self.ok("tail_log")["lines"]
         self.assertEqual(len(default), 50)
         lines = self.ok("tail_log", {"lines": 3})["lines"]
@@ -619,7 +636,7 @@ FAKE_DARLING = """touch "$(dirname "$0")/ran"
 case "$1" in
   exec)
     echo "exec $2 prefix=$DPREFIX install=$DARLING_INSTALL_PREFIX leak_a=$GITHUB_TOKEN leak_b=$DYLD_LIBRARY_PATH"
-    case "$2" in *Slow*) sleep 2;; *Fail*) echo "boom" >&2; exit 7;; esac ;;
+    case "$2" in *Slow*) sleep 2; echo slow-late;; *Fail*) echo "boom" >&2; exit 7;; esac ;;
   shutdown)
     echo "shutdown prefix=$DPREFIX"
     case "$DPREFIX" in *hang*) sleep 1; touch "$(dirname "$0")/finished";; *broken*) echo "no such prefix" >&2; exit 4;; esac ;;
@@ -695,6 +712,53 @@ class ActionToolsTest(unittest.TestCase):
         lines = self.ok("tail_log", {"source": "mcp-launch"})["lines"]
         self.assertTrue(any("boom" in line for line in lines))
         self.assertTrue(any("[launch:Fail]" in line for line in lines))
+
+    def test_each_launch_has_its_own_log_and_never_shows_another_apps_output(self):
+        prefix = self.fx.data / "prefixes/default"
+        (prefix / "Applications/Slow.app/Contents/MacOS").mkdir(parents=True, exist_ok=True)
+        slow = self.ok("launch_app", {"prefix": "default", "app": "Slow", "confirm": True, "wait_seconds": 0})
+        calc = self.ok("launch_app", {"prefix": "default", "app": "Calc", "confirm": True})
+        self.assertNotEqual(slow["log_file"], calc["log_file"])
+        self.assertNotIn("Slow", calc["output"].split("\n", 1)[1])
+        self.fx.server.children[0].wait(timeout=10)
+        files = sorted(os.listdir(self.fx.data / "logs/mcp-launch"))
+        self.assertEqual(len(files), 2)
+        contents = {name: (self.fx.data / "logs/mcp-launch" / name).read_text() for name in files}
+        self.assertIn("slow-late", contents[slow["log_file"]])
+        self.assertNotIn("slow-late", contents[calc["log_file"]])
+        self.assertNotIn("Calculator", contents[slow["log_file"]])
+        self.assertEqual(oct(os.stat(self.fx.data / "logs/mcp-launch" / calc["log_file"]).st_mode & 0o777), "0o600")
+
+    def test_only_the_newest_launch_logs_are_kept(self):
+        directory = self.fx.data / "logs/mcp-launch"
+        directory.mkdir(parents=True)
+        for index in range(25):
+            (directory / f"20200101T0000{index:02d}-{index:08x}.log").write_text("old\n")
+        (directory / "keep-me.txt").write_text("not ours")
+        data = self.ok("launch_app", {"prefix": "default", "app": "Calc", "confirm": True})
+        names = sorted(n for n in os.listdir(directory) if n.endswith(".log"))
+        self.assertEqual(len(names), mcp.MAX_LAUNCH_LOGS)
+        self.assertEqual(names[-1], data["log_file"])
+        self.assertTrue((directory / "keep-me.txt").exists())
+        self.assertNotIn("20200101T000000-00000000.log", names)
+
+    def test_a_symlinked_launch_log_directory_is_refused_before_anything_starts(self):
+        outside = self.fx.root / "elsewhere"
+        outside.mkdir()
+        (self.fx.data / "logs").mkdir(exist_ok=True)
+        (self.fx.data / "logs/mcp-launch").symlink_to(outside)
+        self.refused("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}, "refusing symlink")
+        self.assertEqual(os.listdir(outside), [])
+        self.assertFalse(self.ran())
+
+    def test_symlinked_and_foreign_files_in_the_launch_log_directory_are_ignored(self):
+        directory = self.fx.data / "logs/mcp-launch"
+        directory.mkdir(parents=True)
+        secret = self.fx.root / "secret.txt"
+        secret.write_text("top secret\n")
+        (directory / "29990101T000000-deadbeef.log").symlink_to(secret)
+        (directory / "20260101T000000-aaaaaaaa.log").write_text("real\n")
+        self.assertEqual(self.ok("tail_log", {"source": "mcp-launch"})["lines"], ["real"])
 
     def test_a_running_app_is_reported_and_not_killed(self):
         data = self.ok("launch_app", {"prefix": "default", "app": "Slow", "confirm": True, "wait_seconds": 0})
