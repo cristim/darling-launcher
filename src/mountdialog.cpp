@@ -225,7 +225,7 @@ void MountDialog::mountSelected() {
     execute(command, false, partition.device);
 }
 void MountDialog::mountCryptex(const QString &requestedRoot, const QString &apfsFuse) {
-    const QString root = LauncherMount::resolveHomePrefix(requestedRoot, QDir::homePath());
+    const QString root = LauncherMount::resolveHomePrefix(requestedRoot, LauncherMount::passwdHome());
     const int selected = partitions->currentData().toInt();
     const QString device = selected >= 0 && selected < detected.size() ? detected[selected].device : QString();
     MountCommand command; QString error;
