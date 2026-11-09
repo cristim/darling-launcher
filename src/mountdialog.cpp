@@ -150,7 +150,9 @@ MountDialog::MountDialog(QWidget *parent, std::function<QList<SourceMount>()> pr
     auto *cryptexNote = new QLabel("The cryptex action mounts Preboot with one authorization request (select a partition to pin it), then mounts os.dmg as you.\nThe privileged step only uses root-owned apfs-fuse and apfsutil from /usr/local/bin or /usr/bin and mounts Preboot under /run/darling-launcher/<uid>.\napfs-fuse can use several GB of memory while reading it: unmount the cryptex OS first, then Preboot, if the system slows down.");
     cryptexNote->setWordWrap(true); layout->addWidget(cryptexNote);
     output = new QTextEdit; output->setReadOnly(true); output->setObjectName("mountOutput"); layout->addWidget(output);
-    if (QString problem; !LauncherMount::trustedCryptexScript(QStringLiteral(LAUNCHER_MOUNT_CRYPTEX_SCRIPT), helperOwner(), &problem)) {
+    if (LauncherMount::launcherPython().isEmpty()) {
+        cryptexButton->setEnabled(false); prebootUnmountButton->setEnabled(false); output->append(LauncherMount::noPythonMessage());
+    } else if (QString problem; !LauncherMount::trustedCryptexScript(QStringLiteral(LAUNCHER_MOUNT_CRYPTEX_SCRIPT), helperOwner(), &problem)) {
         cryptexButton->setEnabled(false); prebootUnmountButton->setEnabled(false); output->append("Cryptex OS mount is disabled: " + problem + "\n" + installHint());
     }
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close); connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject); layout->addWidget(buttons);
@@ -224,7 +226,7 @@ void MountDialog::mountSelected() {
 }
 bool MountDialog::cryptexCommandReady(QString *python) {
     QString error;
-    *python = LauncherMount::trustedFile(LauncherMount::launcherPython(), helperOwner(), true, &error);
+    *python = LauncherMount::trustedInterpreter(LauncherMount::launcherPython(), helperOwner(), &error);
     if (!python->isEmpty() && LauncherMount::trustedCryptexScript(QStringLiteral(LAUNCHER_MOUNT_CRYPTEX_SCRIPT), helperOwner(), &error)) return true;
     cryptexButton->setEnabled(false); prebootUnmountButton->setEnabled(false);
     output->append(error + "\n" + installHint() + "\nThe root-run interpreter (" + LauncherMount::launcherPython() + ") was chosen when the launcher was configured; reconfigure with -DLAUNCHER_PYTHON=<trusted python 3.8+> if it is missing or not root-owned.");

@@ -91,12 +91,31 @@ private slots:
     }
     void rootInterpreterIsTheOneConfigureChose() {
         const QString python = LauncherMount::launcherPython(); QString error;
+        // CTest passes the configure-time choice (empty when none qualified): the baked constant must be that one.
+        QVERIFY2(qEnvironmentVariableIsSet("LAUNCHER_EXPECTED_PYTHON"), "CTest passes the configure-time choice");
+        QCOMPARE(python, qEnvironmentVariable("LAUNCHER_EXPECTED_PYTHON"));
+        if (python.isEmpty()) QSKIP("No trusted Python was found when this build was configured");
         QVERIFY(QDir::isAbsolutePath(python));
         // The configure-time rule (cmake/SelectPython.cmake) and the runtime rule must agree on this path.
-        QVERIFY2(!LauncherMount::trustedFile(python, 0, true, &error).isEmpty(), qPrintable(error));
-        const QByteArray expected = qgetenv("LAUNCHER_EXPECTED_PYTHON");
-        QVERIFY2(!expected.isEmpty(), "CTest passes the configure-time choice");
-        QCOMPARE(python, QString::fromLocal8Bit(expected));
+        QVERIFY2(!LauncherMount::trustedInterpreter(python, 0, &error).isEmpty(), qPrintable(error));
+    }
+    void withoutAnInterpreterTheRootActionsAreRefusedAndBuildNoCommand() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QString script = temporary.path() + "/mount-cryptex.py"; QFile file(script); QVERIFY(file.open(QIODevice::WriteOnly)); file.close();
+        MountCommand command{"untouched", {"untouched"}}; QString error;
+        QVERIFY(LauncherMount::trustedInterpreter({}, 0, &error).isEmpty());
+        QVERIFY(error.contains("No trusted Python 3.8+ was found when the launcher was configured")); QVERIFY(error.contains("README"));
+        for (const QString &empty : {QString(), QString("")}) {
+            error.clear();
+            QVERIFY(!LauncherMount::makeCryptexCommand(empty, script, "/run/user/1000/mounts", "/usr/bin/true", {}, &command, &error));
+            QCOMPARE(error, LauncherMount::noPythonMessage());
+            error.clear();
+            QVERIFY(!LauncherMount::makePrebootUnmountCommand(empty, script, &command, &error));
+            QCOMPARE(error, LauncherMount::noPythonMessage());
+        }
+        QCOMPARE(command.program, QString("untouched")); QCOMPARE(command.arguments, QStringList{"untouched"});  // nothing built, so nothing can reach pkexec
+        // a configured but untrusted path is refused too, with the ownership reason
+        QVERIFY(LauncherMount::trustedInterpreter(script, 0, &error).isEmpty()); QVERIFY(!error.contains("No trusted Python"));
     }
     void rootRunFilesMustBeRootOwnedAndNotWritable() {
         // As root the test tree is root-owned and not writable by others, so the "untrusted" assertions cannot hold
