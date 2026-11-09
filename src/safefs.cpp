@@ -169,7 +169,7 @@ int openWrite(const QString &root, const QString &relPath, mode_t fileMode, mode
     Fd dir(openDirs(root, dirs, true, dirMode, nullptr, error));
     if (dir.fd < 0) return -1;
     const QByteArray name = leaf.toUtf8();
-    Fd file(::openat(dir.fd, name.constData(), O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC | (resume ? 0 : O_EXCL), fileMode));
+    Fd file(::openat(dir.fd, name.constData(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | (resume ? 0 : O_EXCL), fileMode));
     if (file.fd < 0) { fail(error, sysError("Cannot open " + relPath + " for writing")); return -1; }
     struct stat st;
     if (::fstat(file.fd, &st) != 0 || !S_ISREG(st.st_mode)) { fail(error, relPath + " is not a regular file"); return -1; }

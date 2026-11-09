@@ -22,7 +22,7 @@ bool renameInDir(const QString &root, const QString &dirRelPath, const QString &
                  bool noReplace = false);
 // Opens a regular file for reading (no symlink in any component, no FIFO/device); returns the descriptor or -1. *size is its length.
 int openRead(const QString &root, const QString &relPath, qint64 *size, QString *error);
-// Opens a regular file for writing without following symlinks, creating missing directories with dirMode.
+// Opens a regular file for reading and writing (a resumed copy re-reads what it wrote) without following symlinks, creating missing directories with dirMode.
 // Without `resume` the file must not exist (O_EXCL). With it an existing regular file is kept and *existingSize reports
 // its length, so a copy can continue; a new file has size 0. Returns the descriptor or -1.
 int openWrite(const QString &root, const QString &relPath, mode_t fileMode, mode_t dirMode, bool resume,

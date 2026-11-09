@@ -156,7 +156,8 @@ private slots:
     void openWriteCreatesExclusivelyOrResumes() {
         QTemporaryDir d, evil; QString err; qint64 existing = -1;
         int fd = SafeFs::openWrite(d.path(), "s/p.partial", 0600, 0700, false, &existing, &err); QVERIFY2(fd >= 0, qPrintable(err));
-        QCOMPARE(existing, qint64(0)); QCOMPARE(::write(fd, "abc", 3), ssize_t(3)); ::close(fd);
+        QCOMPARE(existing, qint64(0)); QCOMPARE(::write(fd, "abc", 3), ssize_t(3));
+        char back[3]; QCOMPARE(::pread(fd, back, 3, 0), ssize_t(3)); QCOMPARE(QByteArray(back, 3), QByteArray("abc")); ::close(fd);
         QVERIFY(SafeFs::openWrite(d.path(), "s/p.partial", 0600, 0700, false, &existing, &err) < 0); // exclusive
         fd = SafeFs::openWrite(d.path(), "s/p.partial", 0600, 0700, true, &existing, &err); QVERIFY(fd >= 0);
         QCOMPARE(existing, qint64(3)); ::close(fd);
