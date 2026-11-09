@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import shlex
 import shutil
 import subprocess
@@ -21,6 +22,7 @@ mcp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mcp)
 
 USER = "alice"
+READ_TIMEOUT = 15
 
 
 class Fixture:
@@ -105,6 +107,7 @@ class Session:
         self.root = Path(os.path.realpath(tempfile.mkdtemp(prefix="launcher-mcp-proto-")))
         environment = {"PATH": os.environ["PATH"], "HOME": str(self.root)}
         environment.update(env or {})
+        self.buffer = b""
         self.proc = subprocess.Popen([sys.executable, "-I", str(SCRIPT)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
 
     def send_raw(self, data):
@@ -114,9 +117,34 @@ class Session:
     def send(self, message):
         self.send_raw(json.dumps(message).encode() + b"\n")
 
+    def read_line(self, timeout=READ_TIMEOUT):
+        """One line from the server, or b'' at EOF. A server that stops answering fails the test instead of hanging the suite."""
+        deadline = time.monotonic() + timeout
+        fd = self.proc.stdout.fileno()
+        while b"\n" not in self.buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+                self.proc.kill()
+                raise AssertionError(f"no response from the server within {timeout} seconds")
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                line, self.buffer = self.buffer, b""
+                return line
+            self.buffer += chunk
+        line, _, self.buffer = self.buffer.partition(b"\n")
+        return line + b"\n"
+
     def read(self):
-        line = self.proc.stdout.readline()
+        line = self.read_line()
         return json.loads(line) if line else None
+
+    def read_to_eof(self, timeout=READ_TIMEOUT):
+        data = b""
+        while True:
+            line = self.read_line(timeout)
+            if not line:
+                return data
+            data += line
 
     def rpc(self, method, params=None, request_id=1):
         message = {"jsonrpc": "2.0", "id": request_id, "method": method}
@@ -132,7 +160,11 @@ class Session:
 
     def close(self):
         self.proc.stdin.close()
-        self.proc.wait(timeout=10)
+        try:
+            self.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
         stderr = self.proc.stderr.read().decode()
         self.proc.stdout.close()
         self.proc.stderr.close()
@@ -259,7 +291,7 @@ class ProtocolTest(unittest.TestCase):
     def test_bad_environment_fails_at_startup(self):
         for env in ({"DARLING_LAUNCHER_DATA_DIR": "relative/path"}, {"DARLING_LAUNCHER_DATA_DIR": "/a/../b"}, {"DARLING_LAUNCHER_MCP_ALLOW_ACTIONS": "yes"}):
             session = Session(env)
-            self.assertEqual(session.proc.wait(timeout=10), 2)
+            self.assertEqual(session.proc.wait(timeout=READ_TIMEOUT), 2)
             self.assertIn("configuration error", session.close())
 
     def test_stdout_carries_only_protocol_and_logs_go_to_stderr(self):
@@ -267,7 +299,7 @@ class ProtocolTest(unittest.TestCase):
         session.handshake()
         session.rpc("tools/call", {"name": "launcher_status", "arguments": {}}, request_id=2)
         session.proc.stdin.close()
-        rest = session.proc.stdout.read()
+        rest = session.read_to_eof()
         self.assertEqual(rest, b"")
         self.assertIn(b"started", session.proc.stderr.read())
 
@@ -345,7 +377,8 @@ class ReadOnlyToolsTest(ToolTestCase):
         records = json.loads((prefix / ".darling-launcher/catalog.json").read_text())["apps"]
         bad = [{"name": "A", "bundle": "../x.app", "executable": "a"}, {"name": "B", "bundle": "Applications/B.app", "executable": "../b"},
                {"name": "C", "bundle": "/Applications/C.app", "executable": "c"}, {"name": "D", "bundle": "Applications/D.app", "executable": "a/b"},
-               {"name": "E", "bundle": "Other/E.app", "executable": "e"}, "text", {"name": 3, "bundle": "Applications/F.app", "executable": "f"}]
+               {"name": "E", "bundle": "Other/E.app", "executable": "e"}, {"name": "G", "bundle": "Applications/../x.app", "executable": "g"},
+               {"name": "H", "bundle": "Applications/./x.app", "executable": "h"}, {"name": "I", "bundle": "Applications//x.app", "executable": "i"}, "text", {"name": 3, "bundle": "Applications/F.app", "executable": "f"}]
         (prefix / ".darling-launcher/catalog.json").write_text(json.dumps({"apps": records + bad}))
         data = self.ok("list_apps", {"prefix": "default"})
         self.assertEqual([a["name"] for a in data["apps"]], ["Good"])
@@ -452,12 +485,24 @@ class ReadOnlyToolsTest(ToolTestCase):
         fx.executable("findmnt", "yes x | head -c 400000\n")
         self.refused("mount_status", {}, "too large")
 
-    def test_mount_status_times_out(self):
-        self.fx.executable("findmnt", "sleep 30\n")
+    def test_mount_status_times_out_and_kills_its_own_helper(self):
+        pid_file = self.fx.root / "findmnt.pid"
+        self.fx.executable("findmnt", f'echo $$ > "{pid_file}"\nexec sleep 30\n')
         started = time.monotonic()
-        with patch.object(mcp, "FINDMNT_TIMEOUT", 0.3):
+        with patch.object(mcp, "FINDMNT_TIMEOUT", 0.5):
             self.refused("mount_status", {}, "did not finish")
         self.assertLess(time.monotonic() - started, 5)
+        pid = int(pid_file.read_text())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_the_result_text_is_capped(self):
+        (self.fx.data / "logs/launcher.log").write_text("".join(f"line {i} " + "y" * 90 + "\n" for i in range(200)))
+        with patch.object(mcp, "MAX_RESULT_CHARS", 1000):
+            text = self.fx.call("tail_log", {"lines": 200})["content"][0]["text"]
+        self.assertEqual(len(text), 1000 + len("\n[truncated]"))
+        self.assertTrue(text.endswith("\n[truncated]"))
+        self.assertLess(len(text), len(self.fx.call("tail_log", {"lines": 200})["content"][0]["text"]))
 
     def test_tail_log_limits_and_sources(self):
         fx = self.fx
@@ -497,6 +542,13 @@ class ReadOnlyToolsTest(ToolTestCase):
         real.write_text("x" * (mcp.MAX_SETTINGS_BYTES + 1))
         with self.assertRaises(mcp.ToolError):
             mcp.read_settings(self.fx.config)
+
+    def test_a_fifo_or_other_non_regular_log_is_refused_without_blocking(self):
+        os.mkfifo(self.fx.data / "logs/launcher.log")
+        started = time.monotonic()
+        self.refused("tail_log", {}, "not a regular file")
+        self.refused("launcher_status", {}, "not a regular file")
+        self.assertLess(time.monotonic() - started, 5)
 
     def test_tail_log_missing_and_symlinked_logs(self):
         self.assertEqual(self.ok("tail_log")["lines"], [])
@@ -636,10 +688,10 @@ FAKE_DARLING = """touch "$(dirname "$0")/ran"
 case "$1" in
   exec)
     echo "exec $2 prefix=$DPREFIX install=$DARLING_INSTALL_PREFIX leak_a=$GITHUB_TOKEN leak_b=$DYLD_LIBRARY_PATH"
-    case "$2" in *Slow*) sleep 2; echo slow-late;; *Fail*) echo "boom" >&2; exit 7;; esac ;;
+    case "$2" in *Slow*) sleep 2; echo slow-late;; *Fail*) echo "boom" >&2; exit 7;; *Big*) head -c 300000 /dev/zero | tr '\\0' x;; esac ;;
   shutdown)
     echo "shutdown prefix=$DPREFIX"
-    case "$DPREFIX" in *hang*) sleep 1; touch "$(dirname "$0")/finished";; *broken*) echo "no such prefix" >&2; exit 4;; esac ;;
+    case "$DPREFIX" in *hang*) sleep 1; touch "$(dirname "$0")/finished";; *broken*) echo "no such prefix" >&2; exit 4;; *big*) head -c 300000 /dev/zero | tr '\\0' x;; esac ;;
 esac
 """
 
@@ -759,6 +811,25 @@ class ActionToolsTest(unittest.TestCase):
         (directory / "29990101T000000-deadbeef.log").symlink_to(secret)
         (directory / "20260101T000000-aaaaaaaa.log").write_text("real\n")
         self.assertEqual(self.ok("tail_log", {"source": "mcp-launch"})["lines"], ["real"])
+
+    def test_child_output_is_capped_for_launch_and_stop(self):
+        prefix = self.fx.data / "prefixes/default"
+        (prefix / "Applications/Big.app/Contents/MacOS").mkdir(parents=True)
+        (prefix / "Applications/Big.app/Contents/MacOS/Big").write_text("")
+        records = json.loads((prefix / ".darling-launcher/catalog.json").read_text())["apps"]
+        records.append({"name": "Big", "bundle": "Applications/Big.app", "executable": "Big"})
+        (prefix / ".darling-launcher/catalog.json").write_text(json.dumps({"apps": records}))
+        launch = self.ok("launch_app", {"prefix": "default", "app": "Big", "confirm": True})
+        self.assertEqual(launch["state"], "exited")
+        self.assertLessEqual(len(launch["output"]), mcp.MAX_CHILD_OUTPUT)
+        self.assertGreater(len(launch["output"]), mcp.MAX_CHILD_OUTPUT - 1000)
+        self.fx.prefix("big")
+        stop = self.ok("stop_prefix", {"prefix": "big", "confirm": True})
+        self.assertIs(stop["truncated"], True)
+        self.assertLessEqual(len(stop["output"]), mcp.MAX_CHILD_OUTPUT)
+        self.assertGreater(len(stop["output"]), mcp.MAX_CHILD_OUTPUT - 1000)
+        small = self.ok("stop_prefix", {"prefix": "default", "confirm": True})
+        self.assertIs(small["truncated"], False)
 
     def test_a_running_app_is_reported_and_not_killed(self):
         data = self.ok("launch_app", {"prefix": "default", "app": "Slow", "confirm": True, "wait_seconds": 0})
