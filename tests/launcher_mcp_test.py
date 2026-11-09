@@ -1010,7 +1010,11 @@ class MountPlanBase(ToolTestCase):
         self.mounts = self.fx.data / "mounts"
         self.not_root = set()
         self.writable = set()
-        patcher = patch.multiple(mcp, TRUSTED_DIRECTORIES=(str(self.fx.bin),), LSTAT=self.fake_lstat)
+        self.libexec = self.fx.root / "libexec/darling-launcher"
+        self.libexec.mkdir(parents=True)
+        for name in ("mount-macos.py", "mount-cryptex.py"):
+            (self.libexec / name).write_text("raise SystemExit(0)\n")
+        patcher = patch.multiple(mcp, TRUSTED_DIRECTORIES=(str(self.fx.bin),), INSTALLED_SCRIPT_DIRECTORIES=(str(self.libexec),), LSTAT=self.fake_lstat)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -1034,7 +1038,7 @@ class MountPlanTest(MountPlanBase):
         argv = command["argv"]
         self.assertTrue(argv[0].endswith("/bin/python3"))
         self.assertEqual(argv[1], "-I")
-        self.assertTrue(argv[2].endswith("/tools/mount-macos.py"))
+        self.assertTrue(argv[2].endswith("/libexec/darling-launcher/mount-macos.py"))
         self.assertEqual(argv[3:5], ["--mount-root", "~/.darling-launcher/mounts"])
         self.assertEqual(argv[5], "--apfs-fuse")
         self.assertTrue(argv[6].endswith("/bin/apfs-fuse"))
@@ -1122,19 +1126,67 @@ class MountPlanTest(MountPlanBase):
         self.refused("mount_plan", {"kind": "unmount", "directory": str(self.mounts)}, "not the root itself")
         self.never_ran()
 
-    def test_cryptex_plan_mirrors_the_branch_command_and_notes_a_missing_script(self):
+    def test_cryptex_plan_mirrors_the_branch_command(self):
         data = self.plan(kind="cryptex", device="/dev/nvme0n1p5")
         argv = data["commands"][0]["argv"]
         self.assertEqual(argv[1], "-I")
-        self.assertTrue(argv[2].endswith("/tools/mount-cryptex.py"))
+        self.assertTrue(argv[2].endswith("/libexec/darling-launcher/mount-cryptex.py"))
         self.assertEqual(argv[3:5], ["--mount-root", "~/.darling-launcher/mounts"])
         self.assertTrue(argv[5] == "--apfs-fuse" and argv[6].endswith("/bin/apfs-fuse"))
         self.assertEqual(argv[7:], ["--device", "/dev/nvme0n1p5"])
-        script = Path(os.path.realpath(SCRIPT)).parent / "mount-cryptex.py"
-        self.assertEqual(any("feat/cryptex-mount-action" in w for w in data["warnings"]), not script.is_file())
+        self.assertEqual(data["warnings"], [])
         self.assertNotIn("--device", self.plan(kind="cryptex")["commands"][0]["argv"])
         self.refused("mount_plan", {"kind": "cryptex", "device": "/dev/../x"}, "under /dev")
         self.refused("mount_plan", {"kind": "cryptex", "volume_index": 1}, "not used by kind")
+
+    def test_scripts_missing_from_the_install_location_give_no_command_and_never_fall_back_to_the_checkout(self):
+        checkout = Path(os.path.realpath(SCRIPT)).parent
+        self.assertTrue((checkout / "mount-macos.py").is_file())
+        for name in ("mount-macos.py", "mount-cryptex.py"):
+            (self.libexec / name).unlink()
+        for kind in ("batch", "cryptex"):
+            data = self.plan(kind=kind)
+            self.assertEqual(data["commands"], [])
+            self.assertEqual(len(data["warnings"]), 1)
+            self.assertIn("cmake --install", data["warnings"][0])
+            self.assertIn(str(self.libexec).replace(str(self.fx.root), ""), data["warnings"][0])
+            self.assertNotIn(str(checkout), json.dumps(data))
+        self.assertTrue(any("cryptex mount action" in w for w in self.plan(kind="cryptex")["warnings"]))
+        self.plan(kind="partition", device="/dev/sda2", filesystem="hfs", backend="kernel")["commands"][0]
+        self.never_ran()
+
+    def test_the_second_install_location_is_used_when_the_first_has_no_script(self):
+        other = self.fx.root / "usr-libexec/darling-launcher"
+        other.mkdir(parents=True)
+        (other / "mount-macos.py").write_text("x\n")
+        (self.libexec / "mount-macos.py").unlink()
+        with patch.object(mcp, "INSTALLED_SCRIPT_DIRECTORIES", (str(self.libexec), str(other))):
+            argv = self.plan(kind="batch")["commands"][0]["argv"]
+        self.assertTrue(argv[2].endswith("/usr-libexec/darling-launcher/mount-macos.py"))
+
+    def test_an_installed_script_must_be_root_owned_in_its_whole_chain(self):
+        script = str(self.libexec / "mount-macos.py")
+        for label, victim in (("file", script), ("directory", str(self.libexec)), ("parent", str(self.libexec.parent))):
+            for attribute in ("not_root", "writable"):
+                setattr(self, attribute, {victim})
+                self.refused("mount_plan", {"kind": "batch"}, "must be owned by root and not group- or world-writable")
+                setattr(self, attribute, set())
+        self.plan(kind="batch")
+
+    def test_a_symlinked_installed_script_is_judged_by_its_target(self):
+        planted = self.fx.data / "prefixes/default/evil.py"
+        planted.parent.mkdir(parents=True)
+        planted.write_text("print('root')\n")
+        (self.libexec / "mount-macos.py").unlink()
+        (self.libexec / "mount-macos.py").symlink_to(planted)
+        self.not_root = {str(planted)}
+        self.refused("mount_plan", {"kind": "batch"}, "must be owned by root")
+        self.never_ran()
+
+    def test_an_installed_script_must_be_a_regular_file(self):
+        (self.libexec / "mount-macos.py").unlink()
+        (self.libexec / "mount-macos.py").mkdir()
+        self.refused("mount_plan", {"kind": "batch"}, "is not a regular file")
 
     def test_missing_system_tools_fail_loudly(self):
         for tool, arguments in (("apfs-fuse", {"kind": "cryptex"}), ("apfsutil", {"kind": "batch"}), ("python3", {"kind": "batch"}), ("pkexec", {"kind": "unmount", "directory": str(self.mounts / "d")}),

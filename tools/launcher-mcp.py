@@ -368,19 +368,33 @@ def check_root_chain(path):
             raise ToolError(f"{current} must be owned by root and not group- or world-writable")
 
 
-def system_tool(name):
-    """Finds a helper only in fixed root-owned system directories. A path supplied by the client, or a binary a guest
-    could have written, never ends up in a command the user is told to run as root. Mirrors tools/mount-cryptex.py."""
-    for directory in TRUSTED_DIRECTORIES:
+# Where `cmake --install` puts mount-macos.py and mount-cryptex.py: <libexecdir>/darling-launcher for the /usr/local and /usr
+# prefixes. Mirrors CMakeLists.txt on branch feat/cryptex-mount-action; nothing is imported from there.
+INSTALLED_SCRIPT_DIRECTORIES = ("/usr/local/libexec/darling-launcher", "/usr/libexec/darling-launcher")
+
+
+def trusted_file(directories, name, executable):
+    """The resolved path of name in the first of directories that has it, after the root-ownership check of the file and every
+    parent both as spelled and as resolved; None if no directory has it."""
+    for directory in directories:
         candidate = os.path.join(directory, name)
         if os.path.lexists(candidate):
             resolved = os.path.realpath(candidate)
             check_root_chain(os.path.normpath(candidate))
             check_root_chain(resolved)
-            if not stat.S_ISREG(os.stat(resolved).st_mode) or not os.access(resolved, os.X_OK):
-                raise ToolError(f"{resolved} is not an executable file")
+            if not stat.S_ISREG(os.stat(resolved).st_mode) or (executable and not os.access(resolved, os.X_OK)):
+                raise ToolError(f"{resolved} is not {'an executable ' if executable else 'a regular '}file")
             return resolved
-    raise ToolError(f"{name} was not found in {' or '.join(TRUSTED_DIRECTORIES)}; install it there as root")
+    return None
+
+
+def system_tool(name):
+    """Finds a helper only in fixed root-owned system directories. A path supplied by the client, or a binary a guest
+    could have written, never ends up in a command the user is told to run as root. Mirrors tools/mount-cryptex.py."""
+    found = trusted_file(TRUSTED_DIRECTORIES, name, True)
+    if found is None:
+        raise ToolError(f"{name} was not found in {' or '.join(TRUSTED_DIRECTORIES)}; install it there as root")
+    return found
 
 
 USER_PATH_COMPONENT = re.compile(r"(?i)/(home|Users|run/media)/[^/]+")
@@ -947,7 +961,6 @@ def build_tools(server):
         if extra:
             raise ToolError(f"argument(s) {', '.join(extra)} are not used by kind {kind!r}; it takes {', '.join(sorted(MOUNT_PLAN_ARGUMENTS[kind]))}")
         warnings, commands = [], []
-        tools_dir = Path(os.path.realpath(__file__)).parent
 
         def directory_warnings(path, must_be_empty):
             if not path.exists():
@@ -957,21 +970,28 @@ def build_tools(server):
 
         if kind in ("batch", "cryptex"):
             root = resolve_under(config.mount_root, args.get("mount_root", str(config.mount_root)), "mount_root", True)
-            script = tools_dir / ("mount-macos.py" if kind == "batch" else "mount-cryptex.py")
-            argv = [system_tool("python3"), "-I", str(script), "--mount-root", str(root), "--apfs-fuse", system_tool("apfs-fuse")]
-            if kind == "batch":
-                argv += ["--apfsutil", system_tool("apfsutil")]
-                description = "Mount every detected macOS partition read-only. The script asks for one pkexec authorization itself; run it in a desktop terminal."
+            if "device" in args and (not DEVICE_RE.match(args["device"]) or ".." in args["device"]):
+                raise ToolError("device must be a detected device path under /dev")
+            script_name = "mount-macos.py" if kind == "batch" else "mount-cryptex.py"
+            # The script asks pkexec to run ITSELF as root, so it is offered only from a root-owned install location,
+            # never from the checkout or any directory the user (or a guest) can write.
+            script = trusted_file(INSTALLED_SCRIPT_DIRECTORIES, script_name, False)
+            if script is None:
+                warnings.append(f"No command is offered for kind {kind!r}: {script_name} is not installed in {' or '.join(INSTALLED_SCRIPT_DIRECTORIES)}. "
+                                "The script runs as root through pkexec, so a copy in a checkout or home directory is never used; "
+                                "run `sudo cmake --install <build directory>` for the launcher first"
+                                + ("; the cryptex script ships with the cryptex mount action." if kind == "cryptex" else "."))
             else:
-                if "device" in args:
-                    if not DEVICE_RE.match(args["device"]) or ".." in args["device"]:
-                        raise ToolError("device must be a detected device path under /dev")
-                    argv += ["--device", args["device"]]
-                description = "Mount the Preboot volume (one pkexec request) and then the cryptex OS image read-only. Run it in a desktop terminal."
-            if not script.is_file():
-                warnings.append(f"{script.name} is not in this checkout" + ("; it ships on branch feat/cryptex-mount-action" if kind == "cryptex" else ""))
-            directory_warnings(root, False)
-            commands.append({"description": description, "run_as": "you (the script requests pkexec itself)", "argv": argv})
+                argv = [system_tool("python3"), "-I", script, "--mount-root", str(root), "--apfs-fuse", system_tool("apfs-fuse")]
+                if kind == "batch":
+                    argv += ["--apfsutil", system_tool("apfsutil")]
+                    description = "Mount every detected macOS partition read-only. The script asks for one pkexec authorization itself; run it in a desktop terminal."
+                else:
+                    if "device" in args:
+                        argv += ["--device", args["device"]]
+                    description = "Mount the Preboot volume (one pkexec request) and then the cryptex OS image read-only. Run it in a desktop terminal."
+                directory_warnings(root, False)
+                commands.append({"description": description, "run_as": "you (the script requests pkexec itself)", "argv": argv})
         elif kind == "partition":
             for name in ("device", "filesystem", "backend"):
                 if name not in args:
@@ -1047,7 +1067,8 @@ def build_tools(server):
              read_only_note + "Returns, and never runs, the exact command line the launcher would use so the USER can run it: kind 'batch' (mount all detected partitions), "
              "'partition' (one partition with pkexec mount or apfs-fuse), 'cryptex' (Preboot plus os.dmg) or 'unmount'. All mounts are read-only with nodev, nosuid and "
              "noexec. This server never calls sudo or pkexec. Helper programs (pkexec, mount, umount, python3, apfs-fuse, apfsutil) are only taken from root-owned "
-             "files in /usr/local/bin or /usr/bin and cannot be chosen by the caller. Directories must be inside the launcher mount root; any other argument is rejected. "
+             "files in /usr/local/bin or /usr/bin and cannot be chosen by the caller. The mount scripts of kinds 'batch' and 'cryptex' run as root through pkexec, so those kinds "
+             "return a command only when the script is installed root-owned in <libexecdir>/darling-launcher (cmake --install); otherwise they return a warning and no command. Directories must be inside the launcher mount root; any other argument is rejected. "
              "Fields are redacted like every result (home paths shown as ~); the 'shell' string of each command is the copy-paste form for the user's own terminal "
              "and refers to the home directory as \"$HOME\", so run it in the user's shell. A user-name component that had to be hidden appears as the quoted "
              "placeholder '<user>' and is listed in notes.",
