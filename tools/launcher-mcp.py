@@ -144,6 +144,11 @@ class Redactor:
     USERINFO = re.compile(r"(?<=://)(?P<v>[^/\s@\"':\[\]]{0,128}:(?!\d{1,5}(?:[/\s\"']|$))[^\s\"']{0,512})(?=@)")
     GENERIC_HOME = re.compile(r"(?i)/(?:home|Users|run/media)/(?P<v>[^/\s\"'`:;,()\[\]{}<>|&=*?\\]+)")
     MAX_DECODE_DEPTH = 5
+    # Hard cap on what one call scans, so no input (a guest app's output, a settings value) can stall the single-threaded server.
+    # Longer text is truncated BEFORE redaction, at the last whitespace of the final 4 KiB, never split and redacted in pieces:
+    # a secret that spans whitespace (password hunter2, "a b" values) would otherwise be cut in two and leak.
+    MAX_SCAN_CHARS = 65536
+    TRUNCATION_MARKER = "[truncated before redaction]"
 
     def __init__(self, home):
         homes = {str(home)}
@@ -189,6 +194,10 @@ class Redactor:
         (at most MAX_DECODE_DEPTH layers) but the ORIGINAL text is what is returned, with every match redacted whole, so a
         decoded fragment never appears in the output. paths=False keeps paths and uses a replacement without shell
         metacharacters, for words that are quoted afterwards: redaction must never run over an already quoted string."""
+        if len(value) > self.MAX_SCAN_CHARS:
+            window = value[:self.MAX_SCAN_CHARS]
+            cut = max(window.rfind(c) for c in " \t\n\r")
+            value = window[:max(cut, self.MAX_SCAN_CHARS - 4096)] + self.TRUNCATION_MARKER
         secret = "<redacted>" if paths else "REDACTED"
         current, origin = value, [(i, i + 1) for i in range(len(value))]
         found = self.spans(current, paths, secret)

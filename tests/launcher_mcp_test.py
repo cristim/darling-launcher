@@ -729,6 +729,67 @@ class RedactionTest(ToolTestCase):
                       "ssh://git@host:22/repo", "postgres://host:5432/db", "http://localhost:3000", "mailto:a@b", "https://user@host:80/p@x", "https://example.com:443 and a@b", "file:///etc/x@y"):
             self.assertEqual(redactor.text(plain), plain)
 
+    ADVERSARIAL_INPUTS = {
+        "userinfo colons": lambda n: "://" + "a:" * (n // 2), "scheme repeated": lambda n: "://x" * (n // 4), "nested userinfo": lambda n: "://a:a" * (n // 6),
+        "empty userinfo": lambda n: "://:" * (n // 4), "at signs": lambda n: "@" * n, "at after userinfo": lambda n: "://a:" + "@" * n, "long password": lambda n: "://a:" + "x" * n,
+        "percent run": lambda n: "%41" * (n // 3), "percent and userinfo": lambda n: "%41://" + "a:" * (n // 2), "mixed encodings": lambda n: "%2F\\/\uff0f%252F" * (n // 12),
+        "encoded secret": lambda n: "password%3D" + "hunter2" * (n // 7), "many labels": lambda n: "password=a token=b secret=c " * (n // 27), "unclosed quotes": lambda n: 'token="a ' * (n // 9),
+        "spaced labels": lambda n: "password abc " * (n // 13), "whitespace": lambda n: " " * n, "slash homes": lambda n: "/home/" * (n // 6), "bearer": lambda n: "bearer x " * (n // 9),
+        "token prefixes": lambda n: "ghp_" + "A" * n, "jwt": lambda n: "eyJ" + "A" * 20 + "." + "A" * n, "fullwidth": lambda n: "\uff0f" * n, "nfkc expansion": lambda n: "\ufb01" * n}
+
+    def test_adversarial_input_cannot_stall_the_redactor(self):
+        redactor = mcp.Redactor("/home/alice")
+        slowest = (0, "")
+        for size in (65536, 1048576):
+            for name, make in self.ADVERSARIAL_INPUTS.items():
+                text = make(size)
+                started = time.monotonic()
+                result = redactor.text(text)
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 1.0, f"{name} at {size} took {elapsed:.2f}s")
+                self.assertLessEqual(len(result), mcp.Redactor.MAX_SCAN_CHARS * 4, name)
+                slowest = max(slowest, (elapsed, name))
+        self.assertLess(slowest[0], 1.0)
+
+    def test_the_patterns_alone_are_linear_without_the_input_cap(self):
+        redactor = mcp.Redactor("/home/alice")
+        with patch.object(mcp.Redactor, "MAX_SCAN_CHARS", 10 ** 9):
+            for name, make in self.ADVERSARIAL_INPUTS.items():
+                started = time.monotonic()
+                redactor.text(make(131072))
+                self.assertLess(time.monotonic() - started, 1.5, name)
+
+    def test_oversized_text_is_truncated_before_redaction_never_redacted_in_pieces(self):
+        redactor = mcp.Redactor("/home/alice")
+        limit = mcp.Redactor.MAX_SCAN_CHARS
+        short = "password hunter2xyz and /home/alice/x"
+        self.assertEqual(redactor.text(short), "password <redacted> and ~/x")
+        text = "word " * (limit // 5 + 10) + "password hunter2xyz " + "tail " * 100
+        result = redactor.text(text)
+        self.assertTrue(result.endswith(mcp.Redactor.TRUNCATION_MARKER))
+        self.assertLessEqual(len(result), limit + len(mcp.Redactor.TRUNCATION_MARKER))
+        self.assertNotIn("hunter", result)
+        self.assertNotIn("tail", result)
+        for gap in range(0, 40):
+            secret_at_the_cut = "x" * (limit - 30 - gap) + " password hunter2xyz" + " y" * 40
+            cut = redactor.text(secret_at_the_cut)
+            self.assertNotIn("hunter2xyz", cut)
+            self.assertNotIn("hunter", cut.replace("<redacted>", ""))
+        no_whitespace = "A" * (limit + 5000)
+        cut = redactor.text(no_whitespace)
+        self.assertEqual(len(cut), limit - 4096 + len(mcp.Redactor.TRUNCATION_MARKER))
+
+    def test_the_cap_applies_to_every_string_in_a_result(self):
+        (self.fx.data / "logs/launcher.log").write_text(("token=abc " + "z" * 1900 + "\n") * 5)
+        result = self.fx.call("tail_log", {"lines": 5})
+        self.assertFalse(result["isError"])
+        self.assertNotIn("token=abc", json.dumps(result))
+        self.fx.settings(darling="x" * 300000)
+        started = time.monotonic()
+        status = self.fx.call("launcher_status")
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertLessEqual(len(status["structuredContent"]["selected"]["darling"]), mcp.Redactor.MAX_SCAN_CHARS + 100)
+
     def test_json_escaped_slashes_and_unicode_escapes_are_found_without_decoding_the_output(self):
         redactor = mcp.Redactor("/home/alice")
         self.assertEqual(redactor.text("\\/home\\/alice\\/x"), "~\\/x")
