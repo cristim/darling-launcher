@@ -64,6 +64,17 @@ private slots:
         QVERIFY(!LauncherMount::makeCryptexCommand(tool, temporary.path() + "/missing.py", root, tool, {}, &command, &error));
         QVERIFY(!error.isEmpty());
     }
+    void symlinkedHomePrefixIsResolved() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QString real = QFileInfo(temporary.path()).canonicalFilePath() + "/var/home/me", alias = temporary.path() + "/home";
+        QVERIFY(QDir().mkpath(real)); QVERIFY(QFile::link(QFileInfo(real).path(), alias));
+        const QString home = alias + "/me";
+        QCOMPARE(LauncherMount::resolveHomePrefix(home + "/.darling-launcher/mounts", home), real + "/.darling-launcher/mounts");
+        QCOMPARE(LauncherMount::resolveHomePrefix(home, home), real);
+        QCOMPARE(LauncherMount::resolveHomePrefix("/run/user/1000/mounts", home), QString("/run/user/1000/mounts"));
+        QCOMPARE(LauncherMount::resolveHomePrefix(home + "x/mounts", home), home + "x/mounts");
+        QCOMPARE(LauncherMount::resolveHomePrefix("/x/mounts", temporary.path() + "/missing"), QString("/x/mounts"));
+    }
     void cryptexUnmountTargetsOnlyTheCryptexDirectory() {
         MountCommand command; QString error;
         QVERIFY2(LauncherMount::makeCryptexUnmountCommand("/usr/bin/true", "/run/user/1000/mount root", &command, &error), qPrintable(error));

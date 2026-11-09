@@ -24,6 +24,8 @@ bool makeCommand(const MacPartition &partition, const QString &directory, MountB
 QString exitDescription(int code);
 // The directory names are mirrored in tools/mount-cryptex.py.
 QString cryptexMountDirectory(const QString &mountRoot);
+// Mirrors resolve_home_prefix in tools/mount-cryptex.py: resolves a symlinked home prefix (/home -> /var/home).
+QString resolveHomePrefix(const QString &mountRoot, const QString &home);
 bool makeCryptexCommand(const QString &python, const QString &script, const QString &mountRoot,
                         const QString &apfsFuse, const QString &device,
                         MountCommand *command, QString *error);

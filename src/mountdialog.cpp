@@ -198,7 +198,8 @@ void MountDialog::mountSelected() {
                                     QStandardPaths::findExecutable("pkexec"), tool, &command, &error)) { output->append(error); return; }
     execute(command, false, partition.device);
 }
-void MountDialog::mountCryptex(const QString &root, const QString &apfsFuse) {
+void MountDialog::mountCryptex(const QString &requestedRoot, const QString &apfsFuse) {
+    const QString root = LauncherMount::resolveHomePrefix(requestedRoot, QDir::homePath());
     const int selected = partitions->currentData().toInt();
     const QString device = selected >= 0 && selected < detected.size() ? detected[selected].device : QString();
     MountCommand command; QString error;
