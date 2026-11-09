@@ -299,6 +299,29 @@ def real_apfs_partitions(inventory):
     return result
 
 
+FINDMNT = ["/usr/bin/findmnt", "--json", "--list", "--output", "SOURCE,TARGET,FSTYPE,OPTIONS"]
+
+
+def mount_records(run_command):
+    return json.loads(run_command(FINDMNT)).get("filesystems", [])
+
+
+def is_fuse(record):
+    fstype = record.get("fstype") or ""
+    return fstype == "fuse" or fstype.startswith("fuse.")
+
+
+def foreign_mount(partition, records):
+    """True when another driver holds the partition (kernel apfs, ext4, fuseblk, ...). Volumes of the same
+    container that apfs-fuse mounted, for example by the batch action, do not count: apfs-fuse reads the
+    device independently. A mount point lsblk lists that the mount table cannot explain also counts."""
+    device = partition.get("path")
+    fuse_targets = {r.get("target") for r in records if is_fuse(r)}
+    if any(r.get("source") == device and not is_fuse(r) for r in records):
+        return True
+    return any(point and point not in fuse_targets for point in partition.get("mountpoints") or [])
+
+
 def find_preboot(inventory, run_command, apfsutil, existing, check_device, pinned=None):
     """Return (device, volume index) of the single Preboot volume; refuse zero or several."""
     candidates = real_apfs_partitions(inventory)
@@ -310,12 +333,12 @@ def find_preboot(inventory, run_command, apfsutil, existing, check_device, pinne
         if pinned and device != pinned:
             continue
         validate_device(device)
-        if any(partition.get("mountpoints", [])) or any(r.get("source") == device for r in existing):
+        if foreign_mount(partition, existing):
             continue
         check_device(device)
         found += [(device, v["index"]) for v in base.volumes(run_command([apfsutil, device])) if v["name"] == "Preboot"]
     if not found:
-        raise ValueError("No unmounted APFS partition of a real disk with a Preboot volume was found")
+        raise ValueError("No APFS partition of a real disk with a Preboot volume that no other driver has mounted was found")
     if len(found) > 1:
         raise ValueError("Ambiguous Preboot volumes (" + ", ".join(f"{d} volume {i}" for d, i in found) + "); select one partition")
     return found[0]
@@ -417,14 +440,17 @@ def mount_preboot(options, uid, gid, run_command=None, emit_event=emit, check_de
     run_command = run_command or base.run
     apfs_fuse, apfsutil = (tools or system_tools)()
     destination = preboot_path(uid, runtime_parent)
-    existing = base.mounted_records(run_command)
+    existing = mount_records(run_command)
     state = mount_state(destination, existing)
     if state == "alive":
-        raise ValueError(f"Preboot is already mounted at {destination}")
+        # Reuse it: only this script mounts under the root-owned /run chain.
+        record = next(r for r in existing if r.get("target") == str(destination))
+        emit_event("mounted", role="preboot", path=str(destination), device=record.get("source") or "")
+        return destination
     if state == "dead":
         emit_event("warning", message="The previous Preboot mount lost its apfs-fuse daemon; unmounting it first")
         release_preboot(destination, run_command, lstat)
-        existing = base.mounted_records(run_command)
+        existing = mount_records(run_command)
     inventory = json.loads(run_command(LSBLK))
     device, index = find_preboot(inventory, run_command, apfsutil, existing, check_device, options.device or None)
     destination = prepare_preboot_directory(uid, runtime_parent, lstat, setxattr, getxattr)
@@ -432,7 +458,7 @@ def mount_preboot(options, uid, gid, run_command=None, emit_event=emit, check_de
         raise ValueError(f"{destination} is not empty")
     emit_event("progress", message=f"Mounting Preboot (volume {index} of {device}) read-only")
     run_command(preboot_arguments(apfs_fuse, uid, gid, index, device, destination))
-    if not is_mounted(base.mounted_records(run_command), destination):
+    if not is_mounted(mount_records(run_command), destination):
         raise RuntimeError("Preboot mount did not verify at the requested target")
     emit_event("mounted", role="preboot", path=str(destination), device=device)
     return destination
