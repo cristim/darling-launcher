@@ -272,6 +272,30 @@ class TrustTest(unittest.TestCase):
             self.find({str(self.tool): (1000, False)}, directories=[str(self.bin), str(later)])
 
 
+class CallerIdentityTest(unittest.TestCase):
+    def identity(self, value, euid=0):
+        environment = {} if value is None else {"PKEXEC_UID": value}
+        with patch.dict(cryptex.os.environ, environment, clear=True), patch.object(cryptex.os, "geteuid", return_value=euid), \
+             patch.object(cryptex.pwd, "getpwuid", return_value=SimpleNamespace(pw_gid=4321)):
+            return cryptex.caller_identity()
+
+    def test_pkexec_caller_is_accepted(self):
+        self.assertEqual(self.identity("1000"), (1000, 4321))
+
+    def test_root_negative_and_garbage_callers_are_refused(self):
+        for value in ("0", "-1", "-1000", "abc", "", None):
+            with self.assertRaises(ValueError, msg=repr(value)):
+                self.identity(value)
+
+    def test_root_caller_message_names_the_reason(self):
+        with self.assertRaisesRegex(ValueError, "non-root caller"):
+            self.identity("0")
+
+    def test_not_running_as_root_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "pkexec and its caller identity"):
+            self.identity("1000", euid=1000)
+
+
 class MountRootTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -460,6 +484,15 @@ class MountTest(unittest.TestCase):
         self.preboot_dir.symlink_to(elsewhere, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "symlinks"):
             self.preboot()
+        self.assertFalse(any(c[0] == self.trusted[0] for c in self.calls))
+
+    def test_symlinked_run_directory_itself_is_refused_and_its_target_untouched(self):
+        real = self.root / "real-run"
+        real.mkdir()
+        (self.root / "link-run").symlink_to(real, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symlinks"):
+            self.preboot(runtime_parent=str(self.root / "link-run/darling-launcher"))
+        self.assertEqual(list(real.iterdir()), [])
         self.assertFalse(any(c[0] == self.trusted[0] for c in self.calls))
 
     def test_non_empty_or_mounted_preboot_directory_is_refused(self):
