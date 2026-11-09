@@ -167,6 +167,19 @@ private slots:
         QVERIFY(SafeFs::openWrite(d.path(), "s/link", 0600, 0700, true, &existing, &err) < 0); // dangling symlink leaf
         QVERIFY(QDir(evil.path()).isEmpty());
     }
+    void openWriteResumeRefusesHardLinkedAndFixesLooseMode() {
+        QTemporaryDir d, other; QString err; qint64 existing = -1;
+        QVERIFY(SafeFs::writeFile(other.path(), "victim", "secret", 0644, 0700, false, &err));
+        QVERIFY(::link((other.path() + "/victim").toUtf8().constData(), (d.path() + "/p.partial").toUtf8().constData()) == 0);
+        QVERIFY(SafeFs::openWrite(d.path(), "p.partial", 0600, 0700, true, &existing, &err) < 0);
+        QVERIFY(err.contains("hard link"));
+        QCOMPARE(slurp(other.path() + "/victim"), QByteArray("secret"));
+        QVERIFY(SafeFs::writeFile(d.path(), "loose", "abc", 0666, 0700, false, &err));
+        QVERIFY(::chmod((d.path() + "/loose").toUtf8().constData(), 0666) == 0);
+        const int fd = SafeFs::openWrite(d.path(), "loose", 0600, 0700, true, &existing, &err); QVERIFY2(fd >= 0, qPrintable(err)); ::close(fd);
+        QCOMPARE(existing, qint64(3));
+        struct stat st; QVERIFY(::stat((d.path() + "/loose").toUtf8().constData(), &st) == 0); QCOMPARE(int(st.st_mode & 0777), 0600);
+    }
     void renameNoReplaceKeepsTheTarget() {
         QTemporaryDir d; QString err;
         QVERIFY(SafeFs::writeFile(d.path(), "s/a", "new", 0600, 0700, false, &err));
