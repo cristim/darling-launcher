@@ -1755,22 +1755,58 @@ class ShellWordTest(unittest.TestCase):
             self.assertEqual(shell_words(word, "/home/alice", cwd), ["/Users/<user>/a b/Users/<user>"])
 
 
+def environment_accesses(source):
+    """Every way the source touches os.environ, from the AST: (names read by a bare string constant, accesses whose key is anything
+    else). The whole key expression is checked, so "HOME" + suffix, an f-string, a format call, a conditional, a subscript or a
+    name bound elsewhere are all computed accesses. Passing the whole environment is only allowed to Config.from_environ, and the
+    SAFE_ENV_NAMES comprehension may index by its own loop variable (its constants are read from the tuple)."""
+    tree = ast.parse(source)
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    is_environ = lambda n: (isinstance(n, ast.Name) and n.id == "environ") or (isinstance(n, ast.Attribute) and n.attr == "environ")
+    names, computed = set(), []
+
+    def key(node, where):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            names.add(node.value)
+            return
+        for ancestor in (parents.get(node), parents.get(parents.get(node))):
+            if isinstance(ancestor, ast.comprehension) or isinstance(ancestor, (ast.DictComp, ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+                for generator in ancestor.generators if hasattr(ancestor, "generators") else [ancestor]:
+                    if isinstance(generator.iter, ast.Name) and generator.iter.id == "SAFE_ENV_NAMES" and isinstance(node, ast.Name) and node.id == generator.target.id:
+                        return
+        computed.append((where.lineno, ast.get_source_segment(source, where)))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "SAFE_ENV_NAMES" for t in node.targets):
+            names.update(e.value for e in node.value.elts)
+    for node in ast.walk(tree):
+        if not is_environ(node):
+            continue
+        parent = parents.get(node)
+        if isinstance(parent, ast.Subscript) and parent.value is node:
+            key(parent.slice, parent)
+        elif isinstance(parent, ast.Attribute) and parent.value is node and isinstance(parents.get(parent), ast.Call) and parents[parent].func is parent:
+            call = parents[parent]
+            if parent.attr in ("get", "pop", "setdefault"):
+                argument = call.args[0] if call.args else next((k.value for k in call.keywords if k.arg == "key"), None)
+                key(argument, call) if argument is not None else computed.append((call.lineno, ast.get_source_segment(source, call)))
+            else:
+                computed.append((call.lineno, ast.get_source_segment(source, call)))
+        elif isinstance(parent, ast.Compare) and node in parent.comparators and all(isinstance(op, (ast.In, ast.NotIn)) for op in parent.ops):
+            key(parent.left, parent)
+        elif isinstance(parent, ast.Call) and node in parent.args and getattr(parent.func, "attr", getattr(parent.func, "id", "")) == "from_environ":
+            continue
+        elif isinstance(parent, ast.arg) or isinstance(parent, ast.FunctionDef) or (isinstance(parent, ast.Attribute) and parent.attr == "environ"):
+            continue
+        else:
+            computed.append((getattr(parent, "lineno", getattr(node, "lineno", 0)), ast.get_source_segment(source, parent) if parent is not None else ""))
+    for node in ast.walk(tree):  # os.getenv(...) and getenv(...)
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", getattr(node.func, "id", "")) in ("getenv", "getenvb", "putenv", "unsetenv"):
+            key(node.args[0], node) if node.args else computed.append((node.lineno, ast.get_source_segment(source, node)))
+    return names, computed
+
+
 class EnvironmentDocumentationTest(unittest.TestCase):
-    ALLOWED_DYNAMIC = "for name in SAFE_ENV_NAMES"
-
-    def code_names(self):
-        source = SCRIPT.read_text()
-        names, dynamic = set(), []
-        for number, line in enumerate(source.splitlines(), 1):
-            if re.search(r"environ|getenv", line) and not line.lstrip().startswith(("#", '"""')):
-                names.update(re.findall(r"""(?:environ(?:\.get\(|\.pop\(|\[)|getenv\(|in os\.environ|environ\.get\()\s*["']([A-Z][A-Z0-9_]*)["']""", line))
-                names.update(re.findall(r"""["']([A-Z][A-Z0-9_]*)["']\s+in\s+(?:os\.)?environ""", line))
-                if re.search(r"(?:environ(?:\.get\(|\.pop\(|\[)|getenv\()\s*(?!\s*[\"'])", line) and self.ALLOWED_DYNAMIC not in line:
-                    dynamic.append((number, line.strip()))
-        match = re.search(r"SAFE_ENV_NAMES = \(([^)]*)\)", source)
-        names.update(re.findall(r'"([A-Z][A-Z0-9_]*)"', match.group(1)))
-        return names, dynamic
-
     def documented_names(self):
         readme = (SCRIPT.parent.parent / "README.md").read_text()
         section = readme.split("### Environment variables", 1)[1].split("\n### ", 1)[0].split("\n## ", 1)[0]
@@ -1781,27 +1817,34 @@ class EnvironmentDocumentationTest(unittest.TestCase):
         return names
 
     def test_the_environment_variables_the_code_uses_are_the_documented_ones(self):
-        used, dynamic = self.code_names()
-        self.assertEqual(dynamic, [], "an environment variable is read by a computed name; read it by a literal name and document it")
+        used, computed = environment_accesses(SCRIPT.read_text())
+        self.assertEqual(computed, [], "an environment variable is read by a computed key; read it by a bare string constant and document it")
         documented = self.documented_names()
         self.assertEqual(used - documented, set(), "the code uses environment variables the README does not document")
         self.assertEqual(documented - used, set(), "the README documents environment variables the code does not use")
         self.assertGreaterEqual(len(used), 12)
 
-    def test_the_scan_notices_an_undocumented_variable(self):
-        original = SCRIPT.read_text()
-        with tempfile.TemporaryDirectory() as directory:
-            fake = Path(directory) / "tools"
-            fake.mkdir()
-            (fake / "launcher-mcp.py").write_text(original + '\nSECRET = os.environ.get("SOMETHING_NEW")\n')
-            (Path(directory) / "README.md").write_text((SCRIPT.parent.parent / "README.md").read_text())
-            with patch.object(sys.modules[__name__], "SCRIPT", fake / "launcher-mcp.py"):
-                used, _ = self.code_names()
-                self.assertIn("SOMETHING_NEW", used)
-                self.assertIn("SOMETHING_NEW", used - self.documented_names())
-            (fake / "launcher-mcp.py").write_text(original + '\nSECRET = os.environ.get(name)\n')
-            with patch.object(sys.modules[__name__], "SCRIPT", fake / "launcher-mcp.py"):
-                self.assertEqual(len(self.code_names()[1]), 1)
+    def test_the_scan_checks_the_whole_key_expression(self):
+        flagged = ['os.environ.get("HOME" + suffix)', 'os.environ.get(f"HOME{x}")', 'os.getenv("A" if x else "B")', 'os.environ["HO" + "ME" + x]', 'os.environ.get("HOME%s" % x)',
+                   'os.environ.get("HOME{}".format(x))', 'os.environ.get("".join(parts))', 'os.environ[NAMES[0]]', 'os.environ.get(key)', 'os.environ.pop("A" + b)',
+                   '("HOME" + x) in os.environ', 'os.environ.setdefault(prefix + "X", "1")', 'os.environ.get(key="A" + b)', 'os.getenv(name)', 'dict(os.environ)',
+                   'for k in os.environ: pass', 'os.environ.copy()', 'os.environ.keys()', 'environ.get("A" + b)', 'os.environ.get()']
+        for source in flagged:
+            names, computed = environment_accesses("import os\n" + source + "\n")
+            self.assertEqual(len(computed), 1, source)
+        compliant = {'os.environ.get("HOME")': {"HOME"}, 'os.environ["HO" "ME"]': {"HOME"}, '"A" in os.environ': {"A"}, 'os.getenv("LANG", "C")': {"LANG"},
+                     'os.environ.pop("X", None)': {"X"}, 'environ.get("PATH", "/bin")': {"PATH"}, 'os.environ.get(key="Q")': {"Q"},
+                     "Config.from_environ(os.environ)": set(), '"B" not in os.environ': {"B"}}
+        for source, expected in compliant.items():
+            names, computed = environment_accesses("import os\n" + source + "\n")
+            self.assertEqual((names, computed), (expected, []), source)
+
+    def test_the_scan_reports_unlisted_names_and_the_safe_env_tuple(self):
+        names, computed = environment_accesses('SAFE_ENV_NAMES = ("A", "B")\nx = {n: os.environ[n] for n in SAFE_ENV_NAMES if n in os.environ}\ny = os.environ.get("SOMETHING_NEW")\n')
+        self.assertEqual((names, computed), ({"A", "B", "SOMETHING_NEW"}, []))
+        names, computed = environment_accesses('SAFE_ENV_NAMES = ("A",)\nx = {n: os.environ[n] for n in OTHER_NAMES}\n')
+        self.assertEqual(len(computed), 1)
+        self.assertIn("SOMETHING_NEW", environment_accesses('y = os.environ.get("SOMETHING_NEW")')[0] - self.documented_names())
 
 
 if __name__ == "__main__":
