@@ -80,11 +80,21 @@ def system_tools():
     return system_tool("apfs-fuse"), system_tool("apfsutil")
 
 
+def resolve_home_prefix(mount_root, home):
+    """Rewrite a leading home path to its resolved form so a symlinked home prefix (/home -> /var/home) is allowed."""
+    raw = os.path.normpath(home)
+    if mount_root == raw or mount_root.startswith(raw.rstrip("/") + "/"):
+        return os.path.realpath(home) + mount_root[len(raw):]
+    return mount_root
+
+
 def checked_root(mount_root, uid, home, lstat=os.lstat):
-    """Accept only a canonical path below home or /run/user/<uid> whose existing components are caller-owned directories."""
-    root = Path(mount_root)
+    """Accept only a canonical path below home or /run/user/<uid> whose existing components below that are caller-owned directories.
+
+    Symlinks in the home prefix itself are resolved first; none are allowed below it."""
     if not os.path.isabs(mount_root) or os.path.normpath(mount_root) != mount_root:
         raise ValueError("Choose a canonical absolute mount root")
+    root = Path(resolve_home_prefix(mount_root, home))
     anchors = [Path(os.path.realpath(home)), Path(f"/run/user/{uid}")]
     anchor = next((a for a in anchors if len(a.parts) >= 3 and a in root.parents), None)
     if anchor is None:
@@ -278,6 +288,7 @@ def main(argv=None):
             raise ValueError("Run as the desktop user; the script requests root itself")
         home = pwd.getpwuid(uid).pw_dir
         root = checked_root(options.mount_root, uid, home)
+        options.mount_root = str(root)
         if not is_mounted(base.mounted_records(base.run), root / PREBOOT_DIRECTORY):
             # Exactly one authorization request; no retries or privilege fallbacks.
             code = subprocess.call(authorization_command(options))

@@ -248,6 +248,19 @@ class MountRootTest(unittest.TestCase):
     def test_directory_below_home_is_accepted_even_when_missing(self):
         self.assertEqual(self.check(self.home / "a/b/mounts"), self.home / "a/b/mounts")
 
+    def test_symlinked_home_prefix_is_resolved_and_accepted(self):
+        alias = self.root / "alias"
+        alias.symlink_to(self.root / "home", target_is_directory=True)
+        self.assertEqual(self.check(alias / "me/a/mounts", home=alias / "me"), self.home / "a/mounts")
+        self.assertEqual(cryptex.resolve_home_prefix(str(alias / "me"), str(alias / "me")), str(self.home))
+
+    def test_symlink_below_a_symlinked_home_prefix_is_still_refused(self):
+        alias = self.root / "alias"
+        alias.symlink_to(self.root / "home", target_is_directory=True)
+        (self.home / "inner").symlink_to(self.root, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.check(alias / "me/inner/mounts", home=alias / "me")
+
     def test_runtime_directory_is_accepted(self):
         self.assertEqual(self.check("/run/user/12345/darling/mounts", uid=12345), Path("/run/user/12345/darling/mounts"))
 

@@ -68,6 +68,12 @@ bool makeCommand(const MacPartition &partition, const QString &directory, MountB
     return true;
 }
 
+QString resolveHomePrefix(const QString &mountRoot, const QString &home) {
+    const QString resolved = QFileInfo(home).canonicalFilePath();
+    if (resolved.isEmpty() || (mountRoot != home && !mountRoot.startsWith(home + "/"))) return mountRoot;
+    return resolved + mountRoot.mid(home.size());
+}
+
 QString cryptexMountDirectory(const QString &mountRoot) { return mountRoot + "/macos-cryptex-os"; }
 
 bool makeCryptexCommand(const QString &python, const QString &script, const QString &mountRoot,
