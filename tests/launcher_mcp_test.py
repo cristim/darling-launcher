@@ -1256,9 +1256,14 @@ class MountPlanTest(MountPlanBase):
             self.assertEqual(data["commands"], [])
             self.assertEqual(len(data["warnings"]), 1)
             self.assertIn("cmake --install", data["warnings"][0])
+            self.assertIn("has no install rule", data["warnings"][0])
+            self.assertIn("'partition' and 'unmount' need no script and work now", data["warnings"][0])
             self.assertIn(str(self.libexec).replace(str(self.fx.root), ""), data["warnings"][0])
             self.assertNotIn(str(checkout), json.dumps(data))
-        self.assertTrue(any("cryptex mount action" in w for w in self.plan(kind="cryptex")["warnings"]))
+        self.assertTrue(any("PR #24" in w for w in self.plan(kind="cryptex")["warnings"]))
+        description = self.fx.server.tools["mount_plan"].description
+        self.assertIn("install rule from PR #24", description)
+        self.assertIn("'partition' and 'unmount' work now", description)
         self.plan(kind="partition", device="/dev/sda2", filesystem="hfs", backend="kernel")["commands"][0]
         self.never_ran()
 
