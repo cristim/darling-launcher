@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for tools/launcher-mcp.py. Fixture based: temp dirs and fake executables only, no Darling, pkexec or network."""
+import calendar
 import importlib.util
 import json
 import os
@@ -1020,16 +1021,62 @@ class ActionToolsTest(unittest.TestCase):
         victim.write_text("precious\n")
         real_strftime = time.strftime
         fixed = lambda fmt, *a: "20260101T000000" if fmt == "%Y%m%dT%H%M%S" else real_strftime(fmt, *a)
-        with patch.object(mcp.secrets, "token_hex", lambda n: "deadbeef"), patch.object(mcp.time, "strftime", fixed):
-            target = directory / "20260101T000000-deadbeef.log"
+        with patch.object(mcp.secrets, "token_hex", lambda n: "beef"), patch.object(mcp.time, "strftime", fixed):
+            target = directory / "20260101T000000-0000beef.log"
             target.symlink_to(victim)
             self.refused("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}, "cannot create the launch log")
-            target.unlink()
+            target = directory / "20260101T000000-0001beef.log"  # the frozen clock makes the next launch use the next sequence number
             target.write_text("already here\n")
             self.refused("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}, "cannot create the launch log")
         self.assertEqual(victim.read_text(), "precious\n")
         self.assertEqual(target.read_text(), "already here\n")
         self.assertFalse(self.ran())
+
+    def with_clock(self, start):
+        """A controllable clock for the time functions the server uses; the local zone is CET/CEST (clocks go back at 03:00 CEST on 2026-10-25)."""
+        clock = [float(start)]
+        real = {"gmtime": time.gmtime, "localtime": time.localtime, "strftime": time.strftime}
+        fake_localtime = lambda secs=None: real["localtime"](clock[0] if secs is None else secs)
+        patches = [patch.dict(os.environ, {"TZ": "CET-1CEST,M3.5.0,M10.5.0/3"}),
+                   patch.object(time, "gmtime", lambda secs=None: real["gmtime"](clock[0] if secs is None else secs)),
+                   patch.object(time, "localtime", fake_localtime),
+                   patch.object(time, "strftime", lambda fmt, t=None: real["strftime"](fmt, fake_localtime() if t is None else t))]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        self.addCleanup(time.tzset)
+        time.tzset()
+        return clock
+
+    def test_launch_log_names_stay_in_creation_order_across_a_dst_fall_back(self):
+        clock = self.with_clock(calendar.timegm((2026, 10, 25, 0, 50, 0)))  # 02:50 CEST, the hour before the clocks go back
+        self.assertEqual(time.strftime("%H:%M", time.localtime()), "02:50")
+        names, apps = [], ["Calc", "Fail", "Calc", "Fail"]
+        for delta, app in zip((0, 1200, 2400, 7200), apps):  # 02:10 CET (before 02:50 in local time), 02:30 CET, 03:50 CET
+            clock[0] = calendar.timegm((2026, 10, 25, 0, 50, 0)) + delta
+            names.append(self.ok("launch_app", {"prefix": "default", "app": app, "confirm": True})["log_file"])
+        self.assertEqual(time.strftime("%H:%M", time.localtime()), "03:50")
+        self.assertEqual(names, sorted(names))
+        self.assertEqual(len(set(names)), 4)
+        self.assertTrue(names[0].startswith("20261025T005000-") and names[1].startswith("20261025T011000-"))
+        self.assertIn("boom", "\n".join(self.ok("tail_log", {"source": "mcp-launch"})["lines"]))
+        clock[0] += 5
+        self.ok("launch_app", {"prefix": "default", "app": "Calc", "confirm": True})
+        self.assertNotIn("boom", "\n".join(self.ok("tail_log", {"source": "mcp-launch"})["lines"]))
+        self.assertTrue(all(mcp.LAUNCH_LOG_RE.match(n) for n in os.listdir(self.fx.data / "logs/mcp-launch")))
+
+    def test_launch_log_names_are_ordered_within_one_second_and_when_the_clock_steps_back(self):
+        clock = self.with_clock(calendar.timegm((2026, 6, 1, 12, 0, 0)))
+        names = [self.ok("launch_app", {"prefix": "default", "app": "Calc", "confirm": True})["log_file"] for _ in range(3)]
+        self.assertEqual(len({n[:15] for n in names}), 1)
+        self.assertEqual(names, sorted(names))
+        self.assertEqual([n[16:20] for n in names], ["0000", "0001", "0002"])
+        clock[0] -= 30  # NTP steps the clock back
+        names.append(self.ok("launch_app", {"prefix": "default", "app": "Fail", "confirm": True})["log_file"])
+        clock[0] += 31
+        names.append(self.ok("launch_app", {"prefix": "default", "app": "Calc", "confirm": True})["log_file"])
+        self.assertEqual(names, sorted(names))
+        self.assertEqual(len(set(names)), 5)
 
     def test_a_symlinked_launch_log_directory_is_refused_before_anything_starts(self):
         outside = self.fx.root / "elsewhere"

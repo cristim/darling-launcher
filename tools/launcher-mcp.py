@@ -609,6 +609,7 @@ class Server:
         self.initialize_seen = False
         self.initialized = False
         self.children = []
+        self.launch_stamp, self.launch_sequence = "", 0
         self.tools = {}
         for tool in build_tools(self):
             self.tools[tool.name] = tool
@@ -965,14 +966,19 @@ def build_tools(server):
         server.launch_logs()  # refuses a symlinked logs directory
         log_dir = config.log_dir / LAUNCH_LOG_DIR
         log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        log_name = f"{time.strftime('%Y%m%dT%H%M%S')}-{secrets.token_hex(4)}.log"
+        # UTC, so local-time changes (a DST fall-back repeats an hour) cannot reorder names; the stamp never goes behind this
+        # process's previous launch, and a counter orders launches within one second, so the lexically last name is the newest.
+        stamp = max(time.strftime("%Y%m%dT%H%M%S", time.gmtime()), server.launch_stamp)
+        server.launch_sequence = server.launch_sequence + 1 if stamp == server.launch_stamp else 0
+        server.launch_stamp = stamp
+        log_name = f"{stamp}-{server.launch_sequence:04x}{secrets.token_hex(2)}.log"
         argv = [binary, "exec", guest]
         try:
             fd = os.open(log_dir / log_name, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         except OSError as error:
             raise ToolError(f"cannot create the launch log: {error.strerror}")
         try:
-            os.write(fd, f"{time.strftime('%Y-%m-%dT%H:%M:%S')} [launch:{app['name']}] {prefix.name}: {' '.join(argv)}\n".encode())
+            os.write(fd, f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} [launch:{app['name']}] {prefix.name}: {' '.join(argv)}\n".encode())
             try:
                 proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=fd, stderr=subprocess.STDOUT, env=env, cwd="/", start_new_session=True, close_fds=True)
             except OSError as error:
