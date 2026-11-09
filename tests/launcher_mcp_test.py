@@ -39,6 +39,8 @@ class Fixture:
         self.server.initialized = True
 
     def close(self):
+        for child in self.server.children:
+            child.wait(timeout=10)
         self.env.stop()
         shutil.rmtree(self.root, ignore_errors=True)
 
@@ -676,6 +678,159 @@ class ActionToolsTest(unittest.TestCase):
         for forbidden in ("shell=True", "os.system", "os.popen", "os.kill", "killpg", ".terminate(", "os.setuid"):
             self.assertEqual([l for l in lines if forbidden in l], [], forbidden)
         self.assertEqual([l for l in lines if ".kill(" in l], ["proc.kill()"])
+
+
+class MountPlanTest(ToolTestCase):
+    def setUp(self):
+        super().setUp()
+        for name in ("pkexec", "sudo", "mount", "umount", "apfs-fuse", "apfsutil"):
+            self.fx.executable(name, f'touch "$(dirname "$0")/ran-{name}"\n')
+        self.mounts = self.fx.data / "mounts"
+
+    def plan(self, **arguments):
+        return self.ok("mount_plan", arguments)
+
+    def never_ran(self):
+        self.assertEqual([p.name for p in self.fx.bin.glob("ran-*")], [])
+
+    def test_batch_plan_mirrors_the_gui_command(self):
+        data = self.plan(kind="batch")
+        self.assertIs(data["executed"], False)
+        (command,) = data["commands"]
+        argv = command["argv"]
+        self.assertTrue(argv[0].endswith("python3"))
+        self.assertEqual(argv[1], "-I")
+        self.assertTrue(argv[2].endswith("/tools/mount-macos.py"))
+        self.assertEqual(argv[3:5], ["--mount-root", "~/.darling-launcher/mounts"])
+        self.assertEqual(argv[5], "--apfs-fuse")
+        self.assertTrue(argv[6].endswith("/bin/apfs-fuse"))
+        self.assertTrue(argv[7] == "--apfsutil" and argv[8].endswith("/bin/apfsutil"))
+        self.assertIn("--mount-root ~/.darling-launcher/mounts", command["shell"])
+        self.never_ran()
+
+    def test_batch_plan_accepts_a_subdirectory_and_quotes_it(self):
+        data = self.plan(kind="batch", mount_root=str(self.mounts / "my disks"))
+        self.assertIn("'~/.darling-launcher/mounts/my disks'", data["commands"][0]["shell"])
+        self.assertTrue(any("does not exist" in w for w in data["warnings"]))
+
+    def test_partition_plan_with_apfs_fuse(self):
+        directory = self.mounts / "disk1"
+        directory.mkdir()
+        data = self.plan(kind="partition", device="/dev/nvme0n1p5", filesystem="apfs", backend="apfs-fuse", volume_index=1, directory=str(directory))
+        argv = data["commands"][0]["argv"]
+        self.assertTrue(argv[0].endswith("/bin/pkexec"))
+        self.assertTrue(argv[1].endswith("/bin/apfs-fuse"))
+        self.assertEqual(argv[2:5], ["-v", "1", "-o"])
+        self.assertEqual(argv[5], f"ro,nodev,nosuid,noexec,uid={os.getuid()},gid={os.getgid()},allow_other")
+        self.assertEqual(argv[6:], ["/dev/nvme0n1p5", "~/.darling-launcher/mounts/disk1"])
+        self.assertEqual(data["commands"][0]["run_as"], "root via pkexec")
+        self.assertEqual(data["warnings"], [])
+        self.never_ran()
+
+    def test_partition_plan_with_the_kernel_driver(self):
+        apfs = self.plan(kind="partition", device="/dev/sda2", filesystem="apfs", backend="kernel", volume_index=0)["commands"][0]["argv"]
+        self.assertTrue(apfs[1].endswith("/bin/mount"))
+        self.assertEqual(apfs[2:5], ["-i", "-t", "apfs"])
+        self.assertEqual(apfs[6], f"ro,nodev,nosuid,noexec,uid={os.getuid()},gid={os.getgid()},vol=0")
+        self.assertEqual(apfs[7:], ["--", "/dev/sda2", "~/.darling-launcher/mounts/sda2-manual"])
+        hfs = self.plan(kind="partition", device="/dev/sda3", filesystem="hfsplus", backend="kernel")["commands"][0]["argv"]
+        self.assertNotIn("vol=", hfs[6])
+        self.assertTrue(hfs[6].startswith("ro,nodev,nosuid,noexec"))
+
+    def test_partition_plan_warns_about_the_directory(self):
+        data = self.plan(kind="partition", device="/dev/sda3", filesystem="hfs", backend="kernel")
+        self.assertTrue(any("does not exist yet" in w for w in data["warnings"]))
+        (self.mounts / "sda3-manual").mkdir()
+        (self.mounts / "sda3-manual/file").write_text("x")
+        self.assertTrue(any("not empty" in w for w in self.plan(kind="partition", device="/dev/sda3", filesystem="hfs", backend="kernel")["warnings"]))
+
+    def test_partition_argument_errors(self):
+        base = {"kind": "partition", "device": "/dev/sda2", "filesystem": "apfs", "backend": "kernel", "volume_index": 0}
+        cases = [({"device": "sda2"}, "under /dev"), ({"device": "/dev/../etc/passwd"}, "under /dev"), ({"device": "/dev/sda2;reboot"}, "under /dev"),
+                 ({"device": "/dev/sda 2"}, "under /dev"), ({"volume_index": None}, "volume index"), ({"filesystem": "hfs", "backend": "apfs-fuse"}, "only supports APFS"),
+                 ({"filesystem": "ext4"}, "must be one of"), ({"backend": "fuse"}, "must be one of"), ({"volume_index": 100}, "between 0 and 99"),
+                 ({"device": None}, "needs device"), ({"filesystem": None}, "needs filesystem"), ({"backend": None}, "needs backend"),
+                 ({"directory": "relative"}, "absolute path"), ({"directory": "/etc"}, "outside the launcher mount root"),
+                 ({"directory": str(self.mounts)}, "not the root itself"), ({"directory": f"{self.mounts}/../x"}, "'.', '..'"),
+                 ({"directory": f"{self.mounts}/a/./b"}, "'.', '..'"), ({"directory": str(self.fx.root / "elsewhere")}, "outside the launcher mount root"),
+                 ({"directory": f"{self.mounts}x/disk"}, "outside the launcher mount root"), ({"mount_root": str(self.mounts)}, "not used by kind")]
+        for change, fragment in cases:
+            arguments = {k: v for k, v in {**base, **change}.items() if v is not None}
+            self.refused("mount_plan", arguments, fragment)
+        self.never_ran()
+
+    def test_symlinked_mount_directories_are_refused(self):
+        outside = self.fx.root / "outside"
+        outside.mkdir()
+        (self.mounts / "link").symlink_to(outside)
+        self.refused("mount_plan", {"kind": "unmount", "directory": str(self.mounts / "link")}, "refusing symlink")
+        self.refused("mount_plan", {"kind": "unmount", "directory": str(self.mounts / "link/inner")}, "refusing symlink")
+        self.refused("mount_plan", {"kind": "batch", "mount_root": str(self.mounts / "link")}, "refusing symlink")
+        self.refused("mount_plan", {"kind": "partition", "device": "/dev/sda1", "filesystem": "hfs", "backend": "kernel", "directory": str(self.mounts / "link/x")}, "refusing symlink")
+
+    def test_mount_root_behind_a_symlink_is_accepted_by_either_spelling(self):
+        real = self.fx.root / "real-mounts"
+        real.mkdir()
+        shutil.rmtree(self.mounts)
+        self.mounts.symlink_to(real)
+        for spelling in (str(self.mounts / "disk"), str(real / "disk")):
+            argv = self.plan(kind="unmount", directory=spelling)["commands"][0]["argv"]
+            self.assertTrue(argv[-1].endswith("/real-mounts/disk"))
+
+    def test_unmount_plan(self):
+        (self.mounts / "disk1").mkdir()
+        data = self.plan(kind="unmount", directory=str(self.mounts / "disk1"))
+        argv = data["commands"][0]["argv"]
+        self.assertTrue(argv[0].endswith("/bin/pkexec") and argv[1].endswith("/bin/umount"))
+        self.assertEqual(argv[2:], ["--", "~/.darling-launcher/mounts/disk1"])
+        self.refused("mount_plan", {"kind": "unmount"}, "needs directory")
+        self.refused("mount_plan", {"kind": "unmount", "directory": "/mnt/other"}, "outside the launcher mount root")
+        self.refused("mount_plan", {"kind": "unmount", "directory": str(self.mounts)}, "not the root itself")
+        self.never_ran()
+
+    def test_cryptex_plan_mirrors_the_branch_command_and_notes_a_missing_script(self):
+        data = self.plan(kind="cryptex", device="/dev/nvme0n1p5")
+        argv = data["commands"][0]["argv"]
+        self.assertEqual(argv[1], "-I")
+        self.assertTrue(argv[2].endswith("/tools/mount-cryptex.py"))
+        self.assertEqual(argv[3:5], ["--mount-root", "~/.darling-launcher/mounts"])
+        self.assertTrue(argv[5] == "--apfs-fuse" and argv[6].endswith("/bin/apfs-fuse"))
+        self.assertEqual(argv[7:], ["--device", "/dev/nvme0n1p5"])
+        script = Path(os.path.realpath(SCRIPT)).parent / "mount-cryptex.py"
+        self.assertEqual(any("feat/cryptex-mount-action" in w for w in data["warnings"]), not script.is_file())
+        self.assertNotIn("--device", self.plan(kind="cryptex")["commands"][0]["argv"])
+        self.refused("mount_plan", {"kind": "cryptex", "device": "/dev/../x"}, "under /dev")
+        self.refused("mount_plan", {"kind": "cryptex", "apfsutil": "/x"}, "not used by kind")
+
+    def test_missing_tools_are_reported(self):
+        (self.fx.bin / "apfs-fuse").unlink()
+        self.refused("mount_plan", {"kind": "cryptex"}, "apfs-fuse was not found")
+        self.refused("mount_plan", {"kind": "partition", "device": "/dev/sda2", "filesystem": "apfs", "backend": "apfs-fuse", "volume_index": 0}, "apfs-fuse was not found")
+        self.assertTrue(any("apfs-fuse was not found" in w for w in self.plan(kind="batch")["warnings"]))
+        real_find = mcp.find_tool
+        with patch.object(mcp, "find_tool", lambda name: None if name == "pkexec" else real_find(name)):
+            data = self.plan(kind="unmount", directory=str(self.mounts / "d"))
+        self.assertTrue(any("pkexec was not found" in w for w in data["warnings"]))
+        self.assertEqual(data["commands"][0]["argv"][0], "/usr/bin/pkexec")
+
+    def test_explicit_tool_paths_must_be_executable_files(self):
+        self.refused("mount_plan", {"kind": "batch", "apfs_fuse": "relative"}, "absolute path")
+        self.refused("mount_plan", {"kind": "batch", "apfs_fuse": "/nonexistent/apfs-fuse"}, "not an executable file")
+        self.refused("mount_plan", {"kind": "batch", "apfs_fuse": f"{self.fx.bin}/../bin/apfs-fuse"}, "without '..'")
+        self.refused("mount_plan", {"kind": "batch", "apfsutil": str(self.fx.root)}, "not an executable file")
+        custom = self.fx.executable("apfs-fuse-custom", "")
+        self.assertTrue(self.plan(kind="batch", apfs_fuse=str(custom))["commands"][0]["argv"][6].endswith("/apfs-fuse-custom"))
+
+    def test_no_tool_ever_runs_pkexec_or_sudo(self):
+        fx = self.fx
+        fx.fake_findmnt([])
+        fx.prefix("default", [("Calc", "Calc")])
+        for name, arguments in (("launcher_status", {}), ("list_prefixes", {}), ("list_apps", {"prefix": "default"}), ("mount_status", {}), ("tail_log", {}),
+                                ("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}), ("stop_prefix", {"prefix": "default", "confirm": True})):
+            fx.call(name, arguments)
+        for kind in ("batch", "cryptex"):
+            fx.call("mount_plan", {"kind": kind})
+        self.never_ran()
 
 
 if __name__ == "__main__":
