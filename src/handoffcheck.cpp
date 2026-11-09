@@ -74,6 +74,7 @@ const RX CLASSDUMP_IVAR = rx(R"(;\s*(?://|/\*)\s*(?:\d+\s*=\s*)?[+@]?0x)" + H + 
 const RX OBJC_INTERFACE = rx(R"(^\s*@interface\s+\w+)");
 const RX HEX_WORD = rx(R"((?<![\w])(?:0[xX][0-9a-fA-F_']{8,24}|(?:)" + H + "{4}_){1,3}" + H + "{4}|" + H + R"({16}|[0-9]{15,20}|(?=[0-9a-fA-F]*[0-9])(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{8,15})(?![\w]))");
 const RX MD_PREFIX = rx(R"(^[\s>|]*(?:(?:[-*+\x{2022}]|\d+[.)])\s+)*)");
+const RX PATH_SLASHES = rx(R"(/(?:\.?/)+)");
 const RX TRACE_REG_KEY = rx(R"(^(?:x[0-7]|rdi|rsi|rdx|rcx|r8|r9)$)");
 
 // Python str.isspace() also covers U+001C..U+001F, which QChar::isSpace() and PCRE's \s do not.
@@ -141,56 +142,70 @@ struct JsonScan {
         if (at() == 'e' || at() == 'E') { const qsizetype e = i++; if (at() == '+' || at() == '-') ++i; if (digits()) fraction = true; else i = e; }
         return fraction || intDigits <= 4300; // Python refuses int() of more than 4300 digits
     }
-    bool value(int depth, bool &trace) {
-        trace = false;
-        if (depth > 1000) return false; // Python raises RecursionError somewhere near here; both count a failure
-        const QChar c = at();
-        if (c == '{') {
-            ++i; ws(); QHash<QString, bool> children; QSet<QString> keys;
-            if (at() == '}') { ++i; return true; }
-            for (;;) {
-                QString key; bool nested = false;
-                if (!string(&key)) return false;
-                keys.insert(key.toLower()); ws();
-                if (at() != ':') return false;
-                ++i; ws();
-                if (!value(depth + 1, nested)) return false;
-                children.insert(key, nested); ws();
-                if (at() == '}') { ++i; break; }
-                if (at() != ',') return false;
-                ++i; ws();
-            }
-            for (bool nested : children) trace = trace || nested;
-            static const QSet<QString> symbolKeys{"symbol", "sym", "name"}, strongArgs{"regs", "arg_regs", "fp_regs", "words"};
-            if (keys.intersects(symbolKeys)) {
-                trace = trace || keys.intersects(strongArgs) || (keys.contains("args") && (keys.contains("symbol") || keys.contains("sym")));
-                for (const QString &k : keys) trace = trace || TRACE_REG_KEY.match(k).hasMatch();
-            }
-            return true;
+    // One value, with an explicit stack instead of recursion: python's json parses any depth, so must this.
+    struct Frame { bool object; QSet<QString> keys; QHash<QString, bool> children; QString pendingKey; bool trace = false; };
+    static bool looksLikeTrace(const Frame &f) {
+        bool trace = false;
+        for (bool nested : f.children) trace = trace || nested;
+        static const QSet<QString> symbolKeys{"symbol", "sym", "name"}, strongArgs{"regs", "arg_regs", "fp_regs", "words"};
+        if (f.keys.intersects(symbolKeys)) {
+            trace = trace || f.keys.intersects(strongArgs) || (f.keys.contains("args") && (f.keys.contains("symbol") || f.keys.contains("sym")));
+            for (const QString &k : f.keys) trace = trace || TRACE_REG_KEY.match(k).hasMatch();
         }
-        if (c == '[') {
+        return trace;
+    }
+    bool key(Frame &f) {
+        QString k;
+        if (!string(&k)) return false;
+        f.keys.insert(k.toLower()); f.pendingKey = k; ws();
+        if (at() != ':') return false;
+        ++i; ws();
+        return true;
+    }
+    bool value(bool &trace) {
+        QList<Frame> stack;
+        bool last = false, haveValue = false; // haveValue: a value just ended and belongs to the top frame
+        auto close = [&] { const Frame f = stack.takeLast(); last = f.object ? looksLikeTrace(f) : f.trace; haveValue = true; };
+        for (;;) {
+            if (!haveValue) {
+                const QChar c = at();
+                if (c == '{') {
+                    ++i; ws(); stack.append(Frame{true, {}, {}, {}, false});
+                    if (at() == '}') { ++i; close(); } else if (!key(stack.last())) return false;
+                    continue;
+                }
+                if (c == '[') {
+                    ++i; ws(); stack.append(Frame{false, {}, {}, {}, false});
+                    if (at() == ']') { ++i; close(); }
+                    continue;
+                }
+                if (c == '"' ? !string(nullptr) : !(lit("true") || lit("false") || lit("null") || lit("NaN") || number())) return false;
+                last = false; haveValue = true;
+                continue;
+            }
+            if (stack.isEmpty()) { trace = last; return true; }
+            Frame &f = stack.last();
+            if (f.object) f.children.insert(f.pendingKey, last); else f.trace = f.trace || last;
+            haveValue = false; ws();
+            const QChar end = f.object ? '}' : ']';
+            if (at() == end) { ++i; close(); continue; }
+            if (at() != ',') return false;
             ++i; ws();
-            if (at() == ']') { ++i; return true; }
-            for (;;) {
-                bool nested = false;
-                if (!value(depth + 1, nested)) return false;
-                trace = trace || nested; ws();
-                if (at() == ']') { ++i; return true; }
-                if (at() != ',') return false;
-                ++i; ws();
-            }
+            if (f.object && !key(f)) return false;
         }
-        if (c == '"') return string(nullptr);
-        return lit("true") || lit("false") || lit("null") || lit("NaN") || number();
     }
 };
+// Every failed attempt is charged the characters it read: nested openers that never close
+// make each candidate parse to the end of the text, so a failure count alone still allows quadratic work.
 QList<int> traceHits(const QString &text) {
     QList<int> hits; int fails = 0, line = 1;
-    qsizetype i = text.indexOf('{'), counted = 0;
+    qsizetype i = text.indexOf('{'), counted = 0, spent = 0;
     while (i != -1) {
         JsonScan scan{text, i}; bool trace = false;
-        if (!scan.value(0, trace)) {
-            if (++fails > HandoffCheck::MaxJsonFailures) return hits << 0;
+        const bool parsed = scan.value(trace);
+        if (!parsed) {
+            spent += scan.i - i + 1; // a success is never rescanned, so only failures can add up to quadratic work
+            if (spent > HandoffCheck::MaxJsonScan || ++fails > HandoffCheck::MaxJsonFailures) return hits << 0;
             i = text.indexOf('{', i + 1); continue;
         }
         if (trace) { line += int(QStringView(text).mid(counted, i - counted).count('\n')); counted = i; hits << line; }
@@ -223,6 +238,12 @@ QString caselessView(const QString &line) {
     for (QChar &c : out) { if (c.unicode() == 0x130) c = 'I'; else if (c.unicode() == 0x131) c = 'i'; }
     return out;
 }
+// Python's \s also matches U+001C..U+001F; PCRE's does not. Same length, so positions hold.
+QString pythonSpaces(const QString &line) {
+    QString out = line;
+    for (QChar &c : out) if (c.unicode() >= 0x1c && c.unicode() <= 0x1f) c = ' ';
+    return out;
+}
 // A long line as overlapping pieces short enough to match reliably; the overlap exceeds any marker.
 QStringList windows(const QString &line) {
     constexpr int Overlap = 512;
@@ -243,7 +264,9 @@ bool HandoffCheck::Hit::operator<(const Hit &o) const {
     if (rule != o.rule) return rule < o.rule;
     return description < o.description;
 }
-QList<HandoffCheck::Hit> HandoffCheck::checkText(const QString &input) {
+QList<HandoffCheck::Hit> HandoffCheck::checkText(const QString &input) { return checkTextImpl(input, true); }
+// scanJson is off for the strict re-check of long-line windows: R7 is a whole-text rule, and each window would redo its scan.
+QList<HandoffCheck::Hit> HandoffCheck::checkTextImpl(const QString &input, bool scanJson) {
     const QString text = normalize(input);
     QStringList lines;
     for (QString l : text.split('\n')) {
@@ -256,7 +279,10 @@ QList<HandoffCheck::Hit> HandoffCheck::checkText(const QString &input) {
     for (const QString &l : lines) ci << caselessView(l);
     const bool hasInterface = std::any_of(lines.begin(), lines.end(), [](const QString &l) { return OBJC_INTERFACE.match(l).hasMatch(); });
     for (int i = 0; i < lines.size(); ++i) {
-        for (const auto &rule : LINE_RULES) if (search(rule.pattern, lines[i], ci[i])) hits << Hit{i + 1, rule.id, rule.description};
+        // "//" and "/./" name the same path, so R6 sees them collapsed.
+        QString flat = lines[i], flatCi = ci[i];
+        flat.replace(PATH_SLASHES, "/"); flatCi.replace(PATH_SLASHES, "/");
+        for (const auto &rule : LINE_RULES) if (rule.id == "R6" ? search(rule.pattern, flat, flatCi) : search(rule.pattern, lines[i], ci[i])) hits << Hit{i + 1, rule.id, rule.description};
         if (hasInterface && (OBJC_INTERFACE.match(lines[i]).hasMatch() || CLASSDUMP_IVAR.match(lines[i]).hasMatch())) hits << Hit{i + 1, "R3", "class-dump style @interface with ivar offsets"};
     }
     for (int i = 0; i < lines.size(); ++i) {
@@ -264,7 +290,7 @@ QList<HandoffCheck::Hit> HandoffCheck::checkText(const QString &input) {
         if (LIB_OFFSET.match(ci[i]).hasMatch() || (PC_VALUE.match(ci[i]).hasMatch() && nearLibrary()))
             hits << Hit{i + 1, "R10", "address/offset inside an Apple library image (library+offset, pc/lr/frame value)"};
     }
-    for (int line : traceHits(text)) hits << Hit{line, "R7", line ? "raw trace (T0) JSON object" : "too many JSON candidates to scan"};
+    if (scanJson) for (int line : traceHits(text)) hits << Hit{line, "R7", line ? "raw trace (T0) JSON object" : "too many JSON candidates to scan"};
 
     QList<int> block, run;
     const QStringList r1Lines = lines + QStringList{""};
@@ -327,15 +353,17 @@ QString decodeEscapes(const QString &text) {
 QList<QPair<int, QString>> base64Texts(const QString &text) {
     static const RX blob(R"((?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{16,}={0,2}(?![A-Za-z0-9+/=]))");
     QList<QPair<int, QString>> out;
+    int line = 1; qsizetype counted = 0; // line numbers in one pass, not a recount per blob
     for (auto it = blob.globalMatch(text); it.hasNext();) {
         const auto m = it.next();
+        line += int(QStringView(text).mid(counted, m.capturedStart() - counted).count('\n')); counted = m.capturedStart();
         const auto decoded = QByteArray::fromBase64Encoding(m.captured().toLatin1(), QByteArray::AbortOnBase64DecodingErrors);
         if (!decoded || decoded.decoded.size() < 8) continue;
         QStringDecoder utf8(QStringDecoder::Utf8, QStringDecoder::Flag::Stateless);
         const QString s = utf8.decode(decoded.decoded);
         if (utf8.hasError()) continue;
         const auto printable = std::count_if(s.begin(), s.end(), [](QChar c) { return c.isPrint() || c == '\n' || c == '\t' || c == '\r'; });
-        if (printable * 10 >= s.size() * 9) out << qMakePair(int(text.left(m.capturedStart()).count('\n')) + 1, s);
+        if (printable * 10 >= s.size() * 9) out << qMakePair(line, s);
     }
     return out;
 }
@@ -364,7 +392,7 @@ QList<HandoffCheck::Hit> HandoffCheck::checkTextStrict(const QString &input) {
         // Re-check the long line in short windows, so a match-limit error can never hide a compliance hit.
         QSet<QString> seen;
         for (const QString &window : windows(lines[i]))
-            for (const Hit &h : checkText(window))
+            for (const Hit &h : checkTextImpl(window, false))
                 if (!seen.contains(h.rule)) { seen.insert(h.rule); hits << Hit{i + 1, "E4", "long line, a window matches " + h.rule + " (" + h.description + ")", h.rule}; }
     }
     return sortedUnique(hits);
@@ -400,7 +428,7 @@ QList<HandoffCheck::Hit> HandoffCheck::reconFormat(const QString &text) {
         {rx(R"(^Callers exist:\s*(yes|no)(?:\s*;\s*files:\s*(.+))?\z)"), "Callers exist: yes|no [; files: <paths>]"}};
     QList<QPair<int, QString>> body;
     const QStringList lines = text.split('\n');
-    for (int i = 0; i < lines.size(); ++i) if (!pyStrip(lines[i]).isEmpty() && !header.match(lines[i]).hasMatch()) body << qMakePair(i + 1, pyStrip(lines[i]));
+    for (int i = 0; i < lines.size(); ++i) if (!pyStrip(lines[i]).isEmpty() && !header.match(pythonSpaces(lines[i])).hasMatch()) body << qMakePair(i + 1, pyStrip(pythonSpaces(lines[i])));
     QList<Hit> out;
     for (int k = 0; k < expected.size(); ++k) {
         if (k >= body.size()) { out << Hit{body.isEmpty() ? 0 : body.last().first, "F1", QString("missing line %1: expected '%2'").arg(k + 1).arg(expected[k].second)}; continue; }
@@ -424,7 +452,7 @@ QList<HandoffCheck::Hit> HandoffCheck::reconFormat(const QString &text) {
 std::optional<QString> HandoffCheck::parseHeader(const QString &text, const QString &label) {
     const RX header = rx(R"(^\s*(?:[*_-]\s*)?\**)" + label + R"(:\**\s*(.*)$)", true);
     for (const QString &line : text.split('\n')) {
-        const auto m = header.match(caselessView(line)); // same length as line, so offsets apply to it
+        const auto m = header.match(pythonSpaces(caselessView(line))); // same length as line, so offsets apply to it
         if (m.hasMatch()) return pyStrip(line.mid(m.capturedStart(1), m.capturedLength(1)));
     }
     return std::nullopt;

@@ -67,7 +67,7 @@ private slots:
     }
     // Compliance-confirmed oracle version: drift of the vendored copy must fail loudly.
     void vendoredOracleIsTheConfirmedVersion() {
-        const QHash<QString, QString> pinned{{"check_handoff.py", "4aafb1cdb9ee7563dcbf4c05169107bbfcf58c5ff41659dd6be71a7b6d6bf7c8"},
+        const QHash<QString, QString> pinned{{"check_handoff.py", "ee9f8c26a23718e18eb5110eb9be0baefe554ec09932865414972d65cc60fd49"},
                                              {"test_check_handoff.py", "992f6c8b9851aaeda52ac898ae4ca150514fade815c56d81c320d0f20d7bdd46"}};
         for (auto it = pinned.begin(); it != pinned.end(); ++it) {
             QFile f(TEST_SOURCE_DIR "/tests/handoff-oracle/" + it.key()); QVERIFY(f.open(QIODevice::ReadOnly));
@@ -78,6 +78,24 @@ private slots:
         const auto hits = HandoffCheck::checkTextStrict(QString("a ").repeated(100000) + "calls sub_1A2B\n");
         QVERIFY(std::any_of(hits.begin(), hits.end(), [](const auto &h) { return h.rule == "E4" && h.inner == "R5" && HandoffCheck::isComplianceRule(h); }));
         QVERIFY(!HandoffCheck::exposureMarkers(QString("x").repeated(20000) + " sub_1A2B\n").isEmpty()); // log scan past 4096 chars
+    }
+    // Review finding 1: each unclosed opener parses to the end of the text, so 2000 failures alone were minutes of work.
+    void unclosedNestedOpenersFailClosedQuickly() {
+        const QString text = QString(R"({"a":[)").repeated(1000000 / 6 - 1);
+        QElapsedTimer timer; timer.start();
+        const auto hits = HandoffCheck::checkText(text);
+        QVERIFY2(timer.elapsed() < 10000, qPrintable(QString::number(timer.elapsed()) + " ms"));
+        QVERIFY(std::any_of(hits.begin(), hits.end(), [](const auto &h) { return h.rule == "R7" && h.line == 0; }));
+        timer.restart();
+        const auto strict = HandoffCheck::checkTextStrict(text);
+        QVERIFY2(timer.elapsed() < 20000, qPrintable(QString::number(timer.elapsed()) + " ms"));
+        QVERIFY(std::any_of(strict.begin(), strict.end(), [](const auto &h) { return h.rule == "R7" && h.line == 0; }));
+    }
+    void manyBase64BlobsStayFast() {
+        QString text; for (int i = 0; i < 20000; ++i) text += "aGVsbG8gd29ybGQgZm9vYmFy\n"; // printable base64 on every line
+        QElapsedTimer t; t.start();
+        HandoffCheck::checkTextStrict(text);
+        QVERIFY2(t.elapsed() < 5000, qPrintable(QString::number(t.elapsed())));
     }
     void headers() {
         const QString t = "Agent: res-1\nInputs: 01-a.md; 02-b.md\n";
@@ -90,6 +108,8 @@ private slots:
         QCOMPARE(HandoffCheck::parseSources("x\nsource: d\n"), QStringList({"d"}));
         QCOMPARE(HandoffCheck::parseSources("none\n"), QStringList());
         QCOMPARE(HandoffCheck::parseHeader(QString::fromUtf8("\u0130nputs: x\n"), "Inputs").value(), QString("x")); // python re.I folds U+0130
+        QCOMPARE(HandoffCheck::parseHeader(QString("\x1cInputs:\x1f" "01-research-to-spec.md\n"), "Inputs").value(), QString("01-research-to-spec.md")); // python \s covers U+001C..U+001F
+        QCOMPARE(HandoffCheck::reconFormat(QString("Absent:\x1c_A\nBranch: m\x1d" "Commit: ") + QString(40, 'a') + "\nCallers exist:\x1eno\n").size(), 0);
         QCOMPARE(HandoffCheck::parseHeader(QString::fromUtf8("\u0130nputs: \u0130x\n"), "Inputs").value(), QString::fromUtf8("\u0130x")); // value keeps its text
     }
     void matchedTextNeverInDescriptions() {
