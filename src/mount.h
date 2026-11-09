@@ -29,6 +29,8 @@ bool trustedCryptexScript(const QString &script, unsigned extraOwner, QString *e
 QString exitDescription(int code);
 // The directory names are mirrored in tools/mount-cryptex.py.
 QString cryptexMountDirectory(const QString &mountRoot);
+// The root Unmount targets changes only when the script reports the pending root's image mounted and verified.
+QString adoptCryptexRoot(const QString &current, const QString &pending, const QString &mountedPath);
 // Mirrors resolve_home_prefix in tools/mount-cryptex.py: resolves a symlinked home prefix (/home -> /var/home).
 QString resolveHomePrefix(const QString &mountRoot, const QString &home);
 // The passwd entry's home directory, cleaned: the script uses the same source, never $HOME. Empty if there is none.

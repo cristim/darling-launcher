@@ -114,6 +114,17 @@ private slots:
         const QString link = temporary.path() + "/link.py"; QVERIFY(QFile::link(script, link));
         QCOMPARE(LauncherMount::trustedFile(link, owner, true, &error), script);
     }
+    void unmountTargetsOnlyAVerifiedCryptexRoot() {
+        // A failed second attempt (different root after a home-prefix symlink changed) must not replace the verified root.
+        const QString first = "/home/u/mounts", second = "/var/home/u/mounts";
+        QString verified = LauncherMount::adoptCryptexRoot({}, first, first + "/macos-cryptex-os");
+        QCOMPARE(verified, first);
+        QCOMPARE(LauncherMount::adoptCryptexRoot(verified, second, {}), first);                              // attempt failed: no event
+        QCOMPARE(LauncherMount::adoptCryptexRoot(verified, second, first + "/macos-cryptex-os"), first);     // stale or foreign path
+        QCOMPARE(LauncherMount::adoptCryptexRoot(verified, {}, second + "/macos-cryptex-os"), first);       // no attempt in progress
+        QCOMPARE(LauncherMount::adoptCryptexRoot(verified, second, second + "/macos-cryptex-os"), second);  // second verified
+        QCOMPARE(LauncherMount::adoptCryptexRoot({}, second, "/elsewhere/macos-cryptex-os"), QString());
+    }
     void prebootUnmountIsOnlyTheScriptsUnmountRequest() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString script = temporary.path() + "/mount-cryptex.py"; QFile file(script); QVERIFY(file.open(QIODevice::WriteOnly)); file.close();

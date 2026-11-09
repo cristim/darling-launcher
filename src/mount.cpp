@@ -100,6 +100,9 @@ QString resolveHomePrefix(const QString &mountRoot, const QString &home) {
     return resolved + tail + root.mid(cleanHome.size());
 }
 
+QString adoptCryptexRoot(const QString &current, const QString &pending, const QString &mountedPath) {
+    return !pending.isEmpty() && mountedPath == cryptexMountDirectory(pending) ? pending : current;
+}
 
 QString passwdHome() {
     struct passwd entry {}; struct passwd *found = nullptr; QByteArray buffer(4096, 0);
