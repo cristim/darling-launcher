@@ -40,17 +40,23 @@ bool headerMatches(const QByteArray &head, const QString &arch, const QByteArray
 }
 
 constexpr qint64 kCancelled = -2;
+void pauseFor(const DyldCacheCopy::Options &opt) {
+    if (opt.sleepFn) opt.sleepFn(opt.pauseMs); else QThread::msleep(unsigned(opt.pauseMs));
+}
 // Length of the prefix (at most `limit`) of dst that equals src, to the block; -1 on a read error, kCancelled on cancel.
-// Reads the source, so it pauses between windows like the copy does.
-qint64 matchingPrefix(int srcFd, int dstFd, qint64 limit, const DyldCacheCopy::Options &opt, const std::atomic<bool> *cancel, QByteArray *buf) {
+// Reads the source, so it pauses after every window's worth of bytes like the copy does. onBlock gets the verified length.
+qint64 matchingPrefix(int srcFd, int dstFd, qint64 limit, const DyldCacheCopy::Options &opt, const std::atomic<bool> *cancel, QByteArray *buf,
+                      const std::function<void(qint64)> &onBlock = {}) {
     QByteArray other(buf->size(), Qt::Uninitialized);
+    qint64 sinceWindow = 0;
     for (qint64 pos = 0; pos < limit;) {
         if (cancelled(cancel)) return kCancelled;
         const qint64 n = qMin<qint64>(buf->size(), limit - pos);
         if (!preadFull(srcFd, buf->data(), n, pos) || !preadFull(dstFd, other.data(), n, pos)) return -1;
         if (std::memcmp(buf->constData(), other.constData(), size_t(n)) != 0) return pos;
-        pos += n;
-        if (opt.pauseMs > 0 && pos % opt.windowBytes == 0 && pos < limit) { if (opt.sleepFn) opt.sleepFn(opt.pauseMs); else QThread::msleep(unsigned(opt.pauseMs)); }
+        pos += n; sinceWindow += n;
+        if (onBlock) onBlock(pos);
+        if (opt.pauseMs > 0 && sinceWindow >= opt.windowBytes && pos < limit) { pauseFor(opt); sinceWindow = 0; }
     }
     return limit;
 }
@@ -72,7 +78,9 @@ DyldCopy copyFile(const QString &sourceDir, const QString &root, const QString &
     // user, so the kept prefix is proven equal to the source and cut at the first block that differs.
     qint64 offset = 0;
     if (existing <= srcSize) {
-        const qint64 kept = matchingPrefix(src.fd, dst.fd, existing / opt.windowBytes * opt.windowBytes, opt, cancel, &buf);
+        const qint64 kept = matchingPrefix(src.fd, dst.fd, existing / opt.windowBytes * opt.windowBytes, opt, cancel, &buf, [&](qint64 pos) {
+            if (progress) progress({tally->index, tally->count, item.name, pos, srcSize, tally->done + pos, tally->total});
+        });
         if (kept == kCancelled) { DyldCopy c; c.result = DyldCacheCopy::Result::Cancelled; return c; }
         if (kept < 0) return failed("Cannot compare the partial copy of " + item.name + " with the source");
         offset = kept;
@@ -97,7 +105,7 @@ DyldCopy copyFile(const QString &sourceDir, const QString &root, const QString &
         }
         if (::fdatasync(dst.fd) != 0) return failed("Cannot flush " + item.name + " to the store");
         ::posix_fadvise(src.fd, 0, 0, POSIX_FADV_DONTNEED);
-        if (opt.pauseMs > 0 && pos < srcSize) { if (opt.sleepFn) opt.sleepFn(opt.pauseMs); else QThread::msleep(unsigned(opt.pauseMs)); }
+        if (opt.pauseMs > 0 && pos < srcSize) pauseFor(opt);
     }
     struct stat st, ss;
     if (::fstat(dst.fd, &st) != 0 || st.st_size != srcSize) return failed(item.name + " has the wrong size after copying");
@@ -183,7 +191,7 @@ Outcome copyCache(const QString &sourceDir, const QString &arch, const QString &
         if (r.result != Result::Done) { Outcome o = r; o.storeId = id; return o; }
     }
 
-    StoreManifest m; m.arch = arch; m.uuid = uuidHex(header.uuid);;
+    StoreManifest m; m.arch = arch; m.uuid = uuidHex(header.uuid);
     m.copiedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     for (const Item &it : items) {
         StoreFile f{it.name, it.size, uuidHex(it.uuid), QString()};
