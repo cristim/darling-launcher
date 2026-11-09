@@ -22,7 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.parse
+import unicodedata
 
 SERVER_NAME = "darling-launcher-mcp"
 SERVER_VERSION = "0.1.0"
@@ -137,6 +137,7 @@ class Redactor:
     # label separated by whitespace only: the next word if it is long enough to be a secret rather than prose ("the password field")
     SPACED = re.compile(r"(?i)\b" + LABELS + r"\b\s+(?P<v>(?!<redacted>)[^\s\"'=:]{6,})")
     # The name ends at a delimiter, so PATH=/home/a/bin:/usr/bin and (/home/a) keep their separators.
+    USERINFO = re.compile(r"(?<=://)(?P<v>[^/\s@\"']+:[^/\s@\"']+)(?=@)")
     GENERIC_HOME = re.compile(r"(?i)/(?:home|Users|run/media)/(?P<v>[^/\s\"'`:;,()\[\]{}<>|&=*?\\]+)")
     MAX_DECODE_DEPTH = 5
 
@@ -151,7 +152,7 @@ class Redactor:
     def spans(self, text, paths, secret):
         """(start, end, replacement) for everything to hide in text."""
         found = [(m.start(), m.end(), secret) for pattern in self.TOKENS for m in pattern.finditer(text)]
-        found += [m.span("v") + (secret,) for pattern in (self.SCHEME, self.LABELLED, self.SPACED) for m in pattern.finditer(text)]
+        found += [m.span("v") + (secret,) for pattern in (self.SCHEME, self.LABELLED, self.SPACED, self.USERINFO) for m in pattern.finditer(text)]
         if paths:
             found += [m.span() + ("~",) for pattern in self.homes for m in pattern.finditer(text)]
             found += [m.span("v") + ("<user>",) for m in self.GENERIC_HOME.finditer(text)]
@@ -159,22 +160,28 @@ class Redactor:
 
     @staticmethod
     def decode_once(text, origin):
-        """Percent-decodes ASCII %XX. origin[i] is the (start, end) in the original string of character i of text."""
-        out, out_origin, i = [], [], 0
+        """One decoding layer: ASCII %XX, JSON escapes (\\/ and \\u00XX), then Unicode compatibility folding (fullwidth slashes and
+        letters) character by character. origin[i] is the (start, end) in the original string of character i of text."""
+        out, i = [], 0
         while i < len(text):
-            code = int(text[i + 1:i + 3], 16) if text[i] == "%" and re.fullmatch(r"[0-9A-Fa-f]{2}", text[i + 1:i + 3]) else 128
-            if code < 128:
-                out.append(chr(code))
-                out_origin.append((origin[i][0], origin[i + 2][1]))
-                i += 3
+            width, code = 1, None
+            if text[i] == "%" and re.fullmatch(r"[0-9A-Fa-f]{2}", text[i + 1:i + 3]):
+                width, code = 3, int(text[i + 1:i + 3], 16)
+            elif text[i] == "\\" and text[i + 1:i + 2] == "/":
+                width, code = 2, ord("/")
+            elif text[i] == "\\" and re.fullmatch(r"u00[0-7][0-9A-Fa-f]", text[i + 1:i + 6]):
+                width, code = 6, int(text[i + 3:i + 6], 16)
+            if code is not None and code < 128:
+                out.append((chr(code), (origin[i][0], origin[i + width - 1][1])))
             else:
-                out.append(text[i])
-                out_origin.append(origin[i])
-                i += 1
-        return "".join(out), out_origin
+                width = 1
+                folded = unicodedata.normalize("NFKC", text[i])
+                out.extend((c, origin[i]) for c in folded)
+            i += width
+        return "".join(c for c, _ in out), [o for _, o in out]
 
     def text(self, value, paths=True):
-        """Hides secrets and, if paths, home and user-name paths. The text is also searched percent-decoded to a fixed point
+        """Hides secrets and, if paths, home and user-name paths. The text is also searched percent-, JSON-escape- and NFKC-decoded to a fixed point
         (at most MAX_DECODE_DEPTH layers) but the ORIGINAL text is what is returned, with every match redacted whole, so a
         decoded fragment never appears in the output. paths=False keeps paths and uses a replacement without shell
         metacharacters, for words that are quoted afterwards: redaction must never run over an already quoted string."""
@@ -182,7 +189,7 @@ class Redactor:
         current, origin = value, [(i, i + 1) for i in range(len(value))]
         found = self.spans(current, paths, secret)
         for _ in range(self.MAX_DECODE_DEPTH):
-            if "%" not in current:
+            if current.isascii() and "%" not in current and "\\" not in current:
                 break
             decoded, decoded_origin = self.decode_once(current, origin)
             if decoded == current:
