@@ -36,10 +36,10 @@ private slots:
         DyldCache::MainHeader h; QString err;
         QByteArray b = mainWith({{".01", fakeUuid(2), 0}});
         QVERIFY(!DyldCache::parseMainHeader(b, 0x200 + 55, &h, &err));      // table past the file
-        put32(b, 0x188, 0x8); QVERIFY(!DyldCache::parseMainHeader(b, 4096, &h, &err)); // overlaps the locating fields
-        put32(b, 0x188, 0x201); QVERIFY(!DyldCache::parseMainHeader(b, 4096, &h, &err)); // unaligned
-        put32(b, 0x188, 0x1000); QVERIFY(!DyldCache::parseMainHeader(b, 1LL << 40, &h, &err)); QVERIFY(err.contains("outside")); // beyond the read window
-        b = mainWith({{".01", fakeUuid(2), 0}}); put32(b, 0x18c, 64); QVERIFY(!DyldCache::parseMainHeader(b, 4096, &h, &err)); QVERIFY(err.contains("too many"));
+        putLe32(b, 0x188, 0x8); QVERIFY(!DyldCache::parseMainHeader(b, 4096, &h, &err)); // overlaps the locating fields
+        putLe32(b, 0x188, 0x201); QVERIFY(!DyldCache::parseMainHeader(b, 4096, &h, &err)); // unaligned
+        putLe32(b, 0x188, 0x1000); QVERIFY(!DyldCache::parseMainHeader(b, 1LL << 40, &h, &err)); QVERIFY(err.contains("outside")); // beyond the read window
+        b = mainWith({{".01", fakeUuid(2), 0}}); putLe32(b, 0x18c, 64); QVERIFY(!DyldCache::parseMainHeader(b, 4096, &h, &err)); QVERIFY(err.contains("too many"));
     }
     void fileHeaderGivesUuid() {
         QString arch; QByteArray uuid, err0; QString err;

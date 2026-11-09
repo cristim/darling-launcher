@@ -14,7 +14,7 @@ static inline QByteArray fakeUuid(int seed) {
     for (int i = 0; i < 16; ++i) u[i] = char(seed * 17 + i + 1);
     return u;
 }
-static inline void put32(QByteArray &b, int off, quint32 v) { std::memcpy(b.data() + off, &v, 4); }
+static inline void putLe32(QByteArray &b, int off, quint32 v) { std::memcpy(b.data() + off, &v, 4); }
 static inline QByteArray fakeFile(const QString &arch, const QByteArray &uuid, qint64 size, const QList<FakeSub> &subs, int fill) {
     QByteArray b(int(size), '\0');
     for (int i = 0; i < b.size(); ++i) b[i] = char((i * 31 + fill) & 0xff);
@@ -23,7 +23,7 @@ static inline QByteArray fakeFile(const QString &arch, const QByteArray &uuid, q
     std::memcpy(b.data() + 0x58, uuid.constData(), 16);
     std::memset(b.data() + 0x188, 0, 8);
     if (!subs.isEmpty()) {
-        put32(b, 0x188, 0x200); put32(b, 0x18c, quint32(subs.size()));
+        putLe32(b, 0x188, 0x200); putLe32(b, 0x18c, quint32(subs.size()));
         for (int i = 0; i < subs.size(); ++i) {
             const int base = 0x200 + i * 56;
             std::memset(b.data() + base, 0, 56);
