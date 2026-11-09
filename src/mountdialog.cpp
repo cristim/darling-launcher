@@ -121,7 +121,13 @@ MountDialog::MountDialog(QWidget *parent, std::function<QList<SourceMount>()> pr
         });
         batch->start(python, {"-I", script, "--mount-root", batchRoot->text(), "--apfs-fuse", fusePath->text(), "--apfsutil", utilityPath->text()});
     });
+    cryptexButton = new QPushButton("Mount cryptex OS (Preboot + os.dmg)"); cryptexButton->setObjectName("mountCryptexOs"); actions->addWidget(cryptexButton);
+    connect(cryptexButton, &QPushButton::clicked, this, [=] { mountCryptex(batchRoot->text(), fusePath->text()); });
+    cryptexUnmountButton = new QPushButton("Unmount cryptex OS"); cryptexUnmountButton->setObjectName("unmountCryptexOs"); cryptexUnmountButton->setEnabled(false); actions->addWidget(cryptexUnmountButton);
+    connect(cryptexUnmountButton, &QPushButton::clicked, this, &MountDialog::unmountCryptex);
     layout->addLayout(actions);
+    auto *cryptexNote = new QLabel("The cryptex action mounts Preboot with one authorization request (select a partition to pin it), then mounts os.dmg as you.\nThe privileged step only uses root-owned apfs-fuse and apfsutil from /usr/local/bin or /usr/bin, and a mount root under your home.\napfs-fuse can use several GB of memory while reading it: unmount the cryptex OS first, then Preboot (session mounts), if the system slows down.");
+    cryptexNote->setWordWrap(true); layout->addWidget(cryptexNote);
     output = new QTextEdit; output->setReadOnly(true); output->setObjectName("mountOutput"); layout->addWidget(output);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close); connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject); layout->addWidget(buttons);
     connect(&discovery, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
@@ -192,6 +198,70 @@ void MountDialog::mountSelected() {
                                     QStandardPaths::findExecutable("pkexec"), tool, &command, &error)) { output->append(error); return; }
     execute(command, false, partition.device);
 }
+void MountDialog::mountCryptex(const QString &root, const QString &apfsFuse) {
+    const int selected = partitions->currentData().toInt();
+    const QString device = selected >= 0 && selected < detected.size() ? detected[selected].device : QString();
+    MountCommand command; QString error;
+    if (!LauncherMount::makeCryptexCommand(QStandardPaths::findExecutable("python3"), QStringLiteral(LAUNCHER_MOUNT_CRYPTEX_SCRIPT),
+                                           root, apfsFuse, device, &command, &error)) { output->append(error); return; }
+    auto *process = new QProcess(this); process->setProcessChannelMode(QProcess::MergedChannels);
+    mountBusy = true; cryptexButton->setEnabled(false); mountButton->setEnabled(false);
+    output->append("Warning: apfs-fuse can use several GB of memory while reading the cryptex image.");
+    output->append("Waiting for one authorization request for the Preboot mount…");
+    cryptexRoot = root;
+    auto buffer = QSharedPointer<QByteArray>::create();
+    auto consume = [=] {
+        *buffer += process->readAllStandardOutput();
+        int newline;
+        while ((newline = buffer->indexOf('\n')) >= 0) { handleCryptexEvent(buffer->left(newline)); buffer->remove(0, newline + 1); }
+    };
+    connect(process, &QProcess::readyReadStandardOutput, this, consume);
+    connect(process, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) {
+        consume(); mountBusy = false; cryptexButton->setEnabled(true); mountButton->setEnabled(true);
+        output->append(exit != QProcess::NormalExit ? "Cryptex mount helper crashed." : LauncherMount::exitDescription(code));
+        process->deleteLater(); discover();
+    });
+    connect(process, &QProcess::errorOccurred, this, [=](QProcess::ProcessError failure) {
+        if (failure == QProcess::FailedToStart) { mountBusy = false; cryptexButton->setEnabled(true); mountButton->setEnabled(true); output->append(process->errorString()); process->deleteLater(); }
+    });
+    process->start(command.program, command.arguments);
+}
+
+void MountDialog::handleCryptexEvent(const QByteArray &line) {
+    qInfo().noquote() << QString::fromUtf8(line);
+    const auto event = QJsonDocument::fromJson(line).object();
+    const QString type = event.value("event").toString(), path = event.value("path").toString(), role = event.value("role").toString();
+    if (type == "mounted") {
+        QStorageInfo storage(path); storage.refresh();
+        const bool verified = storage.rootPath() == path;
+        if (role == "preboot" && verified && ownedMountChoices->findText(path) < 0) ownedMountChoices->addItem(path, storage.device());
+        if (role == "cryptex-os" && verified) cryptexUnmountButton->setEnabled(true);
+        output->append((verified ? "Mounted read-only: " : "Reported mounted but not verified: ") + path);
+    } else if (type == "dyld") output->append("dyld shared cache directory: " + path);
+    else if (type == "warning") output->append("Warning: " + event.value("message").toString());
+    else if (!event.value("message").toString().isEmpty()) output->append(event.value("message").toString());
+    else if (event.isEmpty() && !line.isEmpty()) output->append(QString::fromUtf8(line));
+}
+
+void MountDialog::unmountCryptex() {
+    MountCommand command; QString error;
+    QString fusermount = QStandardPaths::findExecutable("fusermount3");
+    if (fusermount.isEmpty()) fusermount = QStandardPaths::findExecutable("fusermount");
+    if (!LauncherMount::makeCryptexUnmountCommand(fusermount, cryptexRoot, &command, &error)) { output->append(error); return; }
+    auto *runner = new MountRunner(this);
+    const QString target = LauncherMount::cryptexMountDirectory(cryptexRoot);
+    cryptexUnmountButton->setEnabled(false);
+    connect(runner, &MountRunner::output, output, &QTextEdit::insertPlainText);
+    connect(runner, &MountRunner::completed, this, [this, runner, target](bool, const QString &message) {
+        output->append(message);
+        QStorageInfo storage(target); storage.refresh();
+        if (storage.rootPath() == target) { output->append("The cryptex OS is still mounted: " + target); cryptexUnmountButton->setEnabled(true); }
+        else output->append("Cryptex OS unmounted. Unmount Preboot from the session mounts when finished.");
+        runner->deleteLater();
+    });
+    runner->start(command);
+}
+
 void MountDialog::execute(const MountCommand &command, bool unmount, const QString &device) {
     auto *runner = new MountRunner(this);
     const QString target = unmount ? ownedMount : QFileInfo(directory->text()).canonicalFilePath();
