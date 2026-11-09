@@ -236,6 +236,7 @@ bool MountDialog::cryptexCommandReady(QString *python) {
 
 void MountDialog::mountCryptex(const QString &requestedRoot, const QString &apfsFuse) {
     const QString root = LauncherMount::resolveHomePrefix(requestedRoot, LauncherMount::passwdHome());
+    if (root.isEmpty() && !requestedRoot.isEmpty()) { output->append("Your home directory passes through a dangling symlink; fix it before mounting."); return; }
     const int selected = partitions->currentData().toInt();
     const QString device = selected >= 0 && selected < detected.size() ? detected[selected].device : QString();
     MountCommand command; QString error, python;

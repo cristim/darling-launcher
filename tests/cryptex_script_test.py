@@ -368,11 +368,16 @@ class MountRootTest(unittest.TestCase):
         real = self.root / "real"
         (real / "me").mkdir(parents=True)
         (self.root / "alias").symlink_to(real, target_is_directory=True)
+        (self.root / "dangling").symlink_to(self.root / "gone", target_is_directory=True)
         cases = json.loads((Path(__file__).resolve().parent / "home_prefix_cases.json").read_text())
         self.assertGreater(len(cases), 5)
         for case in cases:
-            fill = lambda text: text.replace("@ALIAS@", str(self.root / "alias")).replace("@REAL@", str(real))
-            self.assertEqual(cryptex.resolve_home_prefix(fill(case["root"]), fill(case["home"])), fill(case["expect"]), case["name"])
+            fill = lambda text: text.replace("@ALIAS@", str(self.root / "alias")).replace("@REAL@", str(real)).replace("@DANGLING@", str(self.root / "dangling"))
+            if case["expect"] is None:
+                with self.assertRaisesRegex(ValueError, "dangling", msg=case["name"]):
+                    cryptex.resolve_home_prefix(fill(case["root"]), fill(case["home"]))
+            else:
+                self.assertEqual(cryptex.resolve_home_prefix(fill(case["root"]), fill(case["home"])), fill(case["expect"]), case["name"])
 
     def test_symlink_below_a_symlinked_home_prefix_is_still_refused(self):
         alias = self.root / "alias"

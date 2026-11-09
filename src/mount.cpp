@@ -25,6 +25,15 @@ QString untrustedComponent(const QString &resolved, unsigned extraOwner, struct 
             return component;
     return {};
 }
+bool hasDanglingSymlink(const QString &path) {
+    QString current;
+    for (const QString &part : path.split('/', Qt::SkipEmptyParts)) {
+        current += "/" + part;
+        const QFileInfo info(current);
+        if (info.isSymLink() && !info.exists()) return true;
+    }
+    return false;
+}
 bool validRoot(const QString &root) {
     return QDir::isAbsolutePath(root) && QDir::cleanPath(root) == root && root != "/";
 }
@@ -87,6 +96,7 @@ bool makeCommand(const MacPartition &partition, const QString &directory, MountB
 QString resolveHomePrefix(const QString &mountRoot, const QString &home) {
     const QString root = QDir::cleanPath(mountRoot), cleanHome = QDir::cleanPath(home);
     if (cleanHome.isEmpty() || (root != cleanHome && !root.startsWith(cleanHome + "/"))) return root;
+    if (hasDanglingSymlink(cleanHome)) return {};  // the script refuses this too
     // Like Python's realpath: resolve the longest existing prefix and keep the missing tail as written.
     QString existing = cleanHome, tail;
     while (existing != "/" && !QFileInfo::exists(existing)) {
