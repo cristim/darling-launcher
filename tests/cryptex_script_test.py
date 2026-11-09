@@ -920,12 +920,14 @@ class InstallTest(unittest.TestCase):
 
     def test_privileged_entry_verifies_before_loading_anything(self):
         order = []
+        loads = []
         with patch.object(cryptex, "verify_installed", side_effect=lambda *a, **k: order.append("verify")), \
-             patch.object(cryptex, "load_helper", side_effect=lambda *a, **k: order.append("load") or cryptex.base), \
+             patch.object(cryptex, "load_helper", side_effect=lambda *a, **k: order.append("load") or loads.append(k) or cryptex.base), \
              patch.object(cryptex, "caller_identity", return_value=(UID, os.getgid())), \
              patch.object(cryptex, "mount_preboot"), patch.object(cryptex, "base", cryptex.base):
             self.assertEqual(cryptex.main(["--privileged"]), 0)
         self.assertEqual(order, ["verify", "load"])
+        self.assertEqual(loads, [{"trusted": True}])
 
     def test_privileged_entry_stops_on_untrusted_install(self):
         with patch.object(cryptex, "verify_installed", side_effect=ValueError("not root-owned")), \
