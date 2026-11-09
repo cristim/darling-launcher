@@ -265,7 +265,13 @@ Safety model:
 - Subprocesses run as argument lists (no shell) with a fixed environment allowlist, a
   timeout and a cap on captured output. A running app or a slow `darling shutdown` is left
   running; the server never sends signals to Darling or guest processes.
-- Every result has home directory paths, the user name and token-like strings redacted.
+- Every result has home directory paths, `/home/<name>`-style user-name components and
+  token-like strings redacted. In `mount_plan`, `argv` and the descriptions are redacted
+  like everything else (home shown as `~`). Each command's `shell` string is the copy-paste
+  form: it writes your home directory as `"$HOME"` (so paste it into your own shell), keeps
+  every other path quoted, and shows a user-name component outside your home as the quoted
+  placeholder `'<user>'` with a note telling you to replace it. Secrets are removed from
+  `shell` too.
 - Protocol messages use stdout; logging goes to stderr. Lines over 256 KiB are rejected.
 
 The tests (`ctest -R launcher-mcp`, or `python3 tests/launcher_mcp_test.py`) use temporary

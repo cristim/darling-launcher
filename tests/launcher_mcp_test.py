@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -772,16 +773,16 @@ class MountPlanTest(MountPlanBase):
         self.assertTrue(argv[0].endswith("/bin/python3"))
         self.assertEqual(argv[1], "-I")
         self.assertTrue(argv[2].endswith("/tools/mount-macos.py"))
-        self.assertEqual(argv[3:5], ["--mount-root", str(self.mounts)])
+        self.assertEqual(argv[3:5], ["--mount-root", "~/.darling-launcher/mounts"])
         self.assertEqual(argv[5], "--apfs-fuse")
         self.assertTrue(argv[6].endswith("/bin/apfs-fuse"))
         self.assertTrue(argv[7] == "--apfsutil" and argv[8].endswith("/bin/apfsutil"))
-        self.assertIn(f"--mount-root {self.mounts}", command["shell"])
+        self.assertIn('--mount-root "$HOME"/.darling-launcher/mounts', command["shell"])
         self.never_ran()
 
     def test_batch_plan_accepts_a_subdirectory_and_quotes_it(self):
         data = self.plan(kind="batch", mount_root=str(self.mounts / "my disks"))
-        self.assertIn(f"'{self.mounts}/my disks'", data["commands"][0]["shell"])
+        self.assertIn('"$HOME"\'/.darling-launcher/mounts/my disks\'', data["commands"][0]["shell"])
         self.assertTrue(any("does not exist" in w for w in data["warnings"]))
 
     def test_partition_plan_with_apfs_fuse(self):
@@ -793,7 +794,7 @@ class MountPlanTest(MountPlanBase):
         self.assertTrue(argv[1].endswith("/bin/apfs-fuse"))
         self.assertEqual(argv[2:5], ["-v", "1", "-o"])
         self.assertEqual(argv[5], f"ro,nodev,nosuid,noexec,uid={os.getuid()},gid={os.getgid()},allow_other")
-        self.assertEqual(argv[6:], ["/dev/nvme0n1p5", str(self.mounts / "disk1")])
+        self.assertEqual(argv[6:], ["/dev/nvme0n1p5", "~/.darling-launcher/mounts/disk1"])
         self.assertEqual(data["commands"][0]["run_as"], "root via pkexec")
         self.assertEqual(data["warnings"], [])
         self.never_ran()
@@ -803,7 +804,7 @@ class MountPlanTest(MountPlanBase):
         self.assertTrue(apfs[1].endswith("/bin/mount"))
         self.assertEqual(apfs[2:5], ["-i", "-t", "apfs"])
         self.assertEqual(apfs[6], f"ro,nodev,nosuid,noexec,uid={os.getuid()},gid={os.getgid()},vol=0")
-        self.assertEqual(apfs[7:], ["--", "/dev/sda2", str(self.mounts / "sda2-manual")])
+        self.assertEqual(apfs[7:], ["--", "/dev/sda2", "~/.darling-launcher/mounts/sda2-manual"])
         hfs = self.plan(kind="partition", device="/dev/sda3", filesystem="hfsplus", backend="kernel")["commands"][0]["argv"]
         self.assertNotIn("vol=", hfs[6])
         self.assertTrue(hfs[6].startswith("ro,nodev,nosuid,noexec"))
@@ -853,7 +854,7 @@ class MountPlanTest(MountPlanBase):
         data = self.plan(kind="unmount", directory=str(self.mounts / "disk1"))
         argv = data["commands"][0]["argv"]
         self.assertTrue(argv[0].endswith("/bin/pkexec") and argv[1].endswith("/bin/umount"))
-        self.assertEqual(argv[2:], ["--", str(self.mounts / "disk1")])
+        self.assertEqual(argv[2:], ["--", "~/.darling-launcher/mounts/disk1"])
         self.refused("mount_plan", {"kind": "unmount"}, "needs directory")
         self.refused("mount_plan", {"kind": "unmount", "directory": "/mnt/other"}, "outside the launcher mount root")
         self.refused("mount_plan", {"kind": "unmount", "directory": str(self.mounts)}, "not the root itself")
@@ -864,7 +865,7 @@ class MountPlanTest(MountPlanBase):
         argv = data["commands"][0]["argv"]
         self.assertEqual(argv[1], "-I")
         self.assertTrue(argv[2].endswith("/tools/mount-cryptex.py"))
-        self.assertEqual(argv[3:5], ["--mount-root", str(self.mounts)])
+        self.assertEqual(argv[3:5], ["--mount-root", "~/.darling-launcher/mounts"])
         self.assertTrue(argv[5] == "--apfs-fuse" and argv[6].endswith("/bin/apfs-fuse"))
         self.assertEqual(argv[7:], ["--device", "/dev/nvme0n1p5"])
         script = Path(os.path.realpath(SCRIPT)).parent / "mount-cryptex.py"
@@ -938,29 +939,74 @@ class MountPlanTest(MountPlanBase):
         self.never_ran()
 
 
-class MountPlanUserLocalTest(MountPlanBase):
-    """argv and shell are for the user's own terminal: real paths, correctly quoted. Descriptions stay redacted."""
+SH = shutil.which("sh") or "/bin/sh"
+
+
+def shell_words(shell, home, cwd):
+    """What a POSIX shell with HOME set makes of the string: the words printf receives, NUL separated, and nothing else run."""
+    done = subprocess.run([SH, "-c", "printf '%s\\0' " + shell], capture_output=True, env={"HOME": str(home), "PATH": "/usr/bin:/bin"}, cwd=cwd, timeout=10)
+    assert done.returncode == 0, done.stderr
+    return done.stdout.decode().split("\0")[:-1]
+
+
+def syntax_ok(shell):
+    return subprocess.run([SH, "-n", "-c", shell], capture_output=True, timeout=10).returncode == 0
+
+
+def hide_user(arg):
+    return re.sub(r"(?i)/(home|Users|run/media)/[^/]+", lambda m: f"/{m.group(1)}/<user>", arg)
+
+
+class MountPlanShellTest(MountPlanBase):
+    """argv and descriptions are redacted for the model; the shell string hides the home path and user name yet still runs."""
 
     fixture_args = {"home_name": "My Mac"}
 
-    def unmount(self, name):
+    def raw(self, **arguments):
+        return self.fx.server.tools["mount_plan"].handler(arguments)[0]
+
+    def directory(self, name):
         directory = self.fx.data / "mounts" / name
         directory.mkdir(parents=True)
-        return self.ok("mount_plan", {"kind": "unmount", "directory": str(directory)})["commands"][0], directory
+        return directory
 
-    def test_a_home_directory_with_a_space_is_not_rewritten_to_a_quoted_tilde(self):
-        command, directory = self.unmount("disk 1")
-        self.assertEqual(command["argv"][-1], str(directory))
-        self.assertIn("/home/My Mac/", command["argv"][-1])
-        self.assertEqual(shlex.split(command["shell"]), command["argv"])
-        self.assertNotIn("~", command["shell"])
+    def test_argv_description_and_warnings_are_redacted(self):
+        directory = self.directory("disk 1")
+        (directory / "f").write_text("x")
+        result = self.fx.call("mount_plan", {"kind": "partition", "device": "/dev/sda1", "filesystem": "hfs", "backend": "kernel", "directory": str(directory)})
+        data = result["structuredContent"]
+        command = data["commands"][0]
+        self.assertEqual(command["argv"][-1], "~/.darling-launcher/mounts/disk 1")
         self.assertIn("~/.darling-launcher/mounts/disk 1", command["description"])
+        self.assertIn("~/.darling-launcher/mounts/disk 1 is not empty", data["warnings"][0])
+        for place in (command["argv"], command["description"], data["warnings"], data["notes"]):
+            self.assertNotIn("My Mac", json.dumps(place))
+        self.assertNotIn(str(self.fx.home), json.dumps(result))
+        self.assertNotIn("/home/cristi", json.dumps(result))
 
-    def test_shell_metacharacters_in_directory_names_are_quoted(self):
-        for name in ("a;b", "x$HOME", "back`id`", "q'uote", "$(reboot)", "~tilde", "-dash", "a&b|c>d", "sp ace  s"):
-            command, directory = self.unmount(name)
-            self.assertEqual(command["argv"][-1], str(directory), name)
-            self.assertEqual(shlex.split(command["shell"]), command["argv"], name)
+    def test_shell_string_uses_dollar_home_and_names_neither_home_nor_user(self):
+        directory = self.directory("disk 1")
+        result = self.fx.call("mount_plan", {"kind": "unmount", "directory": str(directory)})
+        shell = result["structuredContent"]["commands"][0]["shell"]
+        self.assertTrue(shell.endswith("""-- "$HOME"'/.darling-launcher/mounts/disk 1'"""), shell)
+        for secret in ("My Mac", str(self.fx.home), "/home/cristi"):
+            self.assertNotIn(secret, json.dumps(result))
+        self.assertTrue(any('"$HOME"' in note for note in result["structuredContent"]["notes"]))
+
+    def test_shell_string_runs_and_resolves_to_the_real_argv(self):
+        names = ("plain", "with space", "a;b", "x$HOME", "back`id`", "q'uote", "$(reboot)", "~tilde", "-dash", "a&b|c>d", "sp ace  s", "*glob?", "a\\b", "!bang", "é ü")
+        with tempfile.TemporaryDirectory() as cwd:
+            for name in names:
+                directory = self.directory(name)
+                raw = self.raw(kind="unmount", directory=str(directory))["commands"][0]
+                self.assertEqual(shell_words(raw["shell"], self.fx.home, cwd)[-1], str(directory), name)
+                self.assertEqual(os.listdir(cwd), [], name)
+            for arguments in ({"kind": "batch", "mount_root": str(self.directory("p q"))},
+                              {"kind": "cryptex", "mount_root": str(self.fx.data / "mounts/p q"), "device": "/dev/sda1"},
+                              {"kind": "partition", "device": "/dev/sda1", "filesystem": "apfs", "backend": "kernel", "volume_index": 2, "directory": str(self.fx.data / "mounts/p q/d")}):
+                command = self.raw(**arguments)["commands"][0]
+                self.assertTrue(syntax_ok(command["shell"]))
+                self.assertEqual(shell_words(command["shell"], self.fx.home, cwd), [hide_user(a) if not a.startswith(str(self.fx.home)) else a for a in command["argv"]])
 
     def test_newlines_and_control_characters_in_names_are_refused(self):
         directory = self.fx.data / "mounts" / "bad\nname"
@@ -968,40 +1014,68 @@ class MountPlanUserLocalTest(MountPlanBase):
         self.refused("mount_plan", {"kind": "unmount", "directory": str(directory)}, "control characters")
         self.refused("mount_plan", {"kind": "unmount", "directory": str(self.fx.data / "mounts/a\tb")}, "control characters")
 
-    def test_every_plan_kind_round_trips_through_a_shell(self):
-        (self.fx.data / "mounts/p q").mkdir(parents=True)
-        plans = [{"kind": "batch", "mount_root": str(self.fx.data / "mounts/p q")}, {"kind": "cryptex", "mount_root": str(self.fx.data / "mounts/p q"), "device": "/dev/sda1"},
-                 {"kind": "partition", "device": "/dev/sda1", "filesystem": "apfs", "backend": "kernel", "volume_index": 2, "directory": str(self.fx.data / "mounts/p q/d")}]
-        for arguments in plans:
+    def test_every_plan_kind_has_a_syntactically_valid_shell_string(self):
+        for arguments in ({"kind": "batch"}, {"kind": "cryptex"}, {"kind": "unmount", "directory": str(self.directory("d"))},
+                          {"kind": "partition", "device": "/dev/sda1", "filesystem": "hfs", "backend": "kernel"}):
             for command in self.ok("mount_plan", arguments)["commands"]:
-                self.assertEqual(shlex.split(command["shell"]), command["argv"])
-                self.assertTrue(any("/home/My Mac/.darling-launcher/mounts/p q" in a for a in command["argv"]))
+                self.assertTrue(syntax_ok(command["shell"]), command["shell"])
 
-    def test_the_text_rendering_carries_the_same_user_local_command(self):
-        directory = self.fx.data / "mounts/d"
-        directory.mkdir(parents=True)
-        result = self.fx.call("mount_plan", {"kind": "unmount", "directory": str(directory)})
-        self.assertIn(str(directory), result["content"][0]["text"])
+    def test_secrets_are_still_removed_from_the_shell_string(self):
+        directory = self.directory("password=hunter2hunter2")
+        shell = self.ok("mount_plan", {"kind": "unmount", "directory": str(directory)})["commands"][0]["shell"]
+        self.assertNotIn("hunter2", shell)
+        self.assertIn("<redacted>", shell)
 
-    def test_other_fields_remain_redacted(self):
-        (self.fx.data / "mounts/x").mkdir(parents=True)
-        (self.fx.data / "mounts/x/f").write_text("1")
-        data = self.ok("mount_plan", {"kind": "partition", "device": "/dev/sda1", "filesystem": "hfs", "backend": "kernel", "directory": str(self.fx.data / "mounts/x")})
-        self.assertNotIn(str(self.fx.home), json.dumps(data["warnings"]))
-        self.assertIn("~/.darling-launcher/mounts/x is not empty", data["warnings"][0])
+    def test_the_shell_field_is_the_only_exemption(self):
+        self.assertEqual(self.fx.server.tools["mount_plan"].shell_fields, frozenset({"shell"}))
+        for name, tool in self.fx.server.tools.items():
+            if name != "mount_plan":
+                self.assertEqual(tool.shell_fields, frozenset(), name)
 
 
 class MountPlanOutsideHomeTest(MountPlanBase):
-    fixture_args = {"data_dir": "srv/alice/launcher"}
+    """A path outside HOME that carries a /home/<name> component gets the quoted placeholder, which cannot run anything unintended."""
 
-    def test_a_data_dir_outside_the_home_keeps_its_real_path_and_quoting(self):
-        directory = self.fx.data / "mounts/disk"
+    fixture_args = {"data_dir": "home/bob/launcher"}
+
+    def test_the_user_name_becomes_a_quoted_placeholder_and_a_note_says_to_replace_it(self):
+        directory = self.fx.data / "mounts/d"
         directory.mkdir(parents=True)
-        command = self.ok("mount_plan", {"kind": "unmount", "directory": str(directory)})["commands"][0]
-        self.assertEqual(command["argv"][-1], str(directory))
-        self.assertIn("/srv/alice/launcher/mounts/disk", command["shell"])
-        self.assertNotIn("<user>", command["shell"])
-        self.assertEqual(shlex.split(command["shell"]), command["argv"])
+        result = self.ok("mount_plan", {"kind": "unmount", "directory": str(directory)})
+        command = result["commands"][0]
+        self.assertIn("/home/'<user>'/launcher/mounts/d", command["shell"])
+        self.assertNotIn("bob", json.dumps(result))
+        self.assertNotIn("/home/cristi", json.dumps(result))
+        self.assertTrue(syntax_ok(command["shell"]))
+        self.assertTrue(any("placeholder '<user>'" in note and "replace it" in note for note in result["notes"]))
+        with tempfile.TemporaryDirectory() as cwd:
+            words = shell_words(command["shell"], self.fx.home, cwd)
+            self.assertEqual(words[-1], hide_user(str(directory)))
+            self.assertEqual(os.listdir(cwd), [])
+
+
+class ShellWordTest(unittest.TestCase):
+    def test_a_symlinked_home_is_expanded_through_realpath(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as cwd:
+            real = Path(os.path.realpath(root)) / "real home"
+            real.mkdir()
+            link = Path(os.path.realpath(root)) / "link"
+            link.symlink_to(real)
+            homes = mcp.home_expansions(link)
+            self.assertEqual({e for e, _ in homes}, {'"$HOME"', '"$(realpath -- "$HOME")"'})
+            for arg in (str(link / "x y"), str(real / "x y"), str(real), str(link)):
+                words = shell_words(mcp.shell_word(arg, homes), link, cwd)
+                self.assertEqual(words, [arg])
+
+    def test_paths_outside_home_and_without_a_user_component_are_plainly_quoted(self):
+        homes = mcp.home_expansions("/home/alice")
+        self.assertEqual(mcp.shell_word("/usr/bin/umount", homes), "/usr/bin/umount")
+        self.assertEqual(mcp.shell_word("/dev/sda 1", homes), "'/dev/sda 1'")
+        self.assertEqual(mcp.shell_word("/home/alice2/x", homes), "/home/'<user>'/x")
+        self.assertEqual(mcp.shell_word("/home/alice", homes), '"$HOME"')
+        with tempfile.TemporaryDirectory() as cwd:
+            word = mcp.shell_word("/Users/bob/a b/Users/c", homes)
+            self.assertEqual(shell_words(word, "/home/alice", cwd), ["/Users/<user>/a b/Users/<user>"])
 
 
 if __name__ == "__main__":
