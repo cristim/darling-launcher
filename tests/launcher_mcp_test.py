@@ -568,6 +568,10 @@ ADVERSARIAL_INPUTS = {
     "percent run": lambda n: "%41" * (n // 3), "percent and userinfo": lambda n: "%41://" + "a:" * (n // 2), "mixed encodings": lambda n: "%2F\\/\uff0f%252F" * (n // 12),
     "encoded secret": lambda n: "password%3D" + "hunter2" * (n // 7), "many labels": lambda n: "password=a token=b secret=c " * (n // 27), "unclosed quotes": lambda n: 'token="a ' * (n // 9),
     "spaced labels": lambda n: "password abc " * (n // 13), "whitespace": lambda n: " " * n, "slash homes": lambda n: "/home/" * (n // 6), "bearer": lambda n: "bearer x " * (n // 9),
+    "jwt prefix repeated": lambda n: "eyJ" * (n // 3) + "%25252541", "jwt segments repeated": lambda n: "eyJAAAAAAAAAA." * (n // 14), "sk prefix repeated": lambda n: "sk-" * (n // 3) + "%25252541",
+    "bearer repeated": lambda n: "Bearer " * (n // 7) + "%25", "password= repeated": lambda n: "password=" * (n // 9), "scheme chain": lambda n: "://" * (n // 3) + "%25252541",
+    "percent chain": lambda n: "%25" * (n // 3) + "41", "ghp repeated": lambda n: "ghp_" * (n // 4) + "%2541", "github_pat repeated": lambda n: "github_pat_" * (n // 11) + "%25",
+    "AKIA repeated": lambda n: "AKIA" * (n // 4) + "%25", "userinfo prefix repeated": lambda n: "://a:" * (n // 5) + "@", "userinfo tokens": lambda n: "x://a:b@h " * (n // 10),
     "token prefixes": lambda n: "ghp_" + "A" * n, "jwt": lambda n: "eyJ" + "A" * 20 + "." + "A" * n, "fullwidth": lambda n: "\uff0f" * n, "nfkc expansion": lambda n: "\ufb01" * n}
 
 
@@ -733,6 +737,19 @@ class RedactionTest(ToolTestCase):
             for leaked in ("ss@", "pa/", "secretpw"):
                 self.assertNotIn(leaked, redactor.text(text))
 
+    def test_credentials_of_any_length_are_redacted_whole(self):
+        redactor = mcp.Redactor("/home/alice")
+        self.assertEqual(redactor.text("https://" + "u" * 300 + ":" + "p" * 2000 + "@host/x"), "https://<redacted>@host/x")
+        self.assertEqual(redactor.text("x https://bob:" + "pw/@" * 400 + "host y"), "x https://<redacted>@host y")
+        self.assertEqual(redactor.text("a://u:p@h b://v:q@i"), "a://<redacted>@h b://<redacted>@i")
+
+    def test_documented_limits_of_the_userinfo_scan(self):
+        redactor = mcp.Redactor("/home/alice")
+        self.assertEqual(redactor.text("https://bob:8080/x@y"), "https://bob:8080/x@y")  # a numeric password followed by '/' reads as a port
+        self.assertEqual(redactor.text("https://bob:123/ss@host"), "https://bob:123/ss@host")
+        self.assertEqual(redactor.text("https://bob:pw@host/path@x"), "https://<redacted>@x")  # the last '@' of the token ends the credentials
+        self.assertEqual(redactor.text("https://bob:pw @host"), "https://bob:pw @host")  # whitespace ends the token
+
     def test_urls_without_credentials_are_left_alone(self):
         redactor = mcp.Redactor("/home/alice")
         for plain in ("http://[::1]:8080/path@x", "http://[2001:db8::1]:80/", "http://host:8080/user@x", "https://example.com:443/a@b", "git@github.com:x/y.git", "ssh://git@host",
@@ -777,6 +794,8 @@ class RedactionTest(ToolTestCase):
         "userinfo": ("https://bob:p@ss@host/x", ("bob", "p@ss", "ss@")), "home path": ("/home/bobby/docs", ("bo",)),
         "encoded home": ("%2Fhome%2Fbobby%2Fdocs", ("bo",)), "encoded label": ("password%3Dhunter2xyz", ("hunt", "xyz")),
         "github token": ("ghp_" + "A1b2C3d4E5" * 3, ("ghp_", "A1b2")), "jwt": ("eyJ" + "Q" * 20 + "." + "R" * 20 + "." + "S" * 20, ("eyJ", "QQQQ", "RRRR")),
+        "userinfo slash password": ("https://bob:ab/" + "QZ" * 60 + "@host", ("bob", "ab/", "QZ")),
+        "long userinfo with slashes": ("https://bob:" + "pw/" * 200 + "@h", ("bob", "pw/")),
         "long label value": ("password=" + "h" * 800, ("hh",)), "long userinfo": ("https://u:" + "p" * 400 + "@h", ("ppp",)),
         "encoded bearer": ("Bearer%20abcdef123456", ("abcdef",))}
     FILLERS = {"words": "x ", "no whitespace": "A", "delimiters": "a/b,", "newlines": "x\n"}
@@ -1104,6 +1123,19 @@ class ActionToolsTest(unittest.TestCase):
         with patch.object(mcp, "find_tool", return_value=None):
             self.refused("launch_app", args, "no darling executable")
         self.assertFalse(self.ran())
+
+    def test_an_oversized_settings_value_in_an_error_message_is_capped_and_redacted(self):
+        args = {"prefix": "default", "app": "Calc", "confirm": True}
+        for value in ("/" + "x" * 300000, "/p/password=hunter2xyz " + "x " * 150000, "/p/https://bob:pw@h " + "y " * 150000):
+            self.fx.settings(darling=value)
+            for name, arguments in (("launch_app", args), ("stop_prefix", {"prefix": "default", "confirm": True})):
+                result = self.fx.call(name, arguments)
+                self.assertTrue(result["isError"])
+                text = result["content"][0]["text"]
+                self.assertIn("not an absolute path to an executable file", text)
+                self.assertLessEqual(len(text), mcp.Redactor.MAX_SCAN_CHARS + 200)
+                self.assertNotIn("hunter", text)
+                self.assertNotIn("bob:pw", text)
 
     def test_darling_is_found_on_path_when_settings_name_none(self):
         self.fx.settings()
