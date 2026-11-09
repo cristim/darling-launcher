@@ -288,7 +288,11 @@ def authorization_command(options, lstat=os.lstat):
     pkexec = shutil.which("pkexec")
     if not pkexec:
         raise ValueError("pkexec is unavailable")
-    interpreter = require_root_owned(sys.executable, lstat)
+    try:
+        interpreter = require_root_owned(sys.executable, lstat)
+    except ValueError as error:
+        raise ValueError(f"{error}; the interpreter run as root must be a root-owned Python {MINIMUM_PYTHON[0]}.{MINIMUM_PYTHON[1]}+ "
+                         "(reconfigure the launcher with -DLAUNCHER_PYTHON=<path>)") from None
     command = [pkexec, interpreter, "-I", str(Path(__file__).resolve()), "--privileged"]
     if options.unmount:
         return command + ["--unmount"]

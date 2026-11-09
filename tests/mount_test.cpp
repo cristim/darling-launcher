@@ -89,6 +89,15 @@ private slots:
         if (saved.isNull()) qunsetenv("HOME"); else qputenv("HOME", saved);
         QVERIFY(!home.isEmpty()); QVERIFY(QDir::isAbsolutePath(home)); QCOMPARE(home, QDir::cleanPath(home)); QVERIFY(home != "/somewhere/else");
     }
+    void rootInterpreterIsTheOneConfigureChose() {
+        const QString python = LauncherMount::launcherPython(); QString error;
+        QVERIFY(QDir::isAbsolutePath(python));
+        // The configure-time rule (cmake/SelectPython.cmake) and the runtime rule must agree on this path.
+        QVERIFY2(!LauncherMount::trustedFile(python, 0, true, &error).isEmpty(), qPrintable(error));
+        const QByteArray expected = qgetenv("LAUNCHER_EXPECTED_PYTHON");
+        QVERIFY2(!expected.isEmpty(), "CTest passes the configure-time choice");
+        QCOMPARE(python, QString::fromLocal8Bit(expected));
+    }
     void rootRunFilesMustBeRootOwnedAndNotWritable() {
         // As root the test tree is root-owned and not writable by others, so the "untrusted" assertions cannot hold
         // (container CI); the same checks run for real when the suite runs as a normal user.

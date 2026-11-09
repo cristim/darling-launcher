@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import stat
 import struct
+import sys
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -896,6 +897,11 @@ class MainTest(unittest.TestCase):
              patch.object(cryptex.subprocess, "call") as call, patch.object(cryptex, "emit"):
             self.assertEqual(cryptex.main(self.args), 1)
             call.assert_not_called()
+
+    def test_untrusted_interpreter_message_tells_how_to_fix_it(self):
+        with patch.object(cryptex.shutil, "which", return_value="/usr/bin/pkexec"):
+            with self.assertRaisesRegex(ValueError, r"owned by root.*Python 3\.8\+.*-DLAUNCHER_PYTHON"):
+                cryptex.authorization_command(SimpleNamespace(device="", unmount=False), fake_lstat({os.path.realpath(sys.executable): (1000, False)}))
 
     def test_mount_root_outside_home_is_refused_before_pkexec(self):
         with patch.object(cryptex.base, "mounted_records", return_value=[]), \

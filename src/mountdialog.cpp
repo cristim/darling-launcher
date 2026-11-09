@@ -28,10 +28,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#ifndef LAUNCHER_PYTHON
-#define LAUNCHER_PYTHON "/usr/bin/python3"
-#endif
-
 namespace {
 // Test builds run user-owned fake helpers; production accepts only root-owned ones.
 unsigned helperOwner() {
@@ -228,9 +224,10 @@ void MountDialog::mountSelected() {
 }
 bool MountDialog::cryptexCommandReady(QString *python) {
     QString error;
-    *python = LauncherMount::trustedFile(QStringLiteral(LAUNCHER_PYTHON), helperOwner(), true, &error);
+    *python = LauncherMount::trustedFile(LauncherMount::launcherPython(), helperOwner(), true, &error);
     if (!python->isEmpty() && LauncherMount::trustedCryptexScript(QStringLiteral(LAUNCHER_MOUNT_CRYPTEX_SCRIPT), helperOwner(), &error)) return true;
-    cryptexButton->setEnabled(false); prebootUnmountButton->setEnabled(false); output->append(error + "\n" + installHint());
+    cryptexButton->setEnabled(false); prebootUnmountButton->setEnabled(false);
+    output->append(error + "\n" + installHint() + "\nThe root-run interpreter (" + LauncherMount::launcherPython() + ") was chosen when the launcher was configured; reconfigure with -DLAUNCHER_PYTHON=<trusted python 3.8+> if it is missing or not root-owned.");
     return false;
 }
 
