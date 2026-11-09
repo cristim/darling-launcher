@@ -36,6 +36,7 @@ MAX_SETTINGS_BYTES = 1024 * 1024
 MAX_LOG_LINE_CHARS = 2000
 MAX_LOG_LINES = 200
 MAX_LOG_READ_BYTES = 512 * 1024
+MAX_LOG_TOTAL_CHARS = 50_000
 FINDMNT_TIMEOUT = 10.0
 SHUTDOWN_TIMEOUT = 60.0
 MAX_TRACKED_CHILDREN = 32
@@ -185,10 +186,10 @@ def check_no_symlinks(base, relative_parts):
             raise ToolError(f"refusing symlink at {current}")
 
 
-def read_regular_file(path, limit, what):
-    """Reads a regular file without following a final symlink, refusing anything over limit bytes."""
+def read_regular_file(path, limit, what, follow_symlink=False):
+    """Reads a regular file, refusing a final symlink unless allowed and anything over limit bytes."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | (0 if follow_symlink else os.O_NOFOLLOW))
     except FileNotFoundError:
         raise ToolError(f"{what} not found")
     except OSError as error:
@@ -206,7 +207,7 @@ def read_settings(config):
     """Reads the keys the GUI stores through QSettings (INI, [General] or no section)."""
     keys = ("prefix", "darling", "runtimeRoot", "volume", "knownPrefixes")
     try:
-        raw = read_regular_file(config.config_file, MAX_SETTINGS_BYTES, "launcher settings file")
+        raw = read_regular_file(config.config_file, MAX_SETTINGS_BYTES, "launcher settings file", follow_symlink=True)
     except ToolError as error:
         if "not found" in str(error):
             return {}
@@ -323,7 +324,10 @@ def run_capped(argv, env, timeout, kill_on_timeout, cap=MAX_CHILD_OUTPUT):
         code = proc.poll()
         if code is None and kill_on_timeout:
             proc.kill()
-            code = proc.wait()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass  # stuck in uninterruptible I/O; it is reaped later
             code = None
         sink.flush()
         size = os.fstat(sink.fileno()).st_size
@@ -393,6 +397,7 @@ class Server:
     def __init__(self, config):
         self.config = config
         self.redact = Redactor(config.home, config.user)
+        self.initialize_seen = False
         self.initialized = False
         self.children = []
         self.tools = {}
@@ -437,7 +442,7 @@ class Server:
         return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
     def notification(self, method, params):
-        if method == "notifications/initialized":
+        if method == "notifications/initialized" and self.initialize_seen:
             self.initialized = True
 
     def dispatch(self, method, params):
@@ -463,6 +468,7 @@ class Server:
             raise RpcError(-32602, "protocolVersion must be a string")
         if not isinstance(params.get("capabilities", {}), dict) or not isinstance(params.get("clientInfo", {}), dict):
             raise RpcError(-32602, "capabilities and clientInfo must be objects")
+        self.initialize_seen = True
         return {
             "protocolVersion": requested if requested in SUPPORTED_PROTOCOLS else LATEST_PROTOCOL,
             "capabilities": {"tools": {"listChanged": False}},
@@ -524,7 +530,13 @@ class Server:
                 raise ToolError("log is not a regular file")
             handle.seek(max(0, info.st_size - MAX_LOG_READ_BYTES))
             lines = handle.read(MAX_LOG_READ_BYTES).decode("utf-8", "replace").splitlines()
-        return [line[:MAX_LOG_LINE_CHARS] for line in lines[-count:]]
+        kept, total = [], 0
+        for line in reversed(lines[-count:]):
+            total += min(len(line), MAX_LOG_LINE_CHARS)
+            if total > MAX_LOG_TOTAL_CHARS:
+                break
+            kept.append(line[:MAX_LOG_LINE_CHARS])
+        return kept[::-1]
 
     def log_lines(self, source, count):
         check_no_symlinks(self.config.data_dir, ["logs"])
