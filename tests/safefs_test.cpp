@@ -190,6 +190,13 @@ private slots:
         QVERIFY(SafeFs::renameInDir(d.path(), "s", "a", "b", &err));
         QCOMPARE(slurp(d.path() + "/s/b"), QByteArray("new"));
     }
+    void errorsNameNeitherTheRootNorTheFullPath() {
+        QTemporaryDir d; QString err; QByteArray data; bool exists = false;
+        const QString missingRoot = d.path() + "/no-such-root";
+        QVERIFY(!SafeFs::readFile(missingRoot, "a/b", 1024, &data, &exists, &err));
+        QVERIFY(!err.isEmpty()); QVERIFY2(!err.contains(missingRoot) && !err.contains(d.path()), qPrintable(err));
+        QVERIFY(!SafeFs::writeFile(missingRoot, "a/b", "x", 0600, 0700, false, &err)); QVERIFY(!err.contains(d.path()));
+    }
     void checkPrivateDirRequiresOwnerOnlyAccess() {
         QTemporaryDir d, evil; QString err;
         QVERIFY(SafeFs::writeFile(d.path(), "p/f", "x", 0600, 0700, false, &err));
