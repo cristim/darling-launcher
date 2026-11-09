@@ -43,20 +43,36 @@ bool validStoreId(const QString &id) {
     return re.match(id).hasMatch();
 }
 
-bool ensureRoot(const QString &root, QString *error, const QString &dataRoot) {
+namespace {
+bool refuseSymlinks(const QString &root, const QString &dataRoot, QString *error) {
     const QFileInfo info(root);
     if (!info.isAbsolute() || root.contains(QChar(0))) return fail(error, "The store location must be an absolute path");
-    const QString clean = QDir::cleanPath(root), data = QDir::cleanPath(dataRoot);
-    for (QString dir = clean;; ) {
+    const QString data = QDir::cleanPath(dataRoot);
+    for (QString dir = QDir::cleanPath(root);;) {
         if (QFileInfo(dir).isSymLink()) return fail(error, "The store location, or a directory on the way to it inside the launcher data directory, is a symbolic link; choose a real directory");
         const QString up = QFileInfo(dir).absolutePath();
         if (up == dir || !up.startsWith(data + "/")) break;
         dir = up;
     }
-    const QString parent = info.absolutePath();
-    if (!QDir().mkpath(parent)) return fail(error, "Cannot create the parent of the store location");
+    return true;
+}
+}
+
+bool ensureRoot(const QString &root, QString *error, const QString &dataRoot) {
+    if (!refuseSymlinks(root, dataRoot, error)) return false;
+    const QFileInfo info(root);
+    if (!QDir().mkpath(info.absolutePath())) return fail(error, "Cannot create the parent of the store location");
     if (::mkdir(QFile::encodeName(root).constData(), 0700) != 0 && errno != EEXIST) return fail(error, "Cannot create the store location");
-    return SafeFs::checkPrivateDir(parent, info.fileName(), error);
+    return SafeFs::checkPrivateDir(info.absolutePath(), info.fileName(), error);
+}
+
+bool checkPrivate(const QString &root, const QString &id, QString *error, const QString &dataRoot) {
+    if (!validStoreId(id)) return fail(error, "Invalid store id");
+    if (!refuseSymlinks(root, dataRoot, error)) return false;
+    const QFileInfo info(root);
+    if (!SafeFs::checkPrivateDir(info.absolutePath(), info.fileName(), error)) return false;
+    // a missing or symlinked store entry is status()'s to report
+    return !QFileInfo(root + "/" + id).exists() || QFileInfo(root + "/" + id).isSymLink() || SafeFs::checkPrivateDir(root, id, error);
 }
 
 QByteArray renderManifest(const StoreManifest &m) {

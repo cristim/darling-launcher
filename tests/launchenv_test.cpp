@@ -5,6 +5,7 @@
 #include "core.h"
 #include <QProcessEnvironment>
 #include <QSettings>
+#include <sys/stat.h>
 #include <QTemporaryDir>
 
 static const QString kLibz = "/usr/lib/libz.1.dylib";
@@ -50,6 +51,16 @@ private slots:
             Fx fx; DyldCacheConfig c = fx.config(); if (v == 0) c.enabled = false; else if (v == 1) c.mode = DyldCacheMode::Off; else c.served.clear();
             QVERIFY(fx.save(c)); QProcessEnvironment e; QString err; QVERIFY2(fx.env(&e, &err), qPrintable(err)); QCOMPARE(Fx::dyldKeys(e), QStringList());
         }
+    }
+    // The guest runs as the same user and could otherwise be handed a cache another user can swap.
+    void refusesAStoreThatIsOpenToOthersOrSymlinked() {
+        { Fx fx; QVERIFY(fx.save(fx.config())); QProcessEnvironment e; QString err; QVERIFY2(fx.env(&e, &err), qPrintable(err)); }
+        { Fx fx; QVERIFY(fx.save(fx.config())); QVERIFY(::chmod(fx.stores.path().toUtf8().constData(), 0755) == 0);
+          QProcessEnvironment e; QString err; QVERIFY(!fx.env(&e, &err)); QVERIFY(err.contains("0700")); QVERIFY(e == fx.base); }
+        { Fx fx; QVERIFY(fx.save(fx.config())); QVERIFY(::chmod((fx.stores.path() + "/" + fx.id).toUtf8().constData(), 0750) == 0);
+          QProcessEnvironment e; QString err; QVERIFY(!fx.env(&e, &err)); QVERIFY(err.contains("0700")); }
+        { Fx fx; QVERIFY(fx.save(fx.config())); QTemporaryDir links; QVERIFY(QFile::link(fx.stores.path(), links.path() + "/l"));
+          QProcessEnvironment e = fx.base; QString err; QVERIFY(!LaunchEnv::guestEnvironment(&e, fx.prefix.path(), links.path() + "/l", &err)); QVERIFY(err.contains("symbolic link")); }
     }
     void failsLoudAndLeavesTheEnvironmentAloneWhenTheStoreIsNotUsable() {
         auto expectRefusal = [](Fx &fx, const QString &needle) {

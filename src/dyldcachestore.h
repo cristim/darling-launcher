@@ -50,6 +50,8 @@ bool validStoreId(const QString &id);
 // Creates the root (0700) when missing and refuses one that is not owned by this user or is open to group/others.
 // Also refuses a root that is a symlink, and any directory between dataRoot and the root that is one.
 bool ensureRoot(const QString &root, QString *error, const QString &dataRoot = LauncherDiscovery::dataRoot());
+// The same checks without creating anything, plus the store directory itself: used before a launch trusts the store.
+bool checkPrivate(const QString &root, const QString &id, QString *error, const QString &dataRoot = LauncherDiscovery::dataRoot());
 
 bool parseManifest(const QByteArray &json, StoreManifest *out, QString *error);
 QByteArray renderManifest(const StoreManifest &m);
