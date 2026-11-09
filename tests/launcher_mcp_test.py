@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for tools/launcher-mcp.py. Fixture based: temp dirs and fake executables only, no Darling, pkexec or network."""
+import ast
 import calendar
 import importlib.util
 import json
@@ -1752,6 +1753,55 @@ class ShellWordTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as cwd:
             word = mcp.shell_word("/Users/bob/a b/Users/c", homes)
             self.assertEqual(shell_words(word, "/home/alice", cwd), ["/Users/<user>/a b/Users/<user>"])
+
+
+class EnvironmentDocumentationTest(unittest.TestCase):
+    ALLOWED_DYNAMIC = "for name in SAFE_ENV_NAMES"
+
+    def code_names(self):
+        source = SCRIPT.read_text()
+        names, dynamic = set(), []
+        for number, line in enumerate(source.splitlines(), 1):
+            if re.search(r"environ|getenv", line) and not line.lstrip().startswith(("#", '"""')):
+                names.update(re.findall(r"""(?:environ(?:\.get\(|\.pop\(|\[)|getenv\(|in os\.environ|environ\.get\()\s*["']([A-Z][A-Z0-9_]*)["']""", line))
+                names.update(re.findall(r"""["']([A-Z][A-Z0-9_]*)["']\s+in\s+(?:os\.)?environ""", line))
+                if re.search(r"(?:environ(?:\.get\(|\.pop\(|\[)|getenv\()\s*(?!\s*[\"'])", line) and self.ALLOWED_DYNAMIC not in line:
+                    dynamic.append((number, line.strip()))
+        match = re.search(r"SAFE_ENV_NAMES = \(([^)]*)\)", source)
+        names.update(re.findall(r'"([A-Z][A-Z0-9_]*)"', match.group(1)))
+        return names, dynamic
+
+    def documented_names(self):
+        readme = (SCRIPT.parent.parent / "README.md").read_text()
+        section = readme.split("### Environment variables", 1)[1].split("\n### ", 1)[0].split("\n## ", 1)[0]
+        names = set()
+        for row in section.splitlines():
+            if row.startswith("| `"):
+                names.update(re.findall(r"`([A-Z][A-Z0-9_]*)`", row.split("|")[1]))
+        return names
+
+    def test_the_environment_variables_the_code_uses_are_the_documented_ones(self):
+        used, dynamic = self.code_names()
+        self.assertEqual(dynamic, [], "an environment variable is read by a computed name; read it by a literal name and document it")
+        documented = self.documented_names()
+        self.assertEqual(used - documented, set(), "the code uses environment variables the README does not document")
+        self.assertEqual(documented - used, set(), "the README documents environment variables the code does not use")
+        self.assertGreaterEqual(len(used), 12)
+
+    def test_the_scan_notices_an_undocumented_variable(self):
+        original = SCRIPT.read_text()
+        with tempfile.TemporaryDirectory() as directory:
+            fake = Path(directory) / "tools"
+            fake.mkdir()
+            (fake / "launcher-mcp.py").write_text(original + '\nSECRET = os.environ.get("SOMETHING_NEW")\n')
+            (Path(directory) / "README.md").write_text((SCRIPT.parent.parent / "README.md").read_text())
+            with patch.object(sys.modules[__name__], "SCRIPT", fake / "launcher-mcp.py"):
+                used, _ = self.code_names()
+                self.assertIn("SOMETHING_NEW", used)
+                self.assertIn("SOMETHING_NEW", used - self.documented_names())
+            (fake / "launcher-mcp.py").write_text(original + '\nSECRET = os.environ.get(name)\n')
+            with patch.object(sys.modules[__name__], "SCRIPT", fake / "launcher-mcp.py"):
+                self.assertEqual(len(self.code_names()[1]), 1)
 
 
 if __name__ == "__main__":
