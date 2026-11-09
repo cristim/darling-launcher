@@ -136,7 +136,8 @@ class Redactor:
     LABELLED = re.compile(r"""(?i)\b""" + LABELS + r"""\b["']?\s*[=:]\s*(?P<v>(?!<redacted>)(?:"[^"]*"|'[^']*'|[^\s"']+))""")
     # label separated by whitespace only: the next word if it is long enough to be a secret rather than prose ("the password field")
     SPACED = re.compile(r"(?i)\b" + LABELS + r"\b\s+(?P<v>(?!<redacted>)[^\s\"'=:]{6,})")
-    GENERIC_HOME = re.compile(r"(?i)/(?:home|Users|run/media)/(?P<v>[^/\s\"']+)")
+    # The name ends at a delimiter, so PATH=/home/a/bin:/usr/bin and (/home/a) keep their separators.
+    GENERIC_HOME = re.compile(r"(?i)/(?:home|Users|run/media)/(?P<v>[^/\s\"'`:;,()\[\]{}<>|&=*?\\]+)")
     MAX_DECODE_DEPTH = 5
 
     def __init__(self, home):
@@ -191,13 +192,14 @@ class Redactor:
         if not found:
             return value
         found.sort(key=lambda f: (f[0], -f[1]))
-        merged = [list(found[0])]
-        for start, end, repl in found[1:]:
-            last = merged[-1]
-            if start < last[1]:
-                if repl == secret or (last[2] != secret and end - start > last[1] - last[0]):
-                    last[2] = repl
-                last[1] = max(last[1], end)
+        merged = []
+        for start, end, repl in found:
+            last = merged[-1] if merged else None
+            if last and start < last[1]:
+                if repl == secret or last[2] == secret:
+                    last[1], last[2] = max(last[1], end), secret  # a secret always widens to cover everything it touches
+                elif end > last[1]:
+                    merged.append([last[1], end, repl])  # paths: no union, the later span keeps only its own remainder
             else:
                 merged.append([start, end, repl])
         result, position = [], 0
