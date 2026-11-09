@@ -329,10 +329,28 @@ claude mcp add darling-launcher -- python3 -I /absolute/path/to/tools/launcher-m
 claude mcp add darling-launcher -e DARLING_LAUNCHER_MCP_ALLOW_ACTIONS=1 -- python3 -I /absolute/path/to/tools/launcher-mcp.py
 ```
 
-It reads `~/.darling-launcher` and the launcher's settings file
-(`~/.config/cristim/darling-launcher.conf`). `DARLING_LAUNCHER_DATA_DIR` and
-`DARLING_LAUNCHER_CONFIG` override those locations; no other environment variable is read
-except `DARLING_LAUNCHER_MCP_ALLOW_ACTIONS` (`1` or `0`).
+It reads `~/.darling-launcher` and the launcher's settings file (by default
+`~/.config/cristim/darling-launcher.conf`; see the environment variables below).
+
+### Environment variables
+
+The server reads and forwards exactly these (it runs under `python3 -I`, which ignores
+`PYTHON*`). A test (`test_the_environment_variables_the_code_uses_are_the_documented_ones`)
+fails when the code touches a variable that is not in this table.
+
+| Variable | What it affects | What the server trusts |
+| --- | --- | --- |
+| `HOME` | Required. Base of `~/.darling-launcher`, of the default settings path and of the `~` in redacted output. | Must be a normalized absolute path, otherwise the server refuses to start. |
+| `DARLING_LAUNCHER_DATA_DIR` | Replaces `~/.darling-launcher` (prefixes, mounts, runtimes, logs). | Same check; every path the tools accept is confined below it. |
+| `DARLING_LAUNCHER_CONFIG` | Replaces the settings file path. | Same check. Its contents select the `darling` that runs. |
+| `XDG_CONFIG_HOME` | Base of the default settings path (`<it>/cristim/darling-launcher.conf`) when set. | Same check. |
+| `DARLING_LAUNCHER_MCP_ALLOW_ACTIONS` | `1` enables `launch_app` and `stop_prefix` (each call still needs `confirm: true`); `0` or empty disables them. | Any other value refuses to start. |
+| `PATH` | Where `findmnt` is found and, when the settings name no `darling`, where `darling` is found (absolute entries only), so a changed `PATH` selects which `darling` runs. Also forwarded to children. | The user's own `PATH`. `mount_plan` never takes a helper program from it. |
+| `USER`, `LOGNAME`, `LANG`, `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR` | Not read by the server; forwarded unchanged to `darling` and `findmnt` so apps can open windows. | Passed through as they are. |
+
+No other variable is read or forwarded: tokens, `DYLD_*` and everything else in the server's
+environment never reach a child process. The server itself sets `DPREFIX` (the prefix) and,
+when the settings name a runtime root, `DARLING_INSTALL_PREFIX` for `darling` children.
 
 | Tool | Effect |
 | --- | --- |
