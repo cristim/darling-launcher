@@ -653,7 +653,94 @@ def build_tools(server):
         found = server.log_lines(source, lines)
         return {"source": source, "lines": found}, f"Last {len(found)} line(s) of {LOG_SOURCES[source]}."
 
+    def require_actions(args):
+        """The two gates every action passes before it touches anything: server-start opt-in, then per-call confirm."""
+        if not config.allow_actions:
+            raise ToolError("actions are disabled: the user must start this server with DARLING_LAUNCHER_MCP_ALLOW_ACTIONS=1")
+        if args.get("confirm") is not True:
+            raise ToolError("confirm must be true to run this action; ask the user before sending it")
+
+    def darling_environment(settings, prefix):
+        binary = settings.get("darling", "") or find_tool("darling") or ""
+        if not binary:
+            raise ToolError("no darling executable: select one in the launcher settings or put it on PATH")
+        if not binary.startswith("/") or not control_free(binary) or not os.path.isfile(binary) or not os.access(binary, os.X_OK):
+            raise ToolError(f"the configured darling is not an absolute path to an executable file: {binary}")
+        extra = {"DPREFIX": str(prefix)}
+        runtime_root = settings.get("runtimeRoot", "")
+        if runtime_root:
+            if not runtime_root.startswith("/") or not control_free(runtime_root) or not os.path.isdir(runtime_root):
+                raise ToolError("the configured runtime install root is not an existing absolute directory")
+            extra["DARLING_INSTALL_PREFIX"] = runtime_root
+        return binary, child_env(extra)
+
+    def find_app(prefix, reference):
+        apps, _ = server.catalog(prefix)
+        matches = [a for a in apps if reference in (a["name"], a["bundle"])]
+        if not matches:
+            raise ToolError(f"no imported app {reference!r} in prefix {prefix.name}; use list_apps")
+        if len(matches) > 1:
+            raise ToolError(f"{len(matches)} apps match {reference!r}; use one of the bundle paths: " + ", ".join(a["bundle"] for a in matches))
+        app = matches[0]
+        guest = f"{app['bundle']}/Contents/MacOS/{app['executable']}"
+        check_no_symlinks(prefix, guest.split("/"))
+        info = lstat_or_none(prefix / guest)
+        if info is None or not stat.S_ISREG(info.st_mode):
+            raise ToolError(f"the executable of {app['name']} is missing from the prefix")
+        return app, "/" + guest
+
+    def launch_app(args):
+        require_actions(args)
+        prefix = resolve_prefix(config, args["prefix"])
+        binary, env = darling_environment(read_settings(config), prefix)
+        app, guest = find_app(prefix, args["app"])
+        check_no_symlinks(config.data_dir, ["logs"])
+        config.log_dir.mkdir(mode=0o700, exist_ok=True)
+        log_path = config.log_dir / LOG_SOURCES["mcp-launch"]
+        argv = [binary, "exec", guest]
+        try:
+            fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        except OSError as error:
+            raise ToolError(f"cannot open the launch log: {error.strerror}")
+        with os.fdopen(fd, "ab") as sink:
+            start = sink.seek(0, os.SEEK_END)
+            sink.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} [launch:{app['name']}] {prefix.name}: {' '.join(argv)}\n".encode())
+            sink.flush()
+            try:
+                proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.STDOUT, env=env, cwd="/", start_new_session=True, close_fds=True)
+            except OSError as error:
+                raise ToolError(f"could not start darling: {error.strerror}")
+        server.track(proc)
+        deadline = time.monotonic() + args.get("wait_seconds", 5)
+        while proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        code = proc.poll()
+        with open(log_path, "rb") as reader:
+            reader.seek(start)
+            output = reader.read(MAX_CHILD_OUTPUT).decode("utf-8", "replace")
+        data = {"prefix": str(prefix), "app": app["name"], "bundle": app["bundle"], "pid": proc.pid,
+                "state": "running" if code is None else "exited", "exit_code": code, "output": output}
+        summary = (f"{app['name']} is still running (pid {proc.pid}); it was left running." if code is None
+                   else f"{app['name']} exited with code {code}.")
+        return data, summary
+
+    def stop_prefix(args):
+        require_actions(args)
+        prefix = resolve_prefix(config, args["prefix"])
+        binary, env = darling_environment(read_settings(config), prefix)
+        code, output, truncated, proc = run_capped([binary, "shutdown"], env, SHUTDOWN_TIMEOUT, False)
+        if code is None:
+            server.track(proc)
+            raise ToolError(f"darling shutdown has not finished after {int(SHUTDOWN_TIMEOUT)} seconds; it was left running (pid {proc.pid}), not killed")
+        if code != 0:
+            raise ToolError(f"darling shutdown failed (exit {code}): {output[:1000]}")
+        return {"prefix": str(prefix), "exit_code": code, "output": output, "truncated": truncated}, f"Requested shutdown of all processes in {prefix.name}."
+
     read_only_note = "Read-only. "
+    disabled_note = ("NOT read-only. Disabled unless the user started this server with DARLING_LAUNCHER_MCP_ALLOW_ACTIONS=1, and every call needs confirm=true "
+                     "(ask the user first). ")
+    prefix_property = {"type": "string", "minLength": 1, "maxLength": 1024, "description": "Prefix name or absolute path of a direct child of the prefix root (see list_prefixes)."}
+    confirm_property = {"type": "boolean", "description": "Must be true. Set it only after the user agreed to this exact action."}
     return [
         Tool("launcher_status", "Launcher status",
              read_only_note + "Reports the installed prebuilt runtime tags and whether one is usable, the selected prefix/darling/runtime/volume from the launcher settings, "
@@ -677,6 +764,18 @@ def build_tools(server):
              {"lines": {"type": "integer", "minimum": 1, "maximum": MAX_LOG_LINES, "description": "Number of lines, default 50."},
               "source": {"type": "string", "enum": list(LOG_SOURCES), "description": "Which log, default 'launcher'."}},
              [], tail_log, True, {"lines": {"type": "array"}, "source": {"type": "string"}}),
+        Tool("launch_app", "Launch imported app",
+             disabled_note + "Starts an imported app through the prefix's darling binary like the launcher's Launch button "
+             "(`darling exec /Applications/<App>.app/Contents/MacOS/<executable>` with DPREFIX set). Waits up to wait_seconds, then reports whether it "
+             "exited or is still running; a running app is left running and is never killed. Its output goes to the 'mcp-launch' log (see tail_log).",
+             {"prefix": prefix_property, "app": {"type": "string", "minLength": 1, "maxLength": 256, "description": "App name or bundle path from list_apps."},
+              "confirm": confirm_property, "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 60, "description": "How long to wait for an early exit, default 5."}},
+             ["prefix", "app", "confirm"], launch_app, False, {"state": {"type": "string"}, "pid": {"type": "integer"}, "output": {"type": "string"}}),
+        Tool("stop_prefix", "Stop prefix processes",
+             disabled_note + "Runs `darling shutdown` for the prefix, which ends every app running in that prefix. It asks Darling to shut down; it never "
+             "sends signals itself, and if the command does not finish in 60 seconds it is left running.",
+             {"prefix": prefix_property, "confirm": confirm_property},
+             ["prefix", "confirm"], stop_prefix, False, {"exit_code": {"type": "integer"}, "output": {"type": "string"}}, destructive=True),
     ]
 
 
