@@ -126,6 +126,22 @@ private slots:
             const auto r = fx.run(); QCOMPARE(r.result, Result::Failed); QVERIFY(!QFileInfo::exists(fx.root()));
         }
     }
+    // The check of a resumed partial reports progress and pauses per window of bytes, whatever the block size is.
+    void checkingAPartialReportsProgressAndPausesPerWindowOfBytes() {
+        Fx fx; fx.opt.blockBytes = 300; fx.opt.pauseMs = 5;     // 300 does not divide the 1024-byte window
+        QDir().mkpath(fx.root() + "/" + fx.id);
+        QVERIFY(QFile::setPermissions(fx.root(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        const QString name = kMain + ".01";
+        QVERIFY(QFile::copy(fx.src.path() + "/" + kMain, fx.dst(kMain)));          // final already, so its check is the first work
+        { QFile f(fx.dst(name + ".partial")); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(slurp(fx.src.path() + "/" + name).left(3072)); f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner); }
+        bool copying = false; int checkPauses = 0; QList<qint64> checkProgress;
+        fx.opt.sleepFn = [&](int) { if (!copying) ++checkPauses; };
+        fx.opt.onWindow = [&](const QString &, qint64, qint64) { copying = true; };
+        const auto r = fx.run(nullptr, [&](const Progress &p) { if (!copying && p.fileName == name) checkProgress << p.fileBytes; });
+        QVERIFY2(r.result == Result::Done, qPrintable(r.error));
+        QCOMPARE(checkPauses, 2);                       // after 1200 and 2400 bytes of the 3072 kept
+        QVERIFY(checkProgress.size() >= 4); QVERIFY(checkProgress.contains(300)); QVERIFY(checkProgress.contains(2400));
+    }
     void alreadyCompleteStoreIsNotCopiedAgain() {
         Fx fx; QVERIFY(fx.run().result == Result::Done);
         int windows = 0; fx.opt.onWindow = [&](const QString &, qint64, qint64) { ++windows; };
