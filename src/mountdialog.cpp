@@ -126,7 +126,7 @@ MountDialog::MountDialog(QWidget *parent, std::function<QList<SourceMount>()> pr
     cryptexUnmountButton = new QPushButton("Unmount cryptex OS"); cryptexUnmountButton->setObjectName("unmountCryptexOs"); cryptexUnmountButton->setEnabled(false); actions->addWidget(cryptexUnmountButton);
     connect(cryptexUnmountButton, &QPushButton::clicked, this, &MountDialog::unmountCryptex);
     layout->addLayout(actions);
-    auto *cryptexNote = new QLabel("The cryptex action mounts Preboot with one authorization request (select a partition to pin it), then mounts os.dmg as you.\nThe privileged step only uses root-owned apfs-fuse and apfsutil from /usr/local/bin or /usr/bin, and a mount root under your home.\napfs-fuse can use several GB of memory while reading it: unmount the cryptex OS first, then Preboot (session mounts), if the system slows down.");
+    auto *cryptexNote = new QLabel("The cryptex action mounts Preboot with one authorization request (select a partition to pin it), then mounts os.dmg as you.\nThe privileged step only uses root-owned apfs-fuse and apfsutil from /usr/local/bin or /usr/bin and mounts Preboot under /run/darling-launcher/<uid>.\napfs-fuse can use several GB of memory while reading it: unmount the cryptex OS first, then Preboot (session mounts), if the system slows down.");
     cryptexNote->setWordWrap(true); layout->addWidget(cryptexNote);
     output = new QTextEdit; output->setReadOnly(true); output->setObjectName("mountOutput"); layout->addWidget(output);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close); connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject); layout->addWidget(buttons);
