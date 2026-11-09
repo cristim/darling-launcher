@@ -225,7 +225,7 @@ filesystem metadata are private local data and are not uploaded.
 **Settings → Mount macOS source… → Mount cryptex OS (Preboot + os.dmg)** runs
 `tools/mount-cryptex.py`, which automates two read-only mounts.
 
-**Install first.** Root runs the script, so the launcher only uses a copy that only root
+**Install first.** The scripts need Python 3.8 or newer. Root runs the script, so the launcher only uses a copy that only root
 can change. `sudo cmake --install <build directory>` puts `mount-cryptex.py` and its helper
 `mount-macos.py` (only those) into `<libexecdir>/darling-launcher` (default
 `/usr/local/libexec/darling-launcher`; `-DLAUNCHER_MOUNT_CRYPTEX_SCRIPT=<path>` moves it).
@@ -244,8 +244,9 @@ only for step 2.
    holds FileVault user records, so other local users must not reach it). If the ACL cannot be
    set the action stops and mounts nothing. The command is
    `apfs-fuse -o allow_other,uid=<you>,gid=<you> -v <index> <partition> /run/darling-launcher/<uid>/macos-preboot`.
-   The partition and volume index are found by running `apfsutil` on unmounted APFS partitions
-   of real disks (loop devices and other non-disk parents are never examined, even when
+   The partition and volume index are found by running `apfsutil` on APFS partitions
+   of real disks that no other driver has mounted (volumes of the same container that
+   apfs-fuse already mounted, for example by the batch action, are fine) (loop devices and other non-disk parents are never examined, even when
    selected) and selecting the volume named `Preboot`. Select a partition to restrict the
    search to it. A Preboot mount whose apfs-fuse daemon has died is unmounted and replaced in
    the same request.
@@ -260,7 +261,7 @@ only for step 2.
 When `<cryptex-os>/root/System/Library/dyld/` exists, its path is reported in the
 dialog output. A missing tool, no Preboot volume, several Preboot volumes or images,
 or an image path that resolves outside the Preboot mount stops the action with an
-error; nothing is guessed. If Preboot is already mounted and responding, no authorization is
+error; nothing is guessed. If Preboot is already mounted and responding, it is reused and no authorization is
 requested.
 
 `apfs-fuse` can use several GB of memory while it reads the cryptex image. Use
