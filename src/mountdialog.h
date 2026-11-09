@@ -31,6 +31,9 @@ private:
     QSpinBox *volumeIndex;
     QPushButton *mountButton = nullptr;
     QPushButton *unmountButton;
+    QPushButton *cryptexButton = nullptr;
+    QPushButton *cryptexUnmountButton = nullptr;
+    QString cryptexRoot;
     QTextEdit *output = nullptr;
     bool mountBusy = false;
     bool requestedBatch = false;
@@ -42,5 +45,8 @@ private:
     void updateExistingSources();
     void discover();
     void mountSelected();
+    void mountCryptex(const QString &root, const QString &apfsFuse);
+    void handleCryptexEvent(const QByteArray &line);
+    void unmountCryptex();
     void execute(const MountCommand &command, bool unmount, const QString &device = {});
 };
