@@ -679,6 +679,17 @@ class RedactionTest(ToolTestCase):
         for plain in ("100% done", "tokens are fine", "the password field", "/dev/sda1 mounted", "path /home/ and 50%2 left", "basically fine"):
             self.assertEqual(redactor.text(plain), plain)
 
+    def test_harmless_percent_sequences_stay_verbatim_and_decoded_text_is_never_returned(self):
+        redactor = mcp.Redactor("/home/alice")
+        for plain in ("a%41b", "100%41 done", "%2F", "%7Bx%7D", "%41%42%43", "50%", "%zz %4"):
+            self.assertEqual(redactor.text(plain), plain)
+        self.assertEqual(redactor.text("x %41 y %2Fhome%2Falice"), "x %41 y ~")
+        self.assertEqual(redactor.text("%41 password%3Dhunter2xyz %42"), "%41 password%3D<redacted> %42")
+
+    def test_homes_outside_slash_home_match_in_any_case(self):
+        redactor = mcp.Redactor("/srv/Alice")
+        self.assertEqual(redactor.text("/SRV/alice/x /srv/ALICE /srv/Alicex"), "~/x ~ /srv/Alicex")
+
     def test_separators_next_to_a_home_or_user_path_survive_redaction(self):
         redactor = mcp.Redactor("/home/alice")
         cases = {"PATH=/home/alice/bin:/home/alice:/usr/bin": "PATH=~/bin:~:/usr/bin", "(/home/alice)": "(~)", "/home/bob:/x": "/home/<user>:/x",
@@ -851,6 +862,24 @@ class ActionToolsTest(unittest.TestCase):
         self.assertEqual(len(names), 26 - 3)
         self.assertNotIn("20200101T000000-00000000.log", names)
         self.assertIn("20200101T000003-00000003.log", names)
+
+    def test_an_existing_file_or_symlink_at_the_log_name_is_never_followed_or_appended_to(self):
+        directory = self.fx.data / "logs/mcp-launch"
+        directory.mkdir(parents=True)
+        victim = self.fx.root / "victim.txt"
+        victim.write_text("precious\n")
+        real_strftime = time.strftime
+        fixed = lambda fmt, *a: "20260101T000000" if fmt == "%Y%m%dT%H%M%S" else real_strftime(fmt, *a)
+        with patch.object(mcp.secrets, "token_hex", lambda n: "deadbeef"), patch.object(mcp.time, "strftime", fixed):
+            target = directory / "20260101T000000-deadbeef.log"
+            target.symlink_to(victim)
+            self.refused("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}, "cannot create the launch log")
+            target.unlink()
+            target.write_text("already here\n")
+            self.refused("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}, "cannot create the launch log")
+        self.assertEqual(victim.read_text(), "precious\n")
+        self.assertEqual(target.read_text(), "already here\n")
+        self.assertFalse(self.ran())
 
     def test_a_symlinked_launch_log_directory_is_refused_before_anything_starts(self):
         outside = self.fx.root / "elsewhere"
@@ -1217,6 +1246,16 @@ class MountPlanTest(MountPlanBase):
         self.not_root = {str(self.fx.bin / "apfs-fuse")}
         self.refused("mount_plan", {"kind": "batch"}, "must be owned by root")
         self.not_root = set()
+
+    def test_directories_on_path_are_never_trusted_even_if_the_fake_says_root_owns_them(self):
+        other = self.fx.root / "other-bin"
+        other.mkdir()
+        (other / "pkexec").write_text("#!/bin/sh\n")
+        (other / "pkexec").chmod(0o755)
+        (self.fx.bin / "pkexec").unlink()
+        self.not_root = {str(other)}
+        with patch.dict(os.environ, {"PATH": f"{other}:{self.fx.bin}:/usr/bin:/bin"}):
+            self.refused("mount_plan", {"kind": "unmount", "directory": str(self.mounts / "d")}, "pkexec was not found in ")
 
     def test_caller_supplied_tool_paths_are_rejected_as_unknown_arguments(self):
         evil = self.fx.data / "prefixes/default/evil"
