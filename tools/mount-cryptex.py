@@ -30,6 +30,19 @@ import sys
 import time
 import types
 
+MINIMUM_PYTHON = (3, 8)  # mirrored by find_package(Python3 ...) in CMakeLists.txt
+
+
+def require_python(version=None):
+    version = version or sys.version_info
+    if tuple(version[:2]) < MINIMUM_PYTHON:
+        raise ValueError("mount-cryptex.py needs Python %d.%d or newer" % MINIMUM_PYTHON)
+
+
+try:
+    require_python()
+except ValueError as error:
+    sys.exit(str(error))
 sys.dont_write_bytecode = True
 HELPER = Path(__file__).resolve().with_name("mount-macos.py")
 INSTALL_HINT = "install tools/mount-cryptex.py and tools/mount-macos.py root-owned into the same directory (sudo cmake --install <build directory>)"
@@ -325,6 +338,14 @@ def cryptex_arguments(apfs_fuse, uid, gid, dmg, destination):
     return [apfs_fuse, "-o", f"uid={uid},gid={gid}", "-v", "0", str(dmg), str(destination)]
 
 
+def is_inside(path, anchor):
+    """Path.is_relative_to needs Python 3.9; commonpath works on every supported version."""
+    try:
+        return os.path.commonpath([str(path), str(anchor)]) == str(anchor)
+    except ValueError:
+        return False
+
+
 def find_os_dmg(preboot):
     """Return the single <preboot>/root/<UUID>/cryptex1/current/os.dmg that stays inside preboot."""
     listing = preboot / "root"
@@ -338,7 +359,7 @@ def find_os_dmg(preboot):
         candidate = entry / "cryptex1/current/os.dmg"
         if candidate.is_file():
             resolved = candidate.resolve()
-            if not resolved.is_relative_to(anchor):
+            if not is_inside(resolved, anchor):
                 raise ValueError(f"{candidate} resolves outside the Preboot volume")
             found.append(resolved)
     if not found:

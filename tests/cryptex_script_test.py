@@ -158,6 +158,32 @@ class DiscoveryTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Ambiguous"):
                 cryptex.find_os_dmg(preboot)
 
+    def test_os_dmg_discovery_works_without_path_is_relative_to(self):
+        import pathlib
+        with patch.object(pathlib.PurePath, "is_relative_to", side_effect=AttributeError("Python 3.8"), create=True), \
+             tempfile.TemporaryDirectory() as directory:
+            preboot = Path(directory) / "preboot"
+            image = make_dmg(preboot)
+            self.assertEqual(cryptex.find_os_dmg(preboot), image.resolve())
+            outside = Path(directory) / "outside"
+            (outside / "cryptex1/current").mkdir(parents=True)
+            (outside / "cryptex1/current/os.dmg").write_text("fixture")
+            (preboot / "root" / UUID_B).symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "outside"):
+                cryptex.find_os_dmg(preboot)
+
+    def test_containment_check_matches_is_relative_to(self):
+        for path, anchor, inside in (("/a/b/c", "/a/b", True), ("/a/b", "/a/b", True), ("/a/bc", "/a/b", False), ("/a", "/a/b", False), ("/x/y", "/a/b", False)):
+            self.assertEqual(cryptex.is_inside(path, anchor), inside, (path, anchor))
+            self.assertEqual(Path(path).is_relative_to(anchor), inside)
+        self.assertFalse(cryptex.is_inside("relative/x", "/a/b"))
+
+    def test_old_python_is_refused_with_a_clear_message(self):
+        with self.assertRaisesRegex(ValueError, r"Python 3\.8 or newer"):
+            cryptex.require_python((3, 7, 9))
+        cryptex.require_python((3, 8, 0))
+        cryptex.require_python((4, 0))
+
     def test_os_dmg_symlink_escape_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             preboot, outside = Path(directory) / "preboot", Path(directory) / "outside"
