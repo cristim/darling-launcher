@@ -46,7 +46,8 @@ add_test(NAME launcher-troubleshooting-tests COMMAND launcher-troubleshooting-te
 set_tests_properties(launcher-troubleshooting-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 set_tests_properties(launcher-tests launcher-mount-tests launcher-prefix-tests launcher-gui-tests PROPERTIES TIMEOUT 240)
 
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
+# The mount scripts need Python 3.8 (MINIMUM_PYTHON in tools/mount-cryptex.py).
+find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
 add_test(NAME launcher-mount-script-tests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/mount_script_test.py)
 set_tests_properties(launcher-mount-script-tests PROPERTIES TIMEOUT 30)
 add_test(NAME launcher-cryptex-script-tests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cryptex_script_test.py)
