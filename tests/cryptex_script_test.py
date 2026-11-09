@@ -657,6 +657,15 @@ class MountTest(unittest.TestCase):
             cryptex.unmount_preboot(UID, self.fake_run, self.emit, self.root_owned, str(self.runtime))
         self.assertEqual(self.records, [])
 
+    def test_unmount_that_leaves_the_mount_listed_is_an_error(self):
+        self.preboot_dir.mkdir(parents=True)
+        self.records.append({"target": str(self.preboot_dir)})
+        def run(argv):
+            return "" if argv[0] == self.umount_path() else self.fake_run(argv)  # umount "succeeds" but the mount stays
+        with patch.object(cryptex, "mount_state", return_value="alive"), self.assertRaisesRegex(RuntimeError, "still mounted"):
+            cryptex.unmount_preboot(UID, run, self.emit, self.root_owned, str(self.runtime))
+        self.assertFalse(any(e["event"] == "unmounted" for e in self.events))
+
     def test_unmount_refusals(self):
         with self.assertRaisesRegex(ValueError, "not mounted"):
             cryptex.unmount_preboot(UID, self.fake_run, self.emit, self.root_owned, str(self.runtime))
