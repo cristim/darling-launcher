@@ -87,6 +87,9 @@ private slots:
         QVERIFY(!home.isEmpty()); QVERIFY(QDir::isAbsolutePath(home)); QCOMPARE(home, QDir::cleanPath(home)); QVERIFY(home != "/somewhere/else");
     }
     void rootRunFilesMustBeRootOwnedAndNotWritable() {
+        // As root the test tree is root-owned and not writable by others, so the "untrusted" assertions cannot hold
+        // (container CI); the same checks run for real when the suite runs as a normal user.
+        if (::getuid() == 0) QSKIP("The ownership refusals cannot be shown when running as root");
         // Production accepts only root (extraOwner 0); the tests use a tree under HOME owned by the test user as the stand-in root.
         QTemporaryDir temporary(QDir::homePath() + "/.launcher-trust-XXXXXX"); QVERIFY(temporary.isValid());
         const QString directory = QFileInfo(temporary.path()).canonicalFilePath() + "/libexec", script = directory + "/mount-cryptex.py", helper = directory + "/mount-macos.py";
