@@ -6,6 +6,7 @@
 #include <QDateTime>
 #include <QThread>
 #include <cerrno>
+#include <cstring>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -52,6 +53,22 @@ bool headerMatches(const QByteArray &head, const QString &arch, const QByteArray
     return parseFileHeader(head, &a, &u, &ignored) && a == arch && u == uuid;
 }
 
+constexpr qint64 kCancelled = -2;
+// Length of the prefix (at most `limit`) of dst that equals src, to the block; -1 on a read error, kCancelled on cancel.
+// Reads the source, so it pauses between windows like the copy does.
+qint64 matchingPrefix(int srcFd, int dstFd, qint64 limit, const DyldCacheCopy::Options &opt, const std::atomic<bool> *cancel, QByteArray *buf) {
+    QByteArray other(buf->size(), Qt::Uninitialized);
+    for (qint64 pos = 0; pos < limit;) {
+        if (cancelled(cancel)) return kCancelled;
+        const qint64 n = qMin<qint64>(buf->size(), limit - pos);
+        if (!preadFull(srcFd, buf->data(), n, pos) || !preadFull(dstFd, other.data(), n, pos)) return -1;
+        if (std::memcmp(buf->constData(), other.constData(), size_t(n)) != 0) return pos;
+        pos += n;
+        if (opt.pauseMs > 0 && pos % opt.windowBytes == 0 && pos < limit) { if (opt.sleepFn) opt.sleepFn(opt.pauseMs); else QThread::msleep(unsigned(opt.pauseMs)); }
+    }
+    return limit;
+}
+
 // Copies one file into <id>/<name>.partial and renames it into place. Returns Done, Cancelled or Failed.
 DyldCopy copyFile(const QString &sourceDir, const QString &root, const QString &id, const QString &arch, const Item &item,
                   const DyldCacheCopy::Options &opt, const DyldCacheCopy::ProgressFn &progress, const std::atomic<bool> *cancel, Tally *tally) {
@@ -64,14 +81,18 @@ DyldCopy copyFile(const QString &sourceDir, const QString &root, const QString &
     qint64 existing = 0;
     Fd dst(SafeFs::openWrite(root, partial, 0600, 0700, true, &existing, &err));
     if (dst.fd < 0) return failed(err);
-    qint64 offset = existing > srcSize ? 0 : existing / opt.windowBytes * opt.windowBytes;
-    if (offset >= kHeaderProbe) {
-        QByteArray head(kHeaderProbe, Qt::Uninitialized);
-        if (!preadFull(dst.fd, head.data(), head.size(), 0) || !headerMatches(head, arch, item.uuid)) offset = 0;
+    QByteArray buf(int(qMin(opt.blockBytes, srcSize ? srcSize : qint64(1))), Qt::Uninitialized);
+    // Only whole windows were flushed, and anything in the partial could have been changed by another process of this
+    // user, so the kept prefix is proven equal to the source and cut at the first block that differs.
+    qint64 offset = 0;
+    if (existing <= srcSize) {
+        const qint64 kept = matchingPrefix(src.fd, dst.fd, existing / opt.windowBytes * opt.windowBytes, opt, cancel, &buf);
+        if (kept == kCancelled) { DyldCopy c; c.result = DyldCacheCopy::Result::Cancelled; return c; }
+        if (kept < 0) return failed("Cannot compare the partial copy of " + item.name + " with the source");
+        offset = kept;
     }
     if (::ftruncate(dst.fd, offset) != 0) return failed("Cannot prepare " + item.name + " for writing");
     tally->done += offset;
-    QByteArray buf(int(qMin(opt.blockBytes, srcSize ? srcSize : qint64(1))), Qt::Uninitialized);
     DyldCopy ok; ok.result = DyldCacheCopy::Result::Done;
     auto report = [&](qint64 pos) {
         if (progress) progress({tally->index, tally->count, item.name, pos, srcSize, tally->done, tally->total});
