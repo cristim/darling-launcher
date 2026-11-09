@@ -142,6 +142,50 @@ private slots:
         QVERIFY(SafeFs::lockFile(d.path(), ".x/lock", 0700, &err) < 0);
         QVERIFY(QDir(evil.path()).isEmpty());
     }
+    void openReadRefusesSymlinksAndNonRegularFiles() {
+        QTemporaryDir d, evil; QString err; qint64 size = -1;
+        QVERIFY(SafeFs::writeFile(d.path(), "a/f", "12345", 0600, 0700, false, &err));
+        int fd = SafeFs::openRead(d.path(), "a/f", &size, &err); QVERIFY2(fd >= 0, qPrintable(err)); QCOMPARE(size, qint64(5)); ::close(fd);
+        QVERIFY(SafeFs::writeFile(evil.path(), "t", "x", 0600, 0700, false, &err));
+        QVERIFY(QFile::link(evil.path() + "/t", d.path() + "/leaf")); QVERIFY(QFile::link(evil.path(), d.path() + "/dir"));
+        QVERIFY(SafeFs::openRead(d.path(), "leaf", &size, &err) < 0);
+        QVERIFY(SafeFs::openRead(d.path(), "dir/t", &size, &err) < 0);
+        QVERIFY(SafeFs::openRead(d.path(), "a", &size, &err) < 0);        // a directory
+        QVERIFY(SafeFs::openRead(d.path(), "a/missing", &size, &err) < 0);
+    }
+    void openWriteCreatesExclusivelyOrResumes() {
+        QTemporaryDir d, evil; QString err; qint64 existing = -1;
+        int fd = SafeFs::openWrite(d.path(), "s/p.partial", 0600, 0700, false, &existing, &err); QVERIFY2(fd >= 0, qPrintable(err));
+        QCOMPARE(existing, qint64(0)); QCOMPARE(::write(fd, "abc", 3), ssize_t(3)); ::close(fd);
+        QVERIFY(SafeFs::openWrite(d.path(), "s/p.partial", 0600, 0700, false, &existing, &err) < 0); // exclusive
+        fd = SafeFs::openWrite(d.path(), "s/p.partial", 0600, 0700, true, &existing, &err); QVERIFY(fd >= 0);
+        QCOMPARE(existing, qint64(3)); ::close(fd);
+        QVERIFY(QFile::link(evil.path(), d.path() + "/l"));
+        QVERIFY(SafeFs::openWrite(d.path(), "l/p", 0600, 0700, true, &existing, &err) < 0);
+        QVERIFY(QDir(evil.path()).isEmpty());
+        QVERIFY(QFile::link(evil.path() + "/t", d.path() + "/s/link"));
+        QVERIFY(SafeFs::openWrite(d.path(), "s/link", 0600, 0700, true, &existing, &err) < 0); // dangling symlink leaf
+        QVERIFY(QDir(evil.path()).isEmpty());
+    }
+    void renameNoReplaceKeepsTheTarget() {
+        QTemporaryDir d; QString err;
+        QVERIFY(SafeFs::writeFile(d.path(), "s/a", "new", 0600, 0700, false, &err));
+        QVERIFY(SafeFs::writeFile(d.path(), "s/b", "old", 0600, 0700, false, &err));
+        QVERIFY(!SafeFs::renameInDir(d.path(), "s", "a", "b", &err, true));
+        QCOMPARE(slurp(d.path() + "/s/b"), QByteArray("old"));
+        QVERIFY(SafeFs::renameInDir(d.path(), "s", "a", "b", &err));
+        QCOMPARE(slurp(d.path() + "/s/b"), QByteArray("new"));
+    }
+    void checkPrivateDirRequiresOwnerOnlyAccess() {
+        QTemporaryDir d, evil; QString err;
+        QVERIFY(SafeFs::writeFile(d.path(), "p/f", "x", 0600, 0700, false, &err));
+        QVERIFY2(SafeFs::checkPrivateDir(d.path(), "p", &err), qPrintable(err));
+        QVERIFY(::chmod((d.path() + "/p").toUtf8().constData(), 0750) == 0);
+        QVERIFY(!SafeFs::checkPrivateDir(d.path(), "p", &err)); QVERIFY(err.contains("0700"));
+        QVERIFY(::chmod((d.path() + "/p").toUtf8().constData(), 0700) == 0);
+        QVERIFY(QFile::link(evil.path(), d.path() + "/l"));
+        QVERIFY(!SafeFs::checkPrivateDir(d.path(), "l", &err));
+    }
 };
 QTEST_APPLESS_MAIN(SafeFsTest)
 #include "safefs_test.moc"
