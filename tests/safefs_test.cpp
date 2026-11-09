@@ -191,6 +191,19 @@ private slots:
         QVERIFY(!SafeFs::preadFull(fd.fd, buf, 4, 8));   // runs past the end of the file
         QVERIFY(!SafeFs::preadFull(-1, buf, 1, 0));
     }
+    // The owner check in openWrite cannot be reached without a file owned by another user, which needs root. It is
+    // probed with a preload shim that makes geteuid() lie, so no test seam is needed in the code:
+    //   uid_t geteuid(void) { const char *e = getenv("DYLDCACHE_FAKE_EUID"); return e ? (uid_t)atoi(e) : 0; }
+    //   cc -shared -fPIC -o fake_euid.so fake_euid.c
+    //   DYLDCACHE_FAKE_EUID=1 LD_PRELOAD=./fake_euid.so launcher-safefs-tests openWriteResumeRefusesAFileOwnedByAnotherUser
+    // Without the shim the test is skipped; with the check removed it fails under the shim.
+    void openWriteResumeRefusesAFileOwnedByAnotherUser() {
+        if (!qEnvironmentVariableIsSet("DYLDCACHE_FAKE_EUID")) QSKIP("needs the geteuid preload shim, see the comment above");
+        QTemporaryDir d; QString err; qint64 existing = -1;
+        QVERIFY(SafeFs::writeFile(d.path(), "p.partial", "abc", 0600, 0700, false, &err));
+        QVERIFY(SafeFs::openWrite(d.path(), "p.partial", 0600, 0700, true, &existing, &err) < 0);
+        QVERIFY2(err.contains("not owned"), qPrintable(err));
+    }
     void renameNoReplaceKeepsTheTarget() {
         QTemporaryDir d; QString err;
         QVERIFY(SafeFs::writeFile(d.path(), "s/a", "new", 0600, 0700, false, &err));
