@@ -151,13 +151,14 @@ class Redactor:
             value = self.user.sub("<user>", value)
         return value
 
-    def obj(self, value):
+    def obj(self, value, keep=()):
+        """Redacts every string except the values of dict keys named in keep (user-local, copy-paste material)."""
         if isinstance(value, str):
             return self.text(value)
         if isinstance(value, list):
-            return [self.obj(v) for v in value]
+            return [self.obj(v, keep) for v in value]
         if isinstance(value, dict):
-            return {k: self.obj(v) for k, v in value.items()}
+            return {k: v if k in keep else self.obj(v, keep) for k, v in value.items()}
         return value
 
 
@@ -358,8 +359,9 @@ def run_capped(argv, env, timeout, kill_on_timeout, cap=MAX_CHILD_OUTPUT):
 
 
 class Tool:
-    def __init__(self, name, title, description, properties, required, handler, read_only, output_properties, destructive=False):
+    def __init__(self, name, title, description, properties, required, handler, read_only, output_properties, destructive=False, user_local=()):
         self.name = name
+        self.user_local = frozenset(user_local)
         self.handler = handler
         self.input_schema = {"type": "object", "properties": properties, "required": list(required), "additionalProperties": False}
         self.output_schema = {"type": "object", "properties": output_properties, "additionalProperties": True}
@@ -520,7 +522,7 @@ class Server:
         except Exception as error:  # noqa: BLE001
             log(f"tool {name} crashed: {self.redact.text(repr(error))}")
             return self.failure(f"internal error in {name}: {type(error).__name__}")
-        data = self.redact.obj(data)
+        data = self.redact.obj(data, tool.user_local)
         text = self.redact.text(summary) + "\n\n" + json.dumps(data, indent=2, ensure_ascii=False)
         if len(text) > MAX_RESULT_CHARS:
             text = text[:MAX_RESULT_CHARS] + "\n[truncated]"
@@ -865,7 +867,7 @@ def build_tools(server):
             directory_warnings(directory, False)
             commands.append({"description": f"Unmount {directory}.", "run_as": "root via pkexec", "argv": [system_tool("pkexec"), system_tool("umount"), "--", str(directory)]})
         for command in commands:
-            command["shell"] = shlex.join(command["argv"])
+            command["shell"] = shlex.join(command["argv"])  # from the real argv: redaction would corrupt quoting
         data = {"kind": kind, "executed": False, "commands": commands, "warnings": warnings}
         return data, f"Plan for {kind}: {len(commands)} command(s). Nothing was run; the user must run them."
 
@@ -901,7 +903,8 @@ def build_tools(server):
              read_only_note + "Returns, and never runs, the exact command line the launcher would use so the USER can run it: kind 'batch' (mount all detected partitions), "
              "'partition' (one partition with pkexec mount or apfs-fuse), 'cryptex' (Preboot plus os.dmg) or 'unmount'. All mounts are read-only with nodev, nosuid and "
              "noexec. This server never calls sudo or pkexec. Helper programs (pkexec, mount, umount, python3, apfs-fuse, apfsutil) are only taken from root-owned "
-             "files in /usr/local/bin or /usr/bin and cannot be chosen by the caller. Directories must be inside the launcher mount root; any other argument is rejected.",
+             "files in /usr/local/bin or /usr/bin and cannot be chosen by the caller. Directories must be inside the launcher mount root; any other argument is rejected. "
+             "The argv and shell fields hold the user's real local paths, unredacted, so they can be pasted into the user's own terminal.",
              {"kind": {"type": "string", "enum": list(MOUNT_PLAN_ARGUMENTS)},
               "mount_root": {"type": "string", "maxLength": 1024, "description": "kinds batch, cryptex: mount root, default the launcher mount root."},
               "device": {"type": "string", "maxLength": 256, "description": "kinds partition, cryptex: block device such as /dev/nvme0n1p5."},
@@ -909,7 +912,7 @@ def build_tools(server):
               "backend": {"type": "string", "enum": ["kernel", "apfs-fuse"], "description": "kind partition."},
               "volume_index": {"type": "integer", "minimum": 0, "maximum": 99, "description": "kind partition: APFS container volume index (required for apfs)."},
               "directory": {"type": "string", "maxLength": 1024, "description": "kinds partition (mount directory) and unmount (directory to unmount), inside the mount root."}},
-             ["kind"], mount_plan, True, {"executed": {"type": "boolean"}, "commands": {"type": "array"}, "warnings": {"type": "array"}}),
+             ["kind"], mount_plan, True, {"executed": {"type": "boolean"}, "commands": {"type": "array"}, "warnings": {"type": "array"}}, user_local=("argv", "shell")),
         Tool("launch_app", "Launch imported app",
              disabled_note + "Starts an imported app through the prefix's darling binary like the launcher's Launch button "
              "(`darling exec /Applications/<App>.app/Contents/MacOS/<executable>` with DPREFIX set). Waits up to wait_seconds, then reports whether it "
