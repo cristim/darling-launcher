@@ -129,7 +129,8 @@ class Redactor:
         re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
         re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
         re.compile(r"AKIA[0-9A-Z]{16}"),
-        re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}"),
+        # The lookbehind makes the scan linear: without it every "eyJ" inside a long eyJeyJeyJ... run restarts the greedy class.
+        re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}"),
     ]
     SCHEME = re.compile(r"(?i)\b(?:bearer|basic)\s+(?P<v>(?!<redacted>)[^\s\"']+)")
     LABELS = r"(?:api[_-]?key|access[_-]?key|token|secret|password|passwd|authorization)"
@@ -137,10 +138,10 @@ class Redactor:
     LABELLED = re.compile(r"""(?i)\b""" + LABELS + r"""\b["']?\s*[=:]\s*(?P<v>(?!<redacted>)(?:"[^"]*"|'[^']*'|"[^"\r\n]*|'[^'\r\n]*|[^\s"']+))""")
     # label separated by whitespace only: the next word if it is long enough to be a secret rather than prose ("the password field")
     SPACED = re.compile(r"(?i)\b" + LABELS + r"\b\s+(?P<v>(?!<redacted>)[^\s\"'=:]{6,})")
-    # scheme://user:password@host. Every quantifier is bounded and the user class cannot contain ':', so each '://' costs at
-    # most ~640 steps and the whole scan is linear. The password may hold '@' and '/' (the last '@' wins, so nothing leaks);
-    # "host:8080/..." is a port, not a password; bracketed IPv6 hosts cannot start a user name.
-    USERINFO = re.compile(r"(?<=://)(?P<v>[^/\s@\"':\[\]]{0,128}:(?!\d{1,5}(?:[/\s\"']|$))[^\s\"']{0,512})(?=@)")
+    # scheme://user:password@host is found by userinfo_spans (a linear scan, not a regex), which has no length limits.
+    TOKEN = re.compile(r"[^\s\"']+")
+    USER_PART = re.compile(r"[^/@\[\]]*")
+    PORT = re.compile(r"\d{1,5}(?:[/\s\"']|$)")
     # The name ends at a delimiter, so PATH=/home/a/bin:/usr/bin and (/home/a) keep their separators.
     GENERIC_HOME = re.compile(r"(?i)/(?:home|Users|run/media)/(?P<v>[^/\s\"'`:;,()\[\]{}<>|&=*?\\]+)")
     MAX_DECODE_DEPTH = 5
@@ -148,11 +149,11 @@ class Redactor:
     # Text longer than MAX_SCAN_CHARS + LOOKAHEAD_CHARS is cut to that window, the WHOLE window is redacted, and only then is
     # the redacted result limited to the first MAX_SCAN_CHARS characters of the original: a span that starts before that limit
     # is emitted whole (as its replacement), so a secret straddling the limit never shows a partial prefix, and the raw text
-    # after the last span is trimmed back to a delimiter so no partial token is emitted. Never redacted in chunks: a secret
+    # after the last span is trimmed back to a token boundary so no partial token is emitted. Never redacted in chunks: a secret
     # that spans whitespace (password hunter2, "a b" values) would be cut in two and leak.
     MAX_SCAN_CHARS = 65536
     LOOKAHEAD_CHARS = 4096
-    CUT_DELIMITERS = " \t\r\n/,;\"'=&@:%"
+    CUT_DELIMITERS = " \t\r\n\"'"  # token boundaries: the token that crosses the limit is dropped whole, never cut at an inner delimiter
     TRUNCATION_MARKER = "[truncated before redaction]"
 
     def __init__(self, home):
@@ -166,33 +167,65 @@ class Redactor:
     def spans(self, text, paths, secret):
         """(start, end, replacement) for everything to hide in text."""
         found = [(m.start(), m.end(), secret) for pattern in self.TOKENS for m in pattern.finditer(text)]
-        found += [m.span("v") + (secret,) for pattern in (self.SCHEME, self.LABELLED, self.SPACED, self.USERINFO) for m in pattern.finditer(text)]
+        found += [m.span("v") + (secret,) for pattern in (self.SCHEME, self.LABELLED, self.SPACED) for m in pattern.finditer(text)]
+        found += [span + (secret,) for span in self.userinfo_spans(text)]
         if paths:
             found += [m.span() + ("~",) for pattern in self.homes for m in pattern.finditer(text)]
             found += [m.span("v") + ("<user>",) for m in self.GENERIC_HOME.finditer(text)]
         return found
 
-    @staticmethod
-    def decode_once(text, origin):
+    @classmethod
+    def userinfo_spans(cls, text):
+        """Spans of scheme://user:password@host credentials, one per whitespace/quote-delimited token. The password runs to the LAST
+        '@' of the token (so it may contain '@' and '/', and nothing of it leaks) and has no length limit. The user part may
+        not contain '/', '@' or brackets, so IPv6 hosts and ssh://git@host:22/... are not credentials, and host:8080/path is a
+        port, not a password. Linear: per token one rfind, and each '://' scans at most to the next one."""
+        if "@" not in text or "://" not in text:
+            return []
+        spans = []
+        for token in cls.TOKEN.finditer(text):
+            lo, hi = token.span()
+            at = text.rfind("@", lo, hi)
+            if at < 0:
+                continue
+            scheme = text.find("://", lo, at)
+            while scheme != -1:
+                start = scheme + 3
+                colon = text.find(":", start, at)
+                if colon != -1 and cls.USER_PART.fullmatch(text, start, colon) and not cls.PORT.match(text, colon + 1):
+                    spans.append((start, at))
+                    break
+                scheme = text.find("://", scheme + 1, at)
+        return spans
+
+    # Escapes that decode_once rewrites, and any non-ASCII character (for NFKC folding); everything else is copied in bulk.
+    SPECIAL = re.compile(r"%[0-9A-Fa-f]{2}|\\/|\\u00[0-7][0-9A-Fa-f]|[^\x00-\x7f]")
+
+    @classmethod
+    def decode_once(cls, text, origin):
         """One decoding layer: ASCII %XX, JSON escapes (\\/ and \\u00XX), then Unicode compatibility folding (fullwidth slashes and
-        letters) character by character. origin[i] is the (start, end) in the original string of character i of text."""
-        out, i = [], 0
-        while i < len(text):
-            width, code = 1, None
-            if text[i] == "%" and re.fullmatch(r"[0-9A-Fa-f]{2}", text[i + 1:i + 3]):
-                width, code = 3, int(text[i + 1:i + 3], 16)
-            elif text[i] == "\\" and text[i + 1:i + 2] == "/":
-                width, code = 2, ord("/")
-            elif text[i] == "\\" and re.fullmatch(r"u00[0-7][0-9A-Fa-f]", text[i + 1:i + 6]):
-                width, code = 6, int(text[i + 3:i + 6], 16)
-            if code is not None and code < 128:
-                out.append((chr(code), (origin[i][0], origin[i + width - 1][1])))
+        letters) character by character. origin[i] is the (start, end) in the original string of character i of text.
+        Plain runs are copied as slices, so a layer costs time in proportion to the escapes it contains."""
+        out, out_origin, position = [], [], 0
+        for match in cls.SPECIAL.finditer(text):
+            start, end = match.span()
+            if start > position:
+                out.append(text[position:start])
+                out_origin.extend(origin[position:start])
+            token = match.group()
+            if token[0] == "%" or token[0] == "\\":
+                code = ord("/") if token == "\\/" else int(token[-2:], 16)
+                decoded = chr(code) if code < 128 else token
+                out.append(decoded)
+                out_origin.extend([(origin[start][0], origin[end - 1][1])] if code < 128 else origin[start:end])
             else:
-                width = 1
-                folded = unicodedata.normalize("NFKC", text[i])
-                out.extend((c, origin[i]) for c in folded)
-            i += width
-        return "".join(c for c, _ in out), [o for _, o in out]
+                folded = unicodedata.normalize("NFKC", token)
+                out.append(folded)
+                out_origin.extend([origin[start]] * len(folded))
+            position = end
+        out.append(text[position:])
+        out_origin.extend(origin[position:])
+        return "".join(out), out_origin
 
     def text(self, value, paths=True):
         """Hides secrets and, if paths, home and user-name paths. The text is also searched percent-, JSON-escape- and NFKC-decoded to a fixed point
@@ -236,7 +269,7 @@ class Redactor:
         if position < limit:
             tail = value[position:limit]
             if truncated:
-                tail = tail[:max(tail.rfind(c) for c in self.CUT_DELIMITERS) + 1]  # no delimiter: the whole tail run is dropped
+                tail = tail[:max(tail.rfind(c) for c in self.CUT_DELIMITERS) + 1]  # no boundary at all: the whole tail run is dropped
             result.append(tail)
         return "".join(result) + (self.TRUNCATION_MARKER if truncated else "")
 
