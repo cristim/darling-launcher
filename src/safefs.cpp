@@ -173,6 +173,10 @@ int openWrite(const QString &root, const QString &relPath, mode_t fileMode, mode
     if (file.fd < 0) { fail(error, sysError("Cannot open " + relPath + " for writing")); return -1; }
     struct stat st;
     if (::fstat(file.fd, &st) != 0 || !S_ISREG(st.st_mode)) { fail(error, relPath + " is not a regular file"); return -1; }
+    // A file planted by the guest (same uid, so uid alone proves little) can be a hard link to something else or carry loose modes.
+    if (st.st_uid != ::geteuid()) { fail(error, relPath + " is not owned by this user"); return -1; }
+    if (st.st_nlink != 1) { fail(error, relPath + " has more than one hard link"); return -1; }
+    if (::fchmod(file.fd, fileMode) != 0) { fail(error, sysError("Cannot set the mode of " + relPath)); return -1; }
     if (existingSize) *existingSize = st.st_size;
     return file.release();
 }
