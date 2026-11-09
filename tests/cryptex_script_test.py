@@ -139,6 +139,8 @@ def fake_lstat(overrides=None):
     def lstat(path):
         real = os.lstat(path)
         uid, writable = overrides.get(str(path), (0, False))
+        if stat.S_ISLNK(real.st_mode):  # Linux reports 0777 for symlinks
+            return SimpleNamespace(st_uid=uid, st_mode=real.st_mode)
         return SimpleNamespace(st_uid=uid, st_mode=(real.st_mode & ~0o777) | (0o775 if writable else 0o755))
     return lstat
 
@@ -182,6 +184,37 @@ class TrustTest(unittest.TestCase):
         (self.bin / "apfsutil").symlink_to(elsewhere / "evil")
         with self.assertRaisesRegex(ValueError, "owned by root"):
             self.find({str(elsewhere): (1000, False)}, "apfsutil")
+
+    def make_link_to_real_tool(self):
+        real = self.root / "real/apfsutil-real"
+        real.parent.mkdir(parents=True)
+        real.write_text("fixture")
+        real.chmod(0o755)
+        link = self.bin / "apfsutil"
+        link.symlink_to(real)
+        return link, real
+
+    def test_root_owned_symlink_to_root_owned_binary_is_accepted(self):
+        link, real = self.make_link_to_real_tool()
+        self.assertEqual(self.find(name="apfsutil"), str(real))
+
+    def test_root_owned_symlinked_parent_is_accepted(self):
+        alias = self.root / "usr/bin-alias"
+        alias.symlink_to(self.bin, target_is_directory=True)
+        self.assertEqual(self.find(directories=[str(alias)]), str(self.tool))
+        self.assertEqual(cryptex.require_root_owned(str(alias / "apfs-fuse"), fake_lstat()), str(self.tool))
+
+    def test_user_owned_symlink_is_refused(self):
+        link, _ = self.make_link_to_real_tool()
+        with self.assertRaisesRegex(ValueError, "owned by root"):
+            self.find({str(link): (1000, False)}, "apfsutil")
+
+    def test_symlink_to_user_writable_target_is_refused(self):
+        link, real = self.make_link_to_real_tool()
+        with self.assertRaisesRegex(ValueError, "not group- or world-writable"):
+            self.find({str(real): (0, True)}, "apfsutil")
+        with self.assertRaisesRegex(ValueError, "not group- or world-writable"):
+            self.find({str(real.parent): (0, True)}, "apfsutil")
 
     def test_missing_tool_is_refused_and_not_searched_elsewhere(self):
         with self.assertRaisesRegex(ValueError, "was not found"):
