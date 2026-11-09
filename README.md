@@ -348,7 +348,10 @@ Safety model:
 - Action tools are refused unless the server was started with
   `DARLING_LAUNCHER_MCP_ALLOW_ACTIONS=1`, and each call must also pass `confirm: true`.
 - The server never calls `sudo` or `pkexec` and never mounts anything. `mount_plan` only
-  returns commands. The cryptex plan mirrors the documented command of the cryptex mount
+  returns commands, and it takes `pkexec`, `mount`, `umount`, `python3`, `apfs-fuse` and
+  `apfsutil` only from root-owned files in `/usr/local/bin` or `/usr/bin` (the file and every
+  parent root-owned and not group- or world-writable, as in the cryptex mount script). The
+  caller cannot choose these paths; a missing tool is an error that says where to install it. The cryptex plan mirrors the documented command of the cryptex mount
   action; its script is present only on a checkout that includes it, and the plan says so.
 - A prefix is a bare name or an absolute path of a direct, non-symlink child of
   `~/.darling-launcher/prefixes`. Mount directories must be inside
