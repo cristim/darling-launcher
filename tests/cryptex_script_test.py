@@ -397,6 +397,7 @@ class MountTest(unittest.TestCase):
         self.options = SimpleNamespace(mount_root=str(self.mounts), apfs_fuse=str(self.fuse), device="")
         self.root_owned = fake_lstat()
         self.acls = {}
+        self.umount_error = False
         self.trusted = ("/usr/local/bin/apfs-fuse", "/usr/local/bin/apfsutil")
         self.calls, self.records, self.events = [], [], []
         self.gid = os.getgid()
@@ -412,6 +413,11 @@ class MountTest(unittest.TestCase):
             return json.dumps({"filesystems": self.records})
         if argv[0] == self.trusted[1]:
             return LIST
+        if argv[0].endswith("/umount"):
+            if self.umount_error:
+                raise RuntimeError("umount failed (32): target is busy")
+            self.records[:] = [r for r in self.records if r.get("target") != argv[-1]]
+            return ""
         self.assertIn(argv[0], (self.trusted[0], str(self.fuse)))
         self.records.append({"source": argv[-2], "target": argv[-1], "options": "rw"})
         if "allow_other" not in argv[2]:
@@ -512,7 +518,7 @@ class MountTest(unittest.TestCase):
             self.preboot()
         (self.preboot_dir / "leftover").unlink()
         self.records.append({"target": str(self.preboot_dir)})
-        with self.assertRaisesRegex(ValueError, "not empty"):
+        with self.assertRaisesRegex(ValueError, "already mounted"):
             self.preboot()
 
     def test_caller_acl_bytes_are_exactly_root_rwx_caller_x_nobody_else(self):
@@ -553,6 +559,75 @@ class MountTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not applied as requested"):
             self.preboot(getxattr=lambda path, name: b"\x02\x00\x00\x00")
         self.assertFalse(any(c[0] == self.trusted[0] for c in self.calls))
+
+    def umount_path(self):
+        return os.path.realpath(cryptex.UMOUNT)
+
+    def test_alive_preboot_mount_is_never_mounted_over(self):
+        self.preboot_dir.mkdir(parents=True)
+        self.records.append({"source": "/dev/synthetic2", "target": str(self.preboot_dir)})
+        with patch.object(cryptex, "mount_state", return_value="alive"), self.assertRaisesRegex(ValueError, "already mounted"):
+            self.preboot()
+        self.assertFalse(any(c[0] in (self.trusted[0], self.umount_path()) for c in self.calls))
+
+    def test_dead_preboot_mount_is_unmounted_before_the_device_is_searched(self):
+        self.preboot_dir.mkdir(parents=True)
+        self.records.append({"source": "/dev/synthetic2", "target": str(self.preboot_dir)})
+        with patch.object(cryptex, "mount_state", return_value="dead"):
+            self.preboot()
+        order = [c[0] for c in self.calls if c[0] in (self.umount_path(), self.trusted[1], self.trusted[0])]
+        self.assertEqual(order, [self.umount_path(), self.trusted[1], self.trusted[0]])
+        self.assertIn([self.umount_path(), "--", str(self.preboot_dir)], self.calls)
+        self.assertEqual(self.events[0]["event"], "warning")
+
+    def test_unmount_uses_only_the_callers_known_mount_point(self):
+        self.preboot_dir.mkdir(parents=True)
+        self.records.append({"target": str(self.preboot_dir)})
+        with patch.object(cryptex, "mount_state", return_value="alive"):
+            cryptex.unmount_preboot(UID, self.fake_run, self.emit, self.root_owned, str(self.runtime))
+        self.assertEqual([c for c in self.calls if c[0] == self.umount_path()], [[self.umount_path(), "--", str(self.preboot_dir)]])
+        self.assertEqual(self.events[-1], {"event": "unmounted", "role": "preboot", "path": str(self.preboot_dir)})
+
+    def test_unmount_of_a_dead_mount_works_too(self):
+        self.preboot_dir.mkdir(parents=True)
+        self.records.append({"target": str(self.preboot_dir)})
+        with patch.object(cryptex, "mount_state", return_value="dead"):
+            cryptex.unmount_preboot(UID, self.fake_run, self.emit, self.root_owned, str(self.runtime))
+        self.assertEqual(self.records, [])
+
+    def test_unmount_refusals(self):
+        with self.assertRaisesRegex(ValueError, "not mounted"):
+            cryptex.unmount_preboot(UID, self.fake_run, self.emit, self.root_owned, str(self.runtime))
+        self.preboot_dir.mkdir(parents=True)
+        self.records.append({"target": str(self.preboot_dir)})
+        self.umount_error = True
+        with patch.object(cryptex, "mount_state", return_value="alive"), self.assertRaisesRegex(RuntimeError, "unmount the cryptex OS first"):
+            cryptex.unmount_preboot(UID, self.fake_run, self.emit, self.root_owned, str(self.runtime))
+        self.umount_error = False
+        with patch.object(cryptex, "mount_state", return_value="alive"), self.assertRaisesRegex(ValueError, "owned by root"):
+            cryptex.unmount_preboot(UID, self.fake_run, self.emit, fake_lstat({str(self.preboot_dir.parent): (1000, False)}), str(self.runtime))
+        self.assertEqual(len(self.records), 1)
+
+    def test_unmount_refuses_a_symlinked_parent_and_runs_nothing(self):
+        elsewhere = self.root / "elsewhere"
+        (elsewhere / "macos-preboot").mkdir(parents=True)
+        self.runtime.mkdir(parents=True)
+        (self.runtime / str(UID)).symlink_to(elsewhere, target_is_directory=True)
+        self.records.append({"target": str(self.preboot_dir)})
+        with patch.object(cryptex, "mount_state", return_value="alive"), self.assertRaisesRegex(ValueError, "symlinks"):
+            cryptex.unmount_preboot(UID, self.fake_run, self.emit, self.root_owned, str(self.runtime))
+        self.assertFalse(any(c[0] == self.umount_path() for c in self.calls))
+
+    def test_cryptex_step_reports_a_dead_preboot_or_cryptex_mount(self):
+        preboot = self.preboot_dir
+        make_dmg(preboot)
+        self.records.append({"target": str(preboot)})
+        with patch.object(cryptex, "mount_state", return_value="dead"), self.assertRaisesRegex(ValueError, "not responding.*remount"):
+            self.cryptex()
+        states = iter(["alive", "dead"])
+        with patch.object(cryptex, "mount_state", side_effect=lambda *a: next(states)), self.assertRaisesRegex(ValueError, "cryptex mount.*not responding"):
+            self.cryptex()
+        self.assertFalse(any(c[0] == str(self.fuse) for c in self.calls))
 
     def test_untrusted_tool_creates_no_directories(self):
         def tools():
@@ -599,6 +674,7 @@ class MountTest(unittest.TestCase):
     def test_already_mounted_cryptex_is_not_mounted_twice(self):
         preboot, target = self.preboot_dir, self.mounts / "macos-cryptex-os"
         (target / "root/System/Library/dyld").mkdir(parents=True)
+        preboot.mkdir(parents=True)
         self.records += [{"target": str(preboot)}, {"target": str(target)}]
         self.cryptex()
         self.assertFalse(any(c[0] == str(self.fuse) for c in self.calls))
@@ -616,6 +692,24 @@ class MountTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "did not appear"):
             self.cryptex(run_command=run, sleep=sleeps.append)
         self.assertEqual(len(sleeps), cryptex.DYLD_WAIT_SECONDS)
+
+
+class MountStateTest(unittest.TestCase):
+    def test_states(self):
+        import errno
+        records = [{"target": "/m"}]
+        self.assertEqual(cryptex.mount_state("/other", records, lambda p: 1 / 0), "absent")
+        self.assertEqual(cryptex.mount_state("/m", records, lambda p: None), "alive")
+        def dead(path):
+            raise OSError(errno.ENOTCONN, "Transport endpoint is not connected")
+        self.assertEqual(cryptex.mount_state("/m", records, dead), "dead")
+
+    def test_other_errors_are_not_mistaken_for_a_dead_mount(self):
+        import errno
+        def denied(path):
+            raise OSError(errno.EACCES, "Permission denied")
+        with self.assertRaises(OSError):
+            cryptex.mount_state("/m", [{"target": "/m"}], denied)
 
 
 class MainTest(unittest.TestCase):
@@ -706,11 +800,55 @@ class MainTest(unittest.TestCase):
 
     def test_mounted_preboot_skips_authorization(self):
         records = [{"target": f"/run/darling-launcher/{UID}/macos-preboot"}]
-        with patch.object(cryptex.base, "mounted_records", return_value=records), \
+        with patch.object(cryptex.base, "mounted_records", return_value=records), patch.object(cryptex, "mount_state", return_value="alive"), \
              patch.object(cryptex.subprocess, "call") as call, patch.object(cryptex, "mount_cryptex") as step:
             self.assertEqual(cryptex.main(self.args), 0)
             call.assert_not_called()
             self.assertEqual(step.call_count, 1)
+
+    def authorized_main(self, argv, state, code=0):
+        with patch.object(cryptex.shutil, "which", return_value="/usr/bin/pkexec"), \
+             patch.object(cryptex, "require_root_owned", return_value="/trusted/python3"), \
+             patch.object(cryptex.base, "mounted_records", return_value=[]), patch.object(cryptex, "mount_state", return_value=state), \
+             patch.object(cryptex.subprocess, "call", return_value=code) as call, patch.object(cryptex, "mount_cryptex") as step, \
+             patch.object(cryptex, "emit") as emit:
+            result = cryptex.main(argv)
+        return result, call, step, emit
+
+    def test_dead_preboot_mount_requests_one_authorization_to_replace_it(self):
+        result, call, step, emit = self.authorized_main(self.args, "dead")
+        self.assertEqual(result, 0)
+        self.assertEqual(call.call_count, 1)
+        self.assertNotIn("--unmount", call.call_args.args[0])
+        self.assertEqual(step.call_count, 1)
+        self.assertEqual(emit.call_args_list[0].args[0], "warning")
+
+    def test_unmount_request_is_one_authorization_without_mount_root_or_cryptex_step(self):
+        result, call, step, emit = self.authorized_main(["--unmount"], "alive")
+        self.assertEqual(result, 0)
+        self.assertEqual(call.call_count, 1)
+        command = call.call_args.args[0]
+        self.assertEqual(command[-2:], ["--privileged", "--unmount"])
+        self.assertNotIn("--mount-root", command)
+        step.assert_not_called()
+
+    def test_unmount_when_nothing_is_mounted_asks_for_no_authorization(self):
+        result, call, step, emit = self.authorized_main(["--unmount"], "absent")
+        self.assertEqual(result, 0)
+        call.assert_not_called()
+
+    def test_unmount_failure_or_denial_is_reported_without_retry(self):
+        for code in (1, 126, 127):
+            result, call, step, emit = self.authorized_main(["--unmount"], "alive", code)
+            self.assertEqual(result, code)
+            self.assertEqual(call.call_count, 1)
+
+    def test_privileged_unmount_never_mounts(self):
+        with patch.object(cryptex, "caller_identity", return_value=(UID, os.getgid())), \
+             patch.object(cryptex, "unmount_preboot") as unmount, patch.object(cryptex, "mount_preboot") as mount:
+            self.assertEqual(cryptex.main(["--privileged", "--unmount"]), 0)
+        unmount.assert_called_once_with(UID)
+        mount.assert_not_called()
 
     def test_missing_pkexec_fails_loudly(self):
         with patch.object(cryptex.shutil, "which", return_value=None), patch.object(cryptex.base, "mounted_records", return_value=[]), \

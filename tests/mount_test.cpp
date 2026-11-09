@@ -114,6 +114,17 @@ private slots:
         const QString link = temporary.path() + "/link.py"; QVERIFY(QFile::link(script, link));
         QCOMPARE(LauncherMount::trustedFile(link, owner, true, &error), script);
     }
+    void prebootUnmountIsOnlyTheScriptsUnmountRequest() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        QString script = temporary.path() + "/mount-cryptex.py"; QFile file(script); QVERIFY(file.open(QIODevice::WriteOnly)); file.close();
+        MountCommand command; QString error;
+        QVERIFY2(LauncherMount::makePrebootUnmountCommand("/usr/bin/true", script, &command, &error), qPrintable(error));
+        QCOMPARE(command.program, QString("/usr/bin/true"));
+        QCOMPARE(command.arguments, (QStringList{"-I", script, "--unmount"}));
+        QVERIFY(!LauncherMount::makePrebootUnmountCommand("python3", script, &command, &error));
+        QVERIFY(!LauncherMount::makePrebootUnmountCommand("/usr/bin/true", temporary.path() + "/missing.py", &command, &error));
+        QVERIFY(!LauncherMount::makePrebootUnmountCommand("/usr/bin/true", "mount-cryptex.py", &command, &error));
+    }
     void cryptexUnmountTargetsOnlyTheCryptexDirectory() {
         MountCommand command; QString error;
         QVERIFY2(LauncherMount::makeCryptexUnmountCommand("/usr/bin/true", "/run/user/1000/mount root", &command, &error), qPrintable(error));

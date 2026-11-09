@@ -36,6 +36,8 @@ QString passwdHome();
 bool makeCryptexCommand(const QString &python, const QString &script, const QString &mountRoot,
                         const QString &apfsFuse, const QString &device,
                         MountCommand *command, QString *error);
+// Runs the script's privileged --unmount request (it asks for authorization itself).
+bool makePrebootUnmountCommand(const QString &python, const QString &script, MountCommand *command, QString *error);
 bool makeCryptexUnmountCommand(const QString &fusermount, const QString &mountRoot,
                                MountCommand *command, QString *error);
 }

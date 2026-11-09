@@ -33,6 +33,7 @@ private:
     QPushButton *unmountButton;
     QPushButton *cryptexButton = nullptr;
     QPushButton *cryptexUnmountButton = nullptr;
+    QPushButton *prebootUnmountButton = nullptr;
     QString cryptexRoot;
     QTextEdit *output = nullptr;
     bool mountBusy = false;
@@ -46,6 +47,9 @@ private:
     void discover();
     void mountSelected();
     void mountCryptex(const QString &root, const QString &apfsFuse);
+    void runCryptexCommand(const MountCommand &command, const QString &waiting);
+    bool cryptexCommandReady(QString *python);
+    void unmountPreboot();
     void handleCryptexEvent(const QByteArray &line);
     void unmountCryptex();
     void execute(const MountCommand &command, bool unmount, const QString &device = {});

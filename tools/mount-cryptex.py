@@ -16,6 +16,7 @@ Unprivileged step: runs as the caller under the mount root (a canonical director
 home or /run/user/<uid>, validated by name), so it gains no privileges.
 """
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -48,6 +49,7 @@ DYLD_WAIT_SECONDS = 30
 TRUSTED_DIRECTORIES = ("/usr/local/bin", "/usr/bin")
 RUNTIME_PARENT = "/run/darling-launcher"
 ACL_NAME = "system.posix_acl_access"
+UMOUNT = "/usr/bin/umount"
 
 
 def validate_device(device):
@@ -263,6 +265,8 @@ def authorization_command(options, lstat=os.lstat):
         raise ValueError("pkexec is unavailable")
     interpreter = require_root_owned(sys.executable, lstat)
     command = [pkexec, interpreter, "-I", str(Path(__file__).resolve()), "--privileged"]
+    if options.unmount:
+        return command + ["--unmount"]
     return command + (["--device", options.device] if options.device else [])
 
 
@@ -348,17 +352,63 @@ def is_mounted(records, target):
     return any(r.get("target") == str(target) for r in records)
 
 
+def mount_state(path, records, stat_path=os.stat):
+    """'absent', 'alive', or 'dead': listed in the mount table but its FUSE daemon is gone (ENOTCONN)."""
+    if not is_mounted(records, path):
+        return "absent"
+    try:
+        stat_path(path)
+    except OSError as error:
+        if error.errno == errno.ENOTCONN:
+            return "dead"
+        raise
+    return "alive"
+
+
+def release_preboot(destination, run_command, lstat=os.lstat):
+    """Unmount root's own Preboot mount point, and nothing else."""
+    parent = destination.parent
+    if os.path.realpath(parent) != str(parent):
+        raise ValueError(f"{parent} must not involve symlinks")
+    _require_root_chain(str(parent), lstat)
+    umount = require_root_owned(UMOUNT, lstat)
+    try:
+        run_command([umount, "--", str(destination)])
+    except RuntimeError as error:
+        raise RuntimeError(f"{error}; unmount the cryptex OS first if it is mounted") from None
+    if is_mounted(base.mounted_records(run_command), destination):
+        raise RuntimeError(f"{destination} is still mounted")
+
+
+def unmount_preboot(uid, run_command=None, emit_event=emit, lstat=os.lstat, runtime_parent=RUNTIME_PARENT):
+    """Privileged step for --unmount: only the known /run mount point of the caller."""
+    run_command = run_command or base.run
+    destination = preboot_path(uid, runtime_parent)
+    if mount_state(destination, base.mounted_records(run_command)) == "absent":
+        raise ValueError("Preboot is not mounted")
+    release_preboot(destination, run_command, lstat)
+    emit_event("unmounted", role="preboot", path=str(destination))
+
+
 def mount_preboot(options, uid, gid, run_command=None, emit_event=emit, check_device=require_block_device,
                   tools=None, lstat=os.lstat, runtime_parent=RUNTIME_PARENT, setxattr=_set_acl, getxattr=_get_acl):
     """Privileged step. Only options.device is used; binaries and the mount point are chosen here."""
     run_command = run_command or base.run
     apfs_fuse, apfsutil = (tools or system_tools)()
-    inventory = json.loads(run_command(LSBLK))
+    destination = preboot_path(uid, runtime_parent)
     existing = base.mounted_records(run_command)
+    state = mount_state(destination, existing)
+    if state == "alive":
+        raise ValueError(f"Preboot is already mounted at {destination}")
+    if state == "dead":
+        emit_event("warning", message="The previous Preboot mount lost its apfs-fuse daemon; unmounting it first")
+        release_preboot(destination, run_command, lstat)
+        existing = base.mounted_records(run_command)
+    inventory = json.loads(run_command(LSBLK))
     device, index = find_preboot(inventory, run_command, apfsutil, existing, check_device, options.device or None)
     destination = prepare_preboot_directory(uid, runtime_parent, lstat, setxattr, getxattr)
-    if is_mounted(existing, destination) or any(destination.iterdir()):
-        raise ValueError(f"{destination} is mounted or not empty")
+    if any(destination.iterdir()):
+        raise ValueError(f"{destination} is not empty")
     emit_event("progress", message=f"Mounting Preboot (volume {index} of {device}) read-only")
     run_command(preboot_arguments(apfs_fuse, uid, gid, index, device, destination))
     if not is_mounted(base.mounted_records(run_command), destination):
@@ -376,9 +426,14 @@ def mount_cryptex(options, uid, gid, home, run_command=None, emit_event=emit, sl
     root = prepare_root(options.mount_root, uid, home)
     preboot = preboot_path(uid, runtime_parent)
     existing = base.mounted_records(run_command)
-    if not is_mounted(existing, preboot):
+    state = mount_state(preboot, existing)
+    if state == "absent":
         raise ValueError("The Preboot volume is not mounted")
+    if state == "dead":
+        raise ValueError("The Preboot mount is not responding (its apfs-fuse daemon exited); run this action again to remount it")
     destination = root / CRYPTEX_DIRECTORY
+    if mount_state(destination, existing) == "dead":
+        raise ValueError(f"The cryptex mount at {destination} is not responding (its apfs-fuse daemon exited); unmount it with fusermount3 -u and retry")
     if not is_mounted(existing, destination):
         dmg = find_os_dmg(preboot)
         apfs_fuse = base.tool(options.apfs_fuse)
@@ -408,27 +463,39 @@ def main(argv=None):
     parser.add_argument("--mount-root", default="", help="where the unprivileged image mount goes")
     parser.add_argument("--apfs-fuse", default=shutil.which("apfs-fuse") or "", help="used for the unprivileged image mount only")
     parser.add_argument("--device", default="", help="restrict the Preboot search to one APFS partition")
+    parser.add_argument("--unmount", action="store_true", help="unmount Preboot (one pkexec request); unmount the cryptex OS first")
     parser.add_argument("--privileged", action="store_true", help=argparse.SUPPRESS)
     options = parser.parse_args(argv)
     try:
         if options.privileged:
             verify_installed()
             base = load_helper(trusted=True)
-            mount_preboot(options, *caller_identity())
+            uid, gid = caller_identity()
+            if options.unmount:
+                unmount_preboot(uid)
+            else:
+                mount_preboot(options, uid, gid)
             return 0
         uid, gid = os.getuid(), os.getgid()
         if uid == 0:
             raise ValueError("Run as the desktop user; the script requests root itself")
         base = base or load_helper()
-        home = pwd.getpwuid(uid).pw_dir
-        options.mount_root = str(checked_root(options.mount_root, uid, home))
-        if not is_mounted(base.mounted_records(base.run), preboot_path(uid)):
+        state = mount_state(preboot_path(uid), base.mounted_records(base.run))
+        if options.unmount and state == "absent":
+            emit("progress", message="Preboot is not mounted")
+            return 0
+        if not options.unmount:
+            home = pwd.getpwuid(uid).pw_dir
+            options.mount_root = str(checked_root(options.mount_root, uid, home))
+        if options.unmount or state != "alive":
+            if state == "dead":
+                emit("warning", message="The Preboot mount lost its apfs-fuse daemon and will be replaced")
             verify_installed()
             # Exactly one authorization request; no retries or privilege fallbacks.
             code = subprocess.call(authorization_command(options))
             if code in (126, 127):
                 emit("error", message="Authorization cancelled or denied; stopped without retry")
-            if code:
+            if code or options.unmount:
                 return code
         mount_cryptex(options, uid, gid, home)
         return 0

@@ -130,6 +130,13 @@ bool makeCryptexCommand(const QString &python, const QString &script, const QStr
     return true;
 }
 
+bool makePrebootUnmountCommand(const QString &python, const QString &script, MountCommand *command, QString *error) {
+    if (!QDir::isAbsolutePath(python) || !QFileInfo(python).isExecutable()) return fail(error, "Python is unavailable");
+    if (!QDir::isAbsolutePath(script) || !QFileInfo(script).isFile()) return fail(error, "The cryptex mount script is unavailable");
+    if (command) *command = {python, {"-I", script, "--unmount"}};
+    return true;
+}
+
 bool makeCryptexUnmountCommand(const QString &fusermount, const QString &mountRoot, MountCommand *command, QString *error) {
     if (!validRoot(mountRoot)) return fail(error, "Choose an absolute mount root");
     if (!QDir::isAbsolutePath(fusermount) || !QFileInfo(fusermount).isExecutable()) return fail(error, "fusermount is unavailable");
