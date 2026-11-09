@@ -692,6 +692,30 @@ class RedactionTest(ToolTestCase):
         self.assertEqual(redactor.text("/home/alice/x"), "~/x")
         self.assertEqual(redactor.text("password=/home/alice/x tail"), "password=<redacted> tail")
 
+    def test_url_userinfo_is_redacted(self):
+        redactor = mcp.Redactor("/home/alice")
+        for url in ("https://bob:hunter22secret@host/x", "git clone ssh://u:p%40ss@h.example:22/r", "postgres://app:s3cr3tpw@db:5432/x"):
+            result = redactor.text(url)
+            self.assertIn("://<redacted>@", result)
+            for leaked in ("hunter22", "bob:", "p%40ss", "s3cr3t", "app:"):
+                self.assertNotIn(leaked, result)
+        self.assertEqual(redactor.text("https://example.com/a@b and mailto:x@y"), "https://example.com/a@b and mailto:x@y")
+
+    def test_json_escaped_slashes_and_unicode_escapes_are_found_without_decoding_the_output(self):
+        redactor = mcp.Redactor("/home/alice")
+        self.assertEqual(redactor.text("\\/home\\/alice\\/x"), "~\\/x")
+        self.assertEqual(redactor.text('{"p": "\\/home\\/bob\\/y"}'), '{"p": "\\/home\\/<user>\\/y"}')
+        self.assertEqual(redactor.text("\\u002fhome\\u002fbob"), "\\u002fhome\\u002f<user>")
+        self.assertEqual(redactor.text("password\\u003dhunter2xyz"), "password\\u003d<redacted>")
+        self.assertEqual(redactor.text("a\\nb \\d \\u00e9"), "a\\nb \\d \\u00e9")
+
+    def test_fullwidth_and_other_compatibility_characters_are_folded_for_matching_only(self):
+        redactor = mcp.Redactor("/home/alice")
+        self.assertEqual(redactor.text("\uff0fhome\uff0falice\uff0fx"), "~\uff0fx")
+        self.assertEqual(redactor.text("\uff0fhome\uff0fbob"), "\uff0fhome\uff0f<user>")
+        self.assertEqual(redactor.text("\uff50\uff41\uff53\uff53\uff57\uff4f\uff52\uff44=hunter2xyz"), "\uff50\uff41\uff53\uff53\uff57\uff4f\uff52\uff44=<redacted>")
+        self.assertEqual(redactor.text("caf\u00e9 \ufb01le \u00fc"), "caf\u00e9 \ufb01le \u00fc")
+
     def test_a_user_name_is_only_redacted_as_a_home_path_component(self):
         redactor = mcp.Redactor("/home/dev")
         self.assertEqual(redactor.text("/dev/sda1 mounted by dev at /home/dev/x and /home/other/y"), "/dev/sda1 mounted by dev at ~/x and /home/<user>/y")
