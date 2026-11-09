@@ -9,6 +9,7 @@ import re
 import select
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -593,6 +594,7 @@ class RedactionTest(ToolTestCase):
 
     def test_encoding_and_case_do_not_defeat_path_redaction(self):
         redactor = mcp.Redactor("/home/alice")
+        self.assertEqual(redactor.text("/HOME/bob/x /USERS/carol /Run/Media/dave/v"), "/HOME/<user>/x /USERS/<user> /Run/Media/<user>/v")
         for leaked in ("%2Fhome%2Falice%2Fx", "%2fhome%2falice", "/HOME/alice/x", "/Home/Alice", "%252Fhome%252Falice%252Fx", "/home/alice", "/HOME/ALICE/x"):
             text = redactor.text(f"see {leaked} now")
             self.assertNotRegex(text, r"(?i)alice")
@@ -932,9 +934,14 @@ class ActionToolsTest(unittest.TestCase):
 
 
 class FakeStat:
+    """lstat as a root-owned system would report it. A symlink keeps the 0777 mode Linux gives every symlink."""
+
     def __init__(self, real, uid, writable):
         self.st_uid = uid
-        self.st_mode = real.st_mode | 0o020 if writable else real.st_mode & ~0o022
+        if stat.S_ISLNK(real.st_mode):
+            self.st_mode = real.st_mode
+        else:
+            self.st_mode = real.st_mode | 0o020 if writable else real.st_mode & ~0o022
 
 
 class MountPlanBase(ToolTestCase):
@@ -1103,6 +1110,38 @@ class MountPlanTest(MountPlanBase):
             self.refused("mount_plan", arguments, "must be owned by root and not group- or world-writable")
             self.writable = set()
         self.plan(**arguments)
+
+    def test_a_root_owned_symlink_to_a_root_owned_binary_is_accepted_despite_its_0777_mode(self):
+        real = self.fx.bin / "pkexec.real"
+        (self.fx.bin / "pkexec").rename(real)
+        (self.fx.bin / "pkexec").symlink_to(real.name)
+        self.assertEqual(stat.S_IMODE(os.lstat(self.fx.bin / "pkexec").st_mode), 0o777)
+        self.assertEqual(stat.S_IMODE(self.fake_lstat(self.fx.bin / "pkexec").st_mode), 0o777)
+        argv = self.plan(kind="unmount", directory=str(self.mounts / "d"))["commands"][0]["argv"]
+        self.assertTrue(argv[0].endswith("/bin/pkexec.real"))
+
+    def test_a_symlinked_directory_in_the_chain_is_accepted_when_root_owned(self):
+        real_dir = self.fx.root / "usr-bin"
+        self.fx.bin.rename(real_dir)
+        self.fx.bin.symlink_to(real_dir)
+        self.assertTrue(self.plan(kind="unmount", directory=str(self.mounts / "d"))["commands"][0]["argv"][0].endswith("/usr-bin/pkexec"))
+
+    def test_a_user_owned_symlink_is_refused_even_if_its_target_is_fine(self):
+        real = self.fx.bin / "pkexec.real"
+        (self.fx.bin / "pkexec").rename(real)
+        (self.fx.bin / "pkexec").symlink_to(real.name)
+        self.not_root = {str(self.fx.bin / "pkexec")}
+        self.refused("mount_plan", {"kind": "unmount", "directory": str(self.mounts / "d")}, "must be owned by root")
+
+    def test_a_symlink_to_a_user_writable_or_user_owned_target_is_refused(self):
+        real = self.fx.bin / "pkexec.real"
+        (self.fx.bin / "pkexec").rename(real)
+        (self.fx.bin / "pkexec").symlink_to(real.name)
+        for victims in ("writable", "not_root"):
+            setattr(self, victims, {str(real)})
+            self.refused("mount_plan", {"kind": "unmount", "directory": str(self.mounts / "d")}, "must be owned by root and not group- or world-writable")
+            setattr(self, victims, set())
+        self.plan(kind="unmount", directory=str(self.mounts / "d"))
 
     def test_a_symlink_in_a_system_directory_is_judged_by_its_target(self):
         guest = self.fx.data / "prefixes/default/evil"
