@@ -226,12 +226,21 @@ filesystem metadata are private local data and are not uploaded.
 `tools/mount-cryptex.py`, which automates two read-only mounts.
 
 **Install first.** The scripts need Python 3.8 or newer, and root runs them with an interpreter that the launcher
-picks when CMake configures it: the first of `/usr/bin/python3`, the interpreter `find_package(Python3)`
-found, `/usr/local/bin/python3`, then `/usr/bin/python3.8` to `/usr/bin/python3.20` that is root-owned along its
-whole path (a symlink needs root ownership and a trusted target), not group- or world-writable, runs, and
-reports 3.8 or newer. That path is baked in; PATH and home-directory interpreters are never used, and
-configuration fails with the list of candidates tried if none qualifies. `-DLAUNCHER_PYTHON=<path>` picks one
-explicitly and is validated by the same rule. The dialog and the script re-check it at run time. Root runs the script, so the launcher only uses a copy that only root
+picks when CMake configures it. There are three outcomes:
+
+1. *Found.* The first of `/usr/bin/python3`, the interpreter `find_package(Python3)` found, `/usr/local/bin/python3`,
+   then `/usr/bin/python3.8` to `/usr/bin/python3.20` that is root-owned along its whole path (a symlink needs root
+   ownership and a trusted target), not group- or world-writable, runs, and reports 3.8 or newer is baked in.
+   PATH and home-directory interpreters are never used.
+2. *Explicit override.* `-DLAUNCHER_PYTHON=<path>` uses only that path under the same rule; if it fails, configuration
+   stops with the reason (you asked for it).
+3. *None found.* Without an override, configuration succeeds with a CMake warning that lists every candidate and why
+   it was rejected, and bakes no interpreter. The launcher builds and runs, but the cryptex and Preboot actions are
+   disabled with the message "No trusted Python 3.8+ was found when the launcher was configured" and never reach
+   `pkexec`. Install a system Python (or pass `-DLAUNCHER_PYTHON`) and reconfigure. The script tests then run with
+   the Python that `find_package` found, unprivileged.
+
+The dialog and the script re-check the interpreter at run time. Root runs the script, so the launcher only uses a copy that only root
 can change. `sudo cmake --install <build directory>` puts `mount-cryptex.py` and its helper
 `mount-macos.py` (only those) into `<libexecdir>/darling-launcher` (default
 `/usr/local/libexec/darling-launcher`; `-DLAUNCHER_MOUNT_CRYPTEX_SCRIPT=<path>` moves it).

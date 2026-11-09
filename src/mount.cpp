@@ -122,6 +122,15 @@ QString passwdHome() {
 
 QString launcherPython() { return QStringLiteral(LAUNCHER_PYTHON); }
 
+QString noPythonMessage() {
+    return "No trusted Python 3.8+ was found when the launcher was configured, so the cryptex and Preboot actions are disabled; see the README (Mount the cryptex OS image).";
+}
+
+QString trustedInterpreter(const QString &configured, unsigned extraOwner, QString *error) {
+    if (configured.isEmpty()) { fail(error, noPythonMessage()); return {}; }
+    return trustedFile(configured, extraOwner, true, error);
+}
+
 QString trustedFile(const QString &path, unsigned extraOwner, bool executable, QString *error) {
     const QString resolved = QDir::isAbsolutePath(path) ? QFileInfo(path).canonicalFilePath() : QString();
     if (resolved.isEmpty()) { fail(error, "Required file is missing or not an absolute path: " + path); return {}; }
@@ -144,6 +153,7 @@ QString cryptexMountDirectory(const QString &mountRoot) { return mountRoot + "/m
 bool makeCryptexCommand(const QString &python, const QString &script, const QString &mountRoot,
                         const QString &apfsFuse, const QString &device,
                         MountCommand *command, QString *error) {
+    if (python.isEmpty()) return fail(error, noPythonMessage());
     if (!validRoot(mountRoot)) return fail(error, "Choose an absolute mount root");
     if (!device.isEmpty() && (!QRegularExpression(R"(^/dev/[A-Za-z0-9_/-]+$)").match(device).hasMatch() || device.contains("..")))
         return fail(error, "Choose a detected device path under /dev");
@@ -157,6 +167,7 @@ bool makeCryptexCommand(const QString &python, const QString &script, const QStr
 }
 
 bool makePrebootUnmountCommand(const QString &python, const QString &script, MountCommand *command, QString *error) {
+    if (python.isEmpty()) return fail(error, noPythonMessage());
     if (!QDir::isAbsolutePath(python) || !QFileInfo(python).isExecutable()) return fail(error, "Python is unavailable");
     if (!QDir::isAbsolutePath(script) || !QFileInfo(script).isFile()) return fail(error, "The cryptex mount script is unavailable");
     if (command) *command = {python, {"-I", script, "--unmount"}};

@@ -8,7 +8,8 @@ find_package(Qt6 REQUIRED COMPONENTS Core Widgets Test Concurrent)
 find_package(PkgConfig REQUIRED)
 # The mount scripts need Python 3.8 (MINIMUM_PYTHON in tools/mount-cryptex.py). Root runs the interpreter chosen
 # here through pkexec, so it must be root-owned like the scripts; a find_package result is only a candidate.
-# -DLAUNCHER_PYTHON=<path> picks one explicitly and is validated by the same rule.
+# -DLAUNCHER_PYTHON=<path> picks one explicitly and is validated by the same rule (a failure is fatal). If nothing
+# qualifies and none was requested, configuration warns and bakes an empty interpreter: the GUI disables the actions.
 include(cmake/SelectPython.cmake)
 find_package(Python3 3.8 QUIET COMPONENTS Interpreter)
 set(LAUNCHER_PYTHON "" CACHE FILEPATH "Trusted Python 3.8+ run as root through pkexec (default: chosen automatically)")
@@ -20,12 +21,18 @@ list(APPEND LAUNCHER_PYTHON_CANDIDATES /usr/local/bin/python3)
 foreach(minor RANGE 8 20)
     list(APPEND LAUNCHER_PYTHON_CANDIDATES /usr/bin/python3.${minor})
 endforeach()
-launcher_select_python(LAUNCHER_PYTHON_EXECUTABLE LAUNCHER_PYTHON_ERROR OVERRIDE "${LAUNCHER_PYTHON}" MINIMUM 3.8
-                       CANDIDATES ${LAUNCHER_PYTHON_CANDIDATES})
-if(LAUNCHER_PYTHON_ERROR)
-    message(FATAL_ERROR "${LAUNCHER_PYTHON_ERROR}")
+launcher_resolve_python(LAUNCHER_PYTHON_EXECUTABLE LAUNCHER_PYTHON_LEVEL LAUNCHER_PYTHON_TEXT OVERRIDE "${LAUNCHER_PYTHON}" MINIMUM 3.8
+                        CANDIDATES ${LAUNCHER_PYTHON_CANDIDATES})
+if(LAUNCHER_PYTHON_LEVEL)
+    message(${LAUNCHER_PYTHON_LEVEL} "${LAUNCHER_PYTHON_TEXT}")
+else()
+    message(STATUS "Root-run Python: ${LAUNCHER_PYTHON_EXECUTABLE}")
 endif()
-message(STATUS "Root-run Python: ${LAUNCHER_PYTHON_EXECUTABLE}")
+# The script tests run unprivileged, so without a trusted interpreter they use the one find_package found.
+set(LAUNCHER_TEST_PYTHON "${LAUNCHER_PYTHON_EXECUTABLE}")
+if(NOT LAUNCHER_TEST_PYTHON AND Python3_FOUND)
+    set(LAUNCHER_TEST_PYTHON "${Python3_EXECUTABLE}")
+endif()
 include(GNUInstallDirs)
 # Root runs the cryptex mount script through pkexec, so it is installed root-owned (sudo cmake --install) and the
 # launcher refuses any other location. -DLAUNCHER_MOUNT_CRYPTEX_SCRIPT=... moves it; install() follows.
@@ -68,12 +75,16 @@ add_test(NAME launcher-troubleshooting-tests COMMAND launcher-troubleshooting-te
 set_tests_properties(launcher-troubleshooting-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 set_tests_properties(launcher-tests launcher-mount-tests launcher-prefix-tests launcher-gui-tests PROPERTIES TIMEOUT 240)
 
-add_test(NAME launcher-mount-script-tests COMMAND ${LAUNCHER_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/mount_script_test.py)
-set_tests_properties(launcher-mount-script-tests PROPERTIES TIMEOUT 30)
+if(LAUNCHER_TEST_PYTHON)
+    add_test(NAME launcher-mount-script-tests COMMAND ${LAUNCHER_TEST_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tests/mount_script_test.py)
+    set_tests_properties(launcher-mount-script-tests PROPERTIES TIMEOUT 30)
+endif()
 add_test(NAME launcher-python-selection-tests COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/select_python_test.cmake)
 set_tests_properties(launcher-python-selection-tests PROPERTIES TIMEOUT 60 FAIL_REGULAR_EXPRESSION "FAILED:")
-add_test(NAME launcher-cryptex-script-tests COMMAND ${LAUNCHER_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cryptex_script_test.py)
-set_tests_properties(launcher-cryptex-script-tests PROPERTIES TIMEOUT 30)
+if(LAUNCHER_TEST_PYTHON)
+    add_test(NAME launcher-cryptex-script-tests COMMAND ${LAUNCHER_TEST_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cryptex_script_test.py)
+    set_tests_properties(launcher-cryptex-script-tests PROPERTIES TIMEOUT 30)
+endif()
 
 qt_add_resources(darling-launcher runtime_builder PREFIX "/launcher" FILES tools/all-vibedarling-pr-prefix.py)
 qt_add_resources(launcher-gui-tests test_runtime_builder PREFIX "/launcher" FILES tools/all-vibedarling-pr-prefix.py)

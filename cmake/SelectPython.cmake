@@ -11,6 +11,11 @@
 #     [OVERRIDE <path>] MINIMUM <x.y> [EXTRA_OWNER <uid>] CANDIDATES <path>...)
 # sets <result> to the chosen absolute path, or <error> to a message listing every candidate tried.
 # With OVERRIDE only that path is considered.
+#
+# launcher_resolve_python(<result> <level> <text> ...same arguments...) turns that into the configure outcome:
+#   found                      <result> = path, <level> empty
+#   explicit OVERRIDE fails    <result> empty, <level> FATAL_ERROR (the user asked for it)
+#   nothing qualifies          <result> empty, <level> WARNING (the launcher builds, the root-run actions stay disabled)
 
 set(LAUNCHER_STAT_TOOL "/usr/bin/stat")
 
@@ -84,7 +89,11 @@ function(_launcher_candidate_problem candidate minimum extra_owner out)
 endfunction()
 
 function(launcher_select_python result error)
-    cmake_parse_arguments(ARG "" "OVERRIDE;MINIMUM;EXTRA_OWNER" "CANDIDATES" ${ARGN})
+    if(POLICY CMP0174)
+        cmake_policy(SET CMP0174 NEW)  # an empty OVERRIDE is a defined empty value, not a warning
+    endif()
+    # PARSE_ARGV keeps an empty OVERRIDE ("" is the normal no-override value); expanding ${ARGN} would drop it.
+    cmake_parse_arguments(PARSE_ARGV 2 ARG "" "OVERRIDE;MINIMUM;EXTRA_OWNER" "CANDIDATES")
     set(${result} "" PARENT_SCOPE)
     set(${error} "" PARENT_SCOPE)
     if(ARG_OVERRIDE)
@@ -106,5 +115,27 @@ function(launcher_select_python result error)
         set(${error} "LAUNCHER_PYTHON=${ARG_OVERRIDE} cannot be used as the root interpreter:${tried}" PARENT_SCOPE)
     else()
         set(${error} "No trusted Python ${ARG_MINIMUM} or newer for the root-run mount scripts. Tried:${tried}\nInstall a system Python (root-owned, not group- or world-writable along its whole path) or pass -DLAUNCHER_PYTHON=<path> to a trusted one; interpreters in a home directory or on PATH are never used." PARENT_SCOPE)
+    endif()
+endfunction()
+
+function(launcher_resolve_python result level text)
+    if(POLICY CMP0174)
+        cmake_policy(SET CMP0174 NEW)  # an empty OVERRIDE is a defined empty value, not a warning
+    endif()
+    cmake_parse_arguments(PARSE_ARGV 3 ARG "" "OVERRIDE;MINIMUM;EXTRA_OWNER" "CANDIDATES")
+    launcher_select_python(chosen problem OVERRIDE "${ARG_OVERRIDE}" MINIMUM "${ARG_MINIMUM}" EXTRA_OWNER "${ARG_EXTRA_OWNER}"
+                           CANDIDATES ${ARG_CANDIDATES})
+    set(${result} "${chosen}" PARENT_SCOPE)
+    set(${level} "" PARENT_SCOPE)
+    set(${text} "" PARENT_SCOPE)
+    if(NOT chosen STREQUAL "")
+        return()
+    endif()
+    if(ARG_OVERRIDE)
+        set(${level} "FATAL_ERROR" PARENT_SCOPE)
+        set(${text} "${problem}" PARENT_SCOPE)
+    else()
+        set(${level} "WARNING" PARENT_SCOPE)
+        set(${text} "${problem}\nThe launcher is built without a root-run interpreter: the cryptex/Preboot mount actions stay disabled in the GUI until it is reconfigured (see the README)." PARENT_SCOPE)
     endif()
 endfunction()
