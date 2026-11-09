@@ -497,5 +497,186 @@ class RedactionTest(ToolTestCase):
         self.assertEqual(mcp.Redactor("/home/a", "a").text("a /home/a"), "a ~")
 
 
+FAKE_DARLING = """touch "$(dirname "$0")/ran"
+case "$1" in
+  exec)
+    echo "exec $2 prefix=$DPREFIX install=$DARLING_INSTALL_PREFIX token=$GITHUB_TOKEN dyld=$DYLD_LIBRARY_PATH"
+    case "$2" in *Slow*) sleep 2;; *Fail*) echo "boom" >&2; exit 7;; esac ;;
+  shutdown)
+    echo "shutdown prefix=$DPREFIX"
+    case "$DPREFIX" in *hang*) sleep 1; touch "$(dirname "$0")/finished";; *broken*) echo "no such prefix" >&2; exit 4;; esac ;;
+esac
+"""
+
+
+class ActionToolsTest(unittest.TestCase):
+    def setUp(self):
+        self.fx = Fixture(allow_actions=True)
+        self.addCleanup(self.fx.close)
+        self.darling = self.fx.executable("darling", FAKE_DARLING)
+        self.fx.settings(darling=self.darling)
+        self.fx.prefix("default", [("Calc", "Calculator"), ("Slow", "Slow"), ("Fail", "Fail")])
+
+    def ran(self):
+        return (self.fx.bin / "ran").exists()
+
+    def ok(self, name, arguments):
+        result = self.fx.call(name, arguments)
+        self.assertFalse(result.get("isError"), result)
+        return result["structuredContent"]
+
+    def refused(self, name, arguments, fragment):
+        result = self.fx.call(name, arguments)
+        self.assertTrue(result.get("isError"), result)
+        self.assertIn(fragment, result["content"][0]["text"])
+
+    def test_actions_are_refused_without_the_environment_opt_in(self):
+        fx = Fixture(allow_actions=False)
+        self.addCleanup(fx.close)
+        fx.executable("darling", FAKE_DARLING)
+        fx.settings(darling=fx.bin / "darling")
+        fx.prefix("default", [("Calc", "Calculator")])
+        for name, arguments in (("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}), ("stop_prefix", {"prefix": "default", "confirm": True})):
+            result = fx.call(name, arguments)
+            self.assertTrue(result["isError"])
+            self.assertIn("DARLING_LAUNCHER_MCP_ALLOW_ACTIONS=1", result["content"][0]["text"])
+        self.assertFalse((fx.bin / "ran").exists())
+
+    def test_actions_are_refused_without_confirm_true(self):
+        for confirm in (False, "true", 1, None):
+            self.refused("launch_app", {"prefix": "default", "app": "Calc", "confirm": confirm}, "confirm")
+            self.refused("stop_prefix", {"prefix": "default", "confirm": confirm}, "confirm")
+        self.refused("stop_prefix", {"prefix": "default"}, "missing required argument 'confirm'")
+        self.assertFalse(self.ran())
+
+    def test_refusals_come_before_any_prefix_lookup(self):
+        self.refused("stop_prefix", {"prefix": "../../etc", "confirm": False}, "confirm must be true")
+
+    def test_launch_runs_darling_exec_with_prefix_and_clean_environment(self):
+        runtime = self.fx.root / "runtime"
+        runtime.mkdir()
+        self.fx.settings(darling=self.darling, runtimeRoot=runtime)
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "sekrit-token-value", "DYLD_LIBRARY_PATH": "/evil"}):
+            data = self.ok("launch_app", {"prefix": "default", "app": "Calc", "confirm": True})
+        self.assertEqual(data["state"], "exited")
+        self.assertEqual(data["exit_code"], 0)
+        prefix = self.fx.data / "prefixes/default"
+        self.assertIn("exec /Applications/Calc.app/Contents/MacOS/Calculator prefix=~/.darling-launcher/prefixes/default install=", data["output"])
+        self.assertIn("/runtime token= dyld=", data["output"])
+        self.assertNotIn("sekrit", json.dumps(data))
+        self.assertEqual(self.ok("launch_app", {"prefix": str(prefix), "app": "Applications/Calc.app", "confirm": True, "wait_seconds": 0})["bundle"], "Applications/Calc.app")
+
+    def test_launch_without_runtime_root_leaves_install_prefix_unset(self):
+        data = self.ok("launch_app", {"prefix": "default", "app": "Calc", "confirm": True})
+        self.assertIn("install= token=", data["output"])
+
+    def test_launch_output_is_logged_and_nonzero_exit_reported(self):
+        data = self.ok("launch_app", {"prefix": "default", "app": "Fail", "confirm": True})
+        self.assertEqual(data["exit_code"], 7)
+        self.assertIn("boom", data["output"])
+        lines = self.ok("tail_log", {"source": "mcp-launch"})["lines"]
+        self.assertTrue(any("boom" in line for line in lines))
+        self.assertTrue(any("[launch:Fail]" in line for line in lines))
+
+    def test_a_running_app_is_reported_and_not_killed(self):
+        data = self.ok("launch_app", {"prefix": "default", "app": "Slow", "confirm": True, "wait_seconds": 0})
+        self.assertEqual(data["state"], "running")
+        self.assertIsNone(data["exit_code"])
+        os.kill(data["pid"], 0)
+        self.assertEqual(len(self.fx.server.children), 1)
+        self.fx.server.children[0].wait(timeout=10)
+        self.fx.server.reap_children()
+        self.assertEqual(self.fx.server.children, [])
+
+    def test_launch_argument_and_app_errors(self):
+        base = {"prefix": "default", "confirm": True}
+        self.refused("launch_app", {**base, "app": "Nope"}, "no imported app")
+        self.refused("launch_app", {**base, "app": "Calc", "wait_seconds": 61}, "between 0 and 60")
+        self.refused("launch_app", {**base, "app": "Calc", "extra": 1}, "unknown argument")
+        self.refused("launch_app", {"prefix": "../x", "app": "Calc", "confirm": True}, "prefix")
+        self.assertFalse(self.ran())
+
+    def test_ambiguous_app_names_require_a_bundle_path(self):
+        prefix = self.fx.data / "prefixes/default"
+        records = json.loads((prefix / ".darling-launcher/catalog.json").read_text())["apps"]
+        (prefix / "Applications/Calc2.app/Contents/MacOS").mkdir(parents=True)
+        (prefix / "Applications/Calc2.app/Contents/MacOS/Calculator").write_text("")
+        records.append({"name": "Calc", "bundle": "Applications/Calc2.app", "executable": "Calculator"})
+        (prefix / ".darling-launcher/catalog.json").write_text(json.dumps({"apps": records}))
+        self.refused("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}, "Applications/Calc2.app")
+        self.assertEqual(self.ok("launch_app", {"prefix": "default", "app": "Applications/Calc2.app", "confirm": True})["app"], "Calc")
+
+    def test_bundle_paths_cannot_escape_through_symlinks(self):
+        prefix = self.fx.data / "prefixes/default"
+        outside = self.fx.root / "outside"
+        (outside / "Contents/MacOS").mkdir(parents=True)
+        (outside / "Contents/MacOS/Calculator").write_text("")
+        shutil.rmtree(prefix / "Applications/Calc.app")
+        (prefix / "Applications/Calc.app").symlink_to(outside)
+        self.refused("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}, "refusing symlink")
+        shutil.rmtree(outside / "Contents/MacOS")
+        (prefix / "Applications/Calc.app").unlink()
+        (prefix / "Applications/Calc.app/Contents/MacOS").mkdir(parents=True)
+        (prefix / "Applications/Calc.app/Contents/MacOS/Calculator").symlink_to("/bin/sh")
+        self.refused("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}, "refusing symlink")
+        (prefix / "Applications/Calc.app/Contents/MacOS/Calculator").unlink()
+        self.refused("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}, "missing from the prefix")
+        self.assertFalse(self.ran())
+
+    def test_darling_resolution_errors(self):
+        args = {"prefix": "default", "app": "Calc", "confirm": True}
+        self.fx.settings(darling="relative/darling")
+        self.refused("launch_app", args, "absolute path to an executable")
+        self.fx.settings(darling=self.fx.root / "missing")
+        self.refused("launch_app", args, "absolute path to an executable")
+        self.darling.chmod(0o644)
+        self.fx.settings(darling=self.darling)
+        self.refused("launch_app", args, "absolute path to an executable")
+        self.darling.chmod(0o755)
+        self.fx.settings(darling=self.darling, runtimeRoot=self.fx.root / "no-such-runtime")
+        self.refused("launch_app", args, "runtime install root")
+        self.fx.settings()
+        with patch.object(mcp, "find_tool", return_value=None):
+            self.refused("launch_app", args, "no darling executable")
+        self.assertFalse(self.ran())
+
+    def test_darling_is_found_on_path_when_settings_name_none(self):
+        self.fx.settings()
+        self.assertEqual(self.ok("launch_app", {"prefix": "default", "app": "Calc", "confirm": True})["exit_code"], 0)
+
+    def test_stop_prefix_runs_shutdown_for_that_prefix(self):
+        data = self.ok("stop_prefix", {"prefix": "default", "confirm": True})
+        self.assertEqual(data["exit_code"], 0)
+        self.assertIn("shutdown prefix=~/.darling-launcher/prefixes/default", data["output"])
+
+    def test_stop_prefix_failure_is_an_error(self):
+        self.fx.prefix("broken")
+        self.refused("stop_prefix", {"prefix": "broken", "confirm": True}, "failed (exit 4): shutdown prefix=")
+
+    def test_stop_prefix_timeout_leaves_the_command_running(self):
+        self.fx.prefix("hang")
+        with patch.object(mcp, "SHUTDOWN_TIMEOUT", 0.2):
+            self.refused("stop_prefix", {"prefix": "hang", "confirm": True}, "not killed")
+        self.assertEqual(len(self.fx.server.children), 1)
+        self.fx.server.children[0].wait(timeout=10)
+        self.assertTrue((self.fx.bin / "finished").exists())
+
+    def test_action_tools_declare_themselves_as_not_read_only(self):
+        tools = self.fx.server.tools
+        for name in ("launch_app", "stop_prefix"):
+            self.assertFalse(tools[name].annotations["readOnlyHint"])
+            self.assertTrue(tools[name].description.startswith("NOT read-only."))
+            self.assertIn("confirm=true", tools[name].description)
+        self.assertTrue(tools["stop_prefix"].annotations["destructiveHint"])
+        for name in ("launcher_status", "list_prefixes", "list_apps", "mount_status", "tail_log"):
+            self.assertTrue(tools[name].annotations["readOnlyHint"])
+
+    def test_server_never_uses_a_shell_and_only_kills_its_own_findmnt_helper(self):
+        lines = [line.strip() for line in SCRIPT.read_text().splitlines() if not line.lstrip().startswith("#")]
+        for forbidden in ("shell=True", "os.system", "os.popen", "os.kill", "killpg", ".terminate(", "os.setuid"):
+            self.assertEqual([l for l in lines if forbidden in l], [], forbidden)
+        self.assertEqual([l for l in lines if ".kill(" in l], ["proc.kill()"])
+
+
 if __name__ == "__main__":
     unittest.main()
