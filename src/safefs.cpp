@@ -29,7 +29,8 @@ QString sysError(const QString &what) { return what + ": " + QString::fromLocal8
 int openDirs(const QString &root, const QStringList &dirs, bool create, mode_t dirMode, bool *missing, QString *error) {
     if (missing) *missing = false;
     int cur = ::open(QFile::encodeName(root).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (cur < 0) { fail(error, sysError("Cannot open " + root)); return -1; }
+    // never the absolute path: errors reach logs and the MCP server
+    if (cur < 0) { fail(error, sysError("Cannot open the base directory")); return -1; }
     for (const QString &name : dirs) {
         const QByteArray n = name.toUtf8();
         const auto openNext = [&] { return ::openat(cur, n.constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC); };
