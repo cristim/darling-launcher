@@ -79,6 +79,47 @@ private slots:
             QCOMPARE(slurp(fx.dst(kMain + ".01")), slurp(fx.src.path() + "/" + kMain + ".01"));
         }
     }
+    // A resumed partial is trusted only as far as it equals the source: the header check alone let a right-header,
+    // wrong-body partial through, and verifyStore then hashed the bad copy and agreed with itself.
+    void resumeKeepsOnlyThePrefixThatEqualsTheSource() {
+        struct Case { const char *name; std::function<QByteArray(QByteArray)> damage; qint64 expectedRestart; };
+        const QList<Case> cases = {
+            {"garbage body", [](QByteArray b) { b = b.left(2048); b.replace(1024, 1024, QByteArray(1024, 'g')); return b; }, 1024},
+            {"zeroed middle window", [](QByteArray b) { b = b.left(3072); b.replace(1024, 1024, QByteArray(1024, '\0')); return b; }, 1024},
+            {"flip in the last kept window", [](QByteArray b) { b = b.left(2048); b[2000] = char(b[2000] ^ 0x5a); return b; }, 1536},
+            {"older build, same header", [](QByteArray b) { b = b.left(2048); for (int i = 0x100; i < b.size(); ++i) b[i] = char(b[i] + 1); return b; }, 0},
+        };
+        for (const Case &c : cases) {
+            Fx fx; QDir().mkpath(fx.root() + "/" + fx.id);
+            QVERIFY(QFile::setPermissions(fx.root(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+            const QString name = kMain + ".02", srcBytesPath = fx.src.path() + "/" + name;
+            { QFile f(fx.dst(name + ".partial")); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(c.damage(slurp(srcBytesPath))); f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner); }
+            QList<qint64> offsets; fx.opt.onWindow = [&](const QString &f, qint64 off, qint64) { if (f == name) offsets << off; };
+            const auto r = fx.run(); QVERIFY2(r.result == Result::Done, qPrintable(r.error));
+            QVERIFY2(!offsets.isEmpty() && offsets.first() == c.expectedRestart, c.name);
+            QCOMPARE(slurp(fx.dst(name)), slurp(srcBytesPath));
+            QVERIFY2(verifyStore(fx.root(), fx.id).result == Result::Done, c.name);
+        }
+    }
+    void resumeAgainstAShorterOrChangedSourceRestarts() {
+        Fx fx; QDir().mkpath(fx.root() + "/" + fx.id);
+        QVERIFY(QFile::setPermissions(fx.root(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        const QString name = kMain + ".01";
+        { QFile f(fx.dst(name + ".partial")); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(slurp(fx.src.path() + "/" + name) + QByteArray(1024, 'z')); f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner); }
+        QList<qint64> offsets; fx.opt.onWindow = [&](const QString &f, qint64 off, qint64) { if (f == name) offsets << off; };
+        const auto r = fx.run(); QVERIFY2(r.result == Result::Done, qPrintable(r.error));
+        QCOMPARE(offsets.first(), qint64(0)); QCOMPARE(slurp(fx.dst(name)), slurp(fx.src.path() + "/" + name));
+    }
+    void cancelWhileCheckingThePartialLeavesItAlone() {
+        Fx fx; QDir().mkpath(fx.root() + "/" + fx.id);
+        QVERIFY(QFile::setPermissions(fx.root(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        const QString name = kMain + ".01"; const QByteArray good = slurp(fx.src.path() + "/" + name).left(2048) + QByteArray(1024, 'g'); // a bad tail: finishing the check would cut it
+        { QFile f(fx.dst(name + ".partial")); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(good); f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner); }
+        QVERIFY(QFile::copy(fx.src.path() + "/" + kMain, fx.dst(kMain))); // already final, so the first work is checking the partial
+        std::atomic<bool> cancel(false); fx.opt.pauseMs = 1; fx.opt.sleepFn = [&](int) { cancel = true; }; // fires between windows of the check
+        QCOMPARE(fx.run(&cancel).result, Result::Cancelled);
+        QCOMPARE(slurp(fx.dst(name + ".partial")), good); // the check cancelled before truncating anything
+    }
     void alreadyCompleteStoreIsNotCopiedAgain() {
         Fx fx; QVERIFY(fx.run().result == Result::Done);
         int windows = 0; fx.opt.onWindow = [&](const QString &, qint64, qint64) { ++windows; };
