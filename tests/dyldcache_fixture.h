@@ -56,6 +56,7 @@ static inline QString makeFakeStore(const QString &root, const QString &arch, in
     const QString shaz(64, 'a');
     m.files.append({DyldCache::mainFileName(arch), fileSize, m.uuid, shaz});
     for (int i = 0; i < suffixes.size(); ++i) m.files.append({DyldCache::mainFileName(arch) + suffixes[i], fileSize, DyldCache::uuidHex(fakeUuid(seed * 100 + i + 1)), shaz});
+    QFile::setPermissions(root + "/" + id, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner); // as the real copy makes it
     QFile f(root + "/" + id + "/store.json");
     if (!f.open(QIODevice::WriteOnly)) return {};
     f.write(DyldCacheStore::renderManifest(m));

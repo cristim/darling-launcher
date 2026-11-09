@@ -20,6 +20,7 @@ bool guestEnvironment(QProcessEnvironment *env, const QString &prefix, const QSt
         DyldCacheConfig config;
         if (!DyldCacheConfigFile::load(prefix, &config, error)) return false;
         if (DyldCacheConfigFile::wantsCache(config)) {
+            if (!DyldCacheStore::checkPrivate(storeRoot, config.store, error)) return false;
             const auto st = DyldCacheStore::status(storeRoot, config.store);
             if (st.state != StoreState::Ready && st.state != StoreState::Stale)
                 return fail(error, "The dyld cache store for this prefix is not usable (" + (st.detail.isEmpty() ? QStringLiteral("not copied yet") : st.detail) + "). Copy it again or turn the cache off for this prefix.");
