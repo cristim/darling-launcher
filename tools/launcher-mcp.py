@@ -59,6 +59,7 @@ LOG_SOURCES = ("launcher", "mcp-launch")
 LAUNCH_LOG_DIR = "mcp-launch"
 LAUNCH_LOG_RE = re.compile(r"^\d{8}T\d{6}-[0-9a-f]{8}\.log$")
 MAX_LAUNCH_LOGS = 20
+MIN_PRUNE_AGE_SECONDS = 3600  # a log this server wrote less than an hour ago may belong to a running app
 
 
 def log(message):
@@ -915,7 +916,8 @@ def build_tools(server):
             os.close(fd)
         for old in server.launch_logs()[:-MAX_LAUNCH_LOGS]:
             try:
-                os.unlink(log_dir / old)  # only this server's own rotating files, matched by name
+                if time.time() - os.lstat(log_dir / old).st_mtime >= MIN_PRUNE_AGE_SECONDS:
+                    os.unlink(log_dir / old)  # only this server's own files, matched by name
             except OSError:
                 pass
         data = {"prefix": str(prefix), "app": app["name"], "bundle": app["bundle"], "pid": proc.pid, "log_file": log_name,
@@ -1061,7 +1063,8 @@ def build_tools(server):
              disabled_note + "Starts an imported app like the launcher's Launch button, with the `darling` selected in the launcher settings "
              "(or, if none is selected, the first `darling` on PATH): `darling exec /Applications/<App>.app/Contents/MacOS/<executable>` with DPREFIX set. "
              "Waits up to wait_seconds, then reports whether it exited or is still running; a running app is left running and is never killed. "
-             "Its output goes to its own file under logs/mcp-launch (newest: tail_log source 'mcp-launch'); the newest 20 such files are kept.",
+             "Its output goes to its own file under logs/mcp-launch (newest: tail_log source 'mcp-launch'); the file grows without a size cap while the app runs, and "
+             "only files beyond the newest 20 that were last written over an hour ago are deleted.",
              {"prefix": prefix_property, "app": {"type": "string", "minLength": 1, "maxLength": 256, "description": "App name or bundle path from list_apps."},
               "confirm": confirm_property, "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 60, "description": "How long to wait for an early exit, default 5."}},
              ["prefix", "app", "confirm"], launch_app, False, {"state": {"type": "string"}, "pid": {"type": "integer"}, "output": {"type": "string"}}),

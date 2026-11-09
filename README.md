@@ -359,8 +359,10 @@ Safety model:
 - Subprocesses run as argument lists (no shell) with a fixed environment allowlist, a
   timeout and a cap on captured output. A running app or a slow `darling shutdown` is left
   running; the server never sends signals to Darling or guest processes. Each `launch_app`
-  writes its output to its own file under `~/.darling-launcher/logs/mcp-launch/` (mode 0600);
-  the newest 20 are kept.
+  writes its output to its own file under `~/.darling-launcher/logs/mcp-launch/` (mode 0600).
+  The file has no size cap while the app runs. Files beyond the newest 20 are deleted only
+  when they were last written more than an hour ago, so a running app keeps its log and
+  recent logs are never pruned.
 - Every result has home directory paths, `/home/<name>`-style user-name components and
   token-like strings redacted. In `mount_plan`, `argv` and the descriptions are redacted
   like everything else (home shown as `~`). Each command's `shell` string is the copy-paste
