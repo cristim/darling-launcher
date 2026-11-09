@@ -150,6 +150,7 @@ Outcome copyCache(const QString &sourceDir, const QString &arch, const QString &
     if (arch != "arm64" && arch != "arm64e") return failed("Unsupported cache architecture");
     if (!sourceDir.startsWith('/')) return failed("The source must be an absolute directory");
     if (opt.windowBytes <= 0 || opt.blockBytes <= 0) return failed("Window and block sizes must be positive");
+    if (opt.blockBytes > DyldCacheCopy::kMaxBlockBytes) return failed("The read block size is too large");
 
     QByteArray head; qint64 mainSize = 0; MainHeader header;
     if (!readHead(sourceDir, mainFileName(arch), kHeaderWindow, &head, &mainSize, &err)) return failed(err);

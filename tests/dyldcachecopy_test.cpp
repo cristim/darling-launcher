@@ -120,6 +120,12 @@ private slots:
         QCOMPARE(fx.run(&cancel).result, Result::Cancelled);
         QCOMPARE(slurp(fx.dst(name + ".partial")), good); // the check cancelled before truncating anything
     }
+    void rejectsUnusableWindowAndBlockSizes() {
+        for (const auto &sizes : QList<QPair<qint64, qint64>>{{0, 512}, {1024, 0}, {-1, 512}, {1024, kMaxBlockBytes + 1}, {1024, qint64(1) << 31}}) {
+            Fx fx; fx.opt.windowBytes = sizes.first; fx.opt.blockBytes = sizes.second;
+            const auto r = fx.run(); QCOMPARE(r.result, Result::Failed); QVERIFY(!QFileInfo::exists(fx.root()));
+        }
+    }
     void alreadyCompleteStoreIsNotCopiedAgain() {
         Fx fx; QVERIFY(fx.run().result == Result::Done);
         int windows = 0; fx.opt.onWindow = [&](const QString &, qint64, qint64) { ++windows; };

@@ -10,6 +10,7 @@
 // after a crash or cancel, and renamed into place only when size and header UUID match the source.
 // No root, no mount handling: the caller chooses the source directory.
 namespace DyldCacheCopy {
+constexpr qint64 kMaxBlockBytes = qint64(1) << 30; // one read buffer; also keeps the QByteArray size in int range
 struct Options {
     qint64 windowBytes = qint64(128) << 20; // read this much, flush, then pause
     qint64 blockBytes = qint64(1) << 20;    // one read; progress and cancel are checked per block
