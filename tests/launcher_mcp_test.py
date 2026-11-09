@@ -1189,13 +1189,34 @@ class MountPlanTest(MountPlanBase):
         self.refused("mount_plan", {"kind": "batch"}, "is not a regular file")
 
     def test_missing_system_tools_fail_loudly(self):
-        for tool, arguments in (("apfs-fuse", {"kind": "cryptex"}), ("apfsutil", {"kind": "batch"}), ("python3", {"kind": "batch"}), ("pkexec", {"kind": "unmount", "directory": str(self.mounts / "d")}),
+        for tool, arguments in (("apfs-fuse", {"kind": "cryptex"}), ("python3", {"kind": "batch"}), ("pkexec", {"kind": "unmount", "directory": str(self.mounts / "d")}),
                                 ("umount", {"kind": "unmount", "directory": str(self.mounts / "d")}), ("mount", {"kind": "partition", "device": "/dev/sda2", "filesystem": "hfs", "backend": "kernel"}),
                                 ("apfs-fuse", {"kind": "partition", "device": "/dev/sda2", "filesystem": "apfs", "backend": "apfs-fuse", "volume_index": 0})):
             hidden = self.fx.bin / f"{tool}.hidden"
             (self.fx.bin / tool).rename(hidden)
             self.refused("mount_plan", arguments, f"{tool} was not found in ")
             hidden.rename(self.fx.bin / tool)
+
+    def test_batch_plan_without_apfs_tools_passes_explicit_empty_values_and_warns(self):
+        for missing in (("apfs-fuse", "apfsutil"), ("apfs-fuse",), ("apfsutil",)):
+            for tool in missing:
+                (self.fx.bin / tool).rename(self.fx.bin / f"{tool}.hidden")
+            data = self.plan(kind="batch")
+            argv = data["commands"][0]["argv"]
+            fuse, util = argv[argv.index("--apfs-fuse") + 1], argv[argv.index("--apfsutil") + 1]
+            self.assertEqual(fuse == "", "apfs-fuse" in missing)
+            self.assertEqual(util == "", "apfsutil" in missing)
+            self.assertEqual(len(data["warnings"]), len(missing))
+            self.assertTrue(all("HFS partitions are unaffected" in w for w in data["warnings"]))
+            shell = data["commands"][0]["shell"]
+            self.assertEqual(shlex.split(shell.replace('"$HOME"', "x"))[argv.index("--apfs-fuse") + 1] == "", "apfs-fuse" in missing)
+            self.assertTrue(syntax_ok(shell))
+            for tool in missing:
+                (self.fx.bin / f"{tool}.hidden").rename(self.fx.bin / tool)
+        (self.fx.bin / "apfsutil").rename(self.fx.bin / "apfsutil.x")
+        self.not_root = {str(self.fx.bin / "apfs-fuse")}
+        self.refused("mount_plan", {"kind": "batch"}, "must be owned by root")
+        self.not_root = set()
 
     def test_caller_supplied_tool_paths_are_rejected_as_unknown_arguments(self):
         evil = self.fx.data / "prefixes/default/evil"
