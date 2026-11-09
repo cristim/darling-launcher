@@ -65,24 +65,22 @@ private slots:
         { Fx fx; QVERIFY(fx.save(fx.config())); QFile f(DyldCacheConfigFile::policyPath(fx.prefix.path())); QVERIFY(f.open(QIODevice::Append)); f.write("/usr/lib/libfoo.dylib\n"); f.close(); expectRefusal(fx, "policy"); }
         { Fx fx; QVERIFY(fx.save(fx.config())); QFile f(DyldCacheConfigFile::configPath(fx.prefix.path())); QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate)); f.write("garbage"); f.close(); expectRefusal(fx, "dyld-cache.json"); }
     }
-    // The real caller: checkPrefix starts the host launcher with the environment this module builds.
-    void checkPrefixReachesTheGuestLauncherWithThatEnvironment() {
+    // Maintenance runs strip DYLD_* and never carry the cache variables, even for a prefix that asked for the cache:
+    // an arm64 tool would otherwise depend on a cache file for its own architecture.
+    void maintenanceRunsNeverCarryTheCacheVariables() {
         Fx fx; QTemporaryDir cfg, tools; QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, cfg.path());
         QSettings("cristim", "darling-launcher").setValue("dyldCacheRoot", fx.stores.path());
         const QString log = tools.path() + "/env.log", script = tools.path() + "/darling";
         { QFile f(script); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("#!/bin/sh\nenv | grep '^DYLD_' | sort >> \"$ENVLOG\"\necho --- >> \"$ENVLOG\"\nexit 0\n"); f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner); }
         qputenv("ENVLOG", log.toUtf8()); qputenv("DYLD_INSERT_LIBRARIES", "/evil.dylib");
-        const auto run = [&] { QFile::remove(log); LauncherCore::checkPrefix(script, QString(), fx.prefix.path()); QFile f(log); return f.open(QIODevice::ReadOnly) ? QString::fromLocal8Bit(f.readAll()) : QString(); };
-        const QString before = run();
-        QVERIFY(!before.contains("DYLD_")); QVERIFY(before.contains("---"));
         QVERIFY(fx.save(fx.config()));
-        const QString after = run();
-        QVERIFY(after.contains("DYLD_SHARED_CACHE_SPLIT_DIR=/Volumes/SystemRoot")); QVERIFY(after.contains("DYLD_SHARED_CACHE_SPLIT_POLICY=/.darling-launcher/dyld-cache.policy"));
-        QVERIFY(!after.contains("INSERT")); QCOMPARE(after.count("DYLD_SHARED_CACHE_SPLIT_DIR"), after.count("---"));
-        // a damaged store stops the run: the guest is never started without the cache the prefix asked for
+        const auto run = [&](const std::function<void()> &fn) { QFile::remove(log); fn(); QFile f(log); return f.open(QIODevice::ReadOnly) ? QString::fromLocal8Bit(f.readAll()) : QString(); };
+        const QString check = run([&] { LauncherCore::checkPrefix(script, QString(), fx.prefix.path()); });
+        const QString repair = run([&] { LauncherCore::repairPrefix(script, QString(), fx.prefix.path()); });
+        for (const QString &out : {check, repair}) { QVERIFY(out.contains("---")); QVERIFY2(!out.contains("DYLD_"), qPrintable(out)); }
+        // even with the store damaged the maintenance runs still start: they do not depend on the cache
         QVERIFY(QFile::remove(fx.stores.path() + "/" + fx.id + "/store.json"));
-        const auto checks = LauncherCore::checkPrefix(script, QString(), fx.prefix.path());
-        QVERIFY(!checks.isEmpty()); for (const auto &c : checks) { QVERIFY(!c.ok); QVERIFY(c.detail.contains("not usable")); }
+        for (const auto &c : LauncherCore::checkPrefix(script, QString(), fx.prefix.path())) QVERIFY2(!c.detail.contains("not usable"), qPrintable(c.detail));
         qunsetenv("DYLD_INSERT_LIBRARIES");
     }
 };

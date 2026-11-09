@@ -9,6 +9,10 @@ namespace LaunchEnv {
 const char *const kSplitDirVar = "DYLD_SHARED_CACHE_SPLIT_DIR";
 const char *const kPolicyVar = "DYLD_SHARED_CACHE_SPLIT_POLICY";
 
+void stripDyld(QProcessEnvironment *env) {
+    for (const QString &name : env->keys()) if (name.startsWith("DYLD_")) env->remove(name);
+}
+
 bool guestEnvironment(QProcessEnvironment *env, const QString &prefix, const QString &storeRoot, QString *error) {
     using LauncherCore::fail;
     QString splitDir;
@@ -26,7 +30,7 @@ bool guestEnvironment(QProcessEnvironment *env, const QString &prefix, const QSt
             if (!DyldCacheStore::guestDir(storeRoot, config.store, &splitDir, error)) return false;
         }
     }
-    for (const QString &name : env->keys()) if (name.startsWith("DYLD_")) env->remove(name);
+    stripDyld(env);
     if (!splitDir.isEmpty()) {
         env->insert(kSplitDirVar, splitDir);
         env->insert(kPolicyVar, DyldCacheConfigFile::kGuestPolicyPath);

@@ -657,8 +657,9 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     if (!QDir::isAbsolutePath(p) || !QFileInfo(p).isDir()) { invalid("Select an existing prefix directory."); return; }
     if (!runtimeRoot->text().isEmpty() && (!QDir::isAbsolutePath(runtimeRoot->text()) || !QFileInfo(runtimeRoot->text()).isDir())) { invalid("Select a valid runtime install root."); return; }
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    QString envError;
-    if (!LaunchEnv::guestEnvironment(&env, p, DyldCacheStore::configuredRoot(), &envError)) { invalid(envError); return; }
+    QString envError; // the dyld cache goes to the user's app launch (it has a key), not to maintenance runs
+    if (key.isEmpty()) LaunchEnv::stripDyld(&env);
+    else if (!LaunchEnv::guestEnvironment(&env, p, DyldCacheStore::configuredRoot(), &envError)) { invalid(envError); return; }
     auto *process = new QProcess(this);
     env.remove("DARLING_INSTALL_PREFIX");
     if (!runtimeRoot->text().isEmpty()) env.insert("DARLING_INSTALL_PREFIX", runtimeRoot->text());
