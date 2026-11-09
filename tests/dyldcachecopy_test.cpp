@@ -139,8 +139,29 @@ private slots:
         fx.opt.onWindow = [&](const QString &, qint64, qint64) { copying = true; };
         const auto r = fx.run(nullptr, [&](const Progress &p) { if (!copying && p.fileName == name) checkProgress << p.fileBytes; });
         QVERIFY2(r.result == Result::Done, qPrintable(r.error));
-        QCOMPARE(checkPauses, 2);                       // after 1200 and 2400 bytes of the 3072 kept
+        QCOMPARE(checkPauses, 5);                       // main: after 1200, 2400, 3600 bytes; partial: after 1200 and 2400
         QVERIFY(checkProgress.size() >= 4); QVERIFY(checkProgress.contains(300)); QVERIFY(checkProgress.contains(2400));
+    }
+    // A final file left behind before the manifest was written is compared with the source too: a planted file with a
+    // valid header and a wrong body used to be accepted, hashed into the manifest and then "verified" against itself.
+    void aFinalFileWithoutAManifestMustEqualTheSource() {
+        Fx fx; QDir().mkpath(fx.root() + "/" + fx.id);
+        QVERIFY(QFile::setPermissions(fx.root(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        const QString name = kMain + ".01"; QByteArray planted = slurp(fx.src.path() + "/" + name);
+        planted.replace(1024, 1024, QByteArray(1024, 'g'));
+        { QFile f(fx.dst(name)); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(planted); f.setPermissions(QFileDevice::ReadOwner); }
+        const auto r = fx.run(); QCOMPARE(r.result, Result::Failed); QVERIFY2(r.error.contains("differs from the source"), qPrintable(r.error));
+        QCOMPARE(slurp(fx.dst(name)), planted);              // never replaced or deleted
+        QVERIFY(!QFileInfo::exists(fx.dst("store.json")));
+        // a file the copy itself completed before being cut short is still accepted
+        Fx ok; std::atomic<bool> cancel(false);
+        QCOMPARE(ok.run(&cancel, [&](const Progress &p) { if (p.fileName == kMain + ".02") cancel = true; }).result, Result::Cancelled);
+        QVERIFY(QFileInfo::exists(ok.dst(kMain + ".01")) && !QFileInfo::exists(ok.dst("store.json")));
+        { std::atomic<bool> c2(false); ok.opt.pauseMs = 1; ok.opt.sleepFn = [&](int) { c2 = true; };      // cancelled while a done file is being compared
+          QCOMPARE(ok.run(&c2).result, Result::Cancelled); ok.opt.pauseMs = 0; ok.opt.sleepFn = nullptr; }
+        QList<qint64> reported; const auto done = ok.run(nullptr, [&](const Progress &p) { if (p.fileName == kMain + ".01") reported << p.fileBytes; });
+        QVERIFY2(done.result == Result::Done, qPrintable(done.error)); QVERIFY(!reported.isEmpty() && reported.last() == 4096);
+        QVERIFY(verifyStore(ok.root(), ok.id).result == Result::Done);
     }
     void alreadyCompleteStoreIsNotCopiedAgain() {
         Fx fx; QVERIFY(fx.run().result == Result::Done);
