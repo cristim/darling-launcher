@@ -9,6 +9,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QSet>
 #include <cerrno>
 #include <sys/stat.h>
@@ -35,6 +36,7 @@ namespace DyldCacheStore {
 const char *const kGuestHostRoot = "/Volumes/SystemRoot";
 
 QString defaultRoot() { return LauncherDiscovery::dataRoot() + "/dyld-cache"; }
+QString configuredRoot() { return QSettings("cristim", "darling-launcher").value("dyldCacheRoot", defaultRoot()).toString(); }
 QString storeId(const QString &arch, const QString &uuidHex) { return arch + "-" + uuidHex; }
 bool validStoreId(const QString &id) {
     static const QRegularExpression re("^(arm64e?)-[0-9a-f]{32}$");

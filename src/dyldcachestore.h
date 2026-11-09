@@ -42,6 +42,8 @@ constexpr int kMaxGuestDirChars = 200; // dyld rejects a longer SPLIT_DIR
 extern const char *const kGuestHostRoot; // "/Volumes/SystemRoot"
 
 QString defaultRoot();
+// The location chosen in the launcher settings (key dyldCacheRoot), defaultRoot() when unset.
+QString configuredRoot();
 QString storeId(const QString &arch, const QString &uuidHex);
 bool validStoreId(const QString &id);
 // Creates the root (0700) when missing and refuses one that is not owned by this user or is open to group/others.
