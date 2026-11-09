@@ -362,8 +362,9 @@ Safety model:
   `sudo cmake --install`, these two kinds return a warning and no command. The
   per-partition `pkexec mount` and `umount` plans need no script and work now.
   If `apfs-fuse` or `apfsutil` is not in those directories, the `batch` plan passes an explicit
-  empty value for it (so the script does not search `PATH`) and warns; HFS-only machines still work. The cryptex plan mirrors the documented command of the cryptex mount
-  action; its script is present only on a checkout that includes it, and the plan says so.
+  empty value for it (so the script does not search `PATH`) and warns; HFS-only machines still work.
+  The cryptex plan mirrors the documented command of the cryptex mount action (PR #24) and,
+  like `batch`, is offered only from the root-owned install location.
 - A prefix is a bare name or an absolute path of a direct, non-symlink child of
   `~/.darling-launcher/prefixes`. Mount directories must be inside
   `~/.darling-launcher/mounts` without symlink components. `..` is refused everywhere.
@@ -381,6 +382,15 @@ Safety model:
   every other path quoted, and shows a user-name component outside your home as the quoted
   placeholder `'<user>'` with a note telling you to replace it. Secrets are removed from
   `shell` too.
+- Limits of redaction, which is a best-effort filter and not a guarantee: a single string is
+  scanned up to 64 KiB (plus a 4 KiB lookahead); longer text is cut after redaction at a token
+  boundary and ends with `[truncated before redaction]`. URL credentials
+  (`scheme://user:password@host`) run to the last `@` of the whitespace-delimited token, so
+  text after an earlier `@` in the same token is redacted too; `host:8080/...` and
+  `bob:8080/x@y` read as a port, so a numeric password followed by `/` is not redacted;
+  whitespace ends a token, so `pw @host` is not a credential. Labelled secrets separated only
+  by whitespace are redacted when the next word is at least six characters, and a bare user
+  name outside `/home/`, `/Users/` and `/run/media/` paths is never redacted.
 - Protocol messages use stdout; logging goes to stderr. Lines over 256 KiB are rejected.
 
 The tests (`ctest -R launcher-mcp`, or `python3 tests/launcher_mcp_test.py`) use temporary
