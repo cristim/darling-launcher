@@ -617,6 +617,35 @@ class MountTest(unittest.TestCase):
         self.assertEqual(self.events, [{"event": "mounted", "role": "preboot", "path": str(self.preboot_dir), "device": "/dev/synthetic2"}])
         self.assertFalse(any(c[0] in (self.trusted[0], self.trusted[1], self.umount_path()) for c in self.calls))
 
+    def reused_mount(self):
+        self.preboot_dir.mkdir(parents=True)
+        os.chmod(self.preboot_dir.parent, 0o755)  # left by an earlier build
+        self.records.append({"source": "/dev/synthetic2", "target": str(self.preboot_dir), "fstype": "fuse"})
+
+    def test_reused_mount_gets_its_parent_directory_tightened(self):
+        self.reused_mount()
+        with patch.object(cryptex, "mount_state", return_value="alive"):
+            self.preboot()
+        self.assertEqual(stat.S_IMODE(self.preboot_dir.parent.stat().st_mode), 0o700)
+        self.assertEqual(self.acls, {str(self.preboot_dir.parent): cryptex.caller_acl(UID)})
+        self.assertEqual(self.events[-1]["event"], "mounted")
+
+    def test_reused_mount_whose_parent_cannot_be_restricted_is_refused(self):
+        import errno
+        self.reused_mount()
+        def unsupported(path, name, value):
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+        with patch.object(cryptex, "mount_state", return_value="alive"), self.assertRaisesRegex(ValueError, "POSIX ACL.*refusing"):
+            self.preboot(setxattr=unsupported)
+        self.assertEqual(self.events, [])
+
+    def test_reused_mount_under_an_untrusted_parent_is_refused(self):
+        self.reused_mount()
+        with patch.object(cryptex, "mount_state", return_value="alive"), self.assertRaisesRegex(ValueError, "owned by root"):
+            self.preboot(lstat=fake_lstat({str(self.preboot_dir.parent): (1000, False)}))
+        self.assertEqual(self.acls, {})
+        self.assertEqual(self.events, [])
+
     def test_batch_mounted_sibling_volume_does_not_block_the_preboot_mount(self):
         sibling = self.home / "mounts/synthetic2-volume-1"
         self.records.append({"source": "/dev/synthetic2", "target": str(sibling), "fstype": "fuse"})
