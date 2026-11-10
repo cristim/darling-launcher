@@ -17,8 +17,8 @@
 
 using namespace DyldCacheSettings;
 
-DyldCacheDialog::DyldCacheDialog(const QString &volume, const QString &prefix, const QString &storeRoot, const App &app, QWidget *parent)
-    : QDialog(parent), volume(volume), prefix(prefix), storeRoot(storeRoot), app(app) {
+DyldCacheDialog::DyldCacheDialog(const QString &volume, const QString &prefix, const QString &storeRoot, const App &app, QWidget *parent, Probe probe)
+    : QDialog(parent), volume(volume), prefix(prefix), storeRoot(storeRoot), app(app), probe(std::move(probe)) {
     setObjectName("dyldCacheDialog"); setWindowTitle("dyld shared cache"); resize(760, 620);
     showError = [this](const QString &title, const QString &text) { QMessageBox::warning(this, title, text); };
     auto *layout = new QVBoxLayout(this);
@@ -73,6 +73,7 @@ DyldCacheDialog::DyldCacheDialog(const QString &volume, const QString &prefix, c
     connect(&watcher, &QFutureWatcher<JobResult>::finished, this, [this] {
         const JobResult result = watcher.result();
         setRunning(false);
+        if (abandoned) return; // the page was closed while the volume was being read
         if (onDone) onDone(result);
         emit jobFinished();
     });
@@ -83,13 +84,16 @@ DyldCacheDialog::DyldCacheDialog(const QString &volume, const QString &prefix, c
 }
 
 DyldCacheDialog::~DyldCacheDialog() {
-    cancel.store(true);
-    if (running) watcher.waitForFinished();
+    cancel.store(true); probeCancel->store(true);
+    // A copy or verify writes into the store and uses this object, so it is waited for. A read of the volume does
+    // neither, and may be stuck in a syscall on a stalled mount: it is left to finish on its own.
+    if (running && !probing) watcher.waitForFinished();
 }
 
 void DyldCacheDialog::reject() {
     // a job keeps running in its thread; closing under it would leave it writing into a store nobody watches
-    if (running) { cancel.store(true); progressLabel->setText("Stopping… close the window once the job has stopped."); return; }
+    if (running && !probing) { cancel.store(true); progressLabel->setText("Stopping… close the window once the job has stopped."); return; }
+    if (running) { abandoned = true; probeCancel->store(true); }
     QDialog::reject();
 }
 
@@ -98,12 +102,13 @@ void DyldCacheDialog::setRunning(bool busy) {
     copyButton->setEnabled(!busy && haveSource);
     refreshButton->setEnabled(!busy);
     verifyButton->setEnabled(!busy && !overview(storeRoot, {}, {}).readyIds.isEmpty());
-    cancelButton->setEnabled(busy);
+    cancelButton->setEnabled(busy && !probing);
     if (!busy) bar->setVisible(false);
 }
 
-void DyldCacheDialog::startJob(const std::function<JobResult()> &work, const std::function<void(const JobResult &)> &done) {
+void DyldCacheDialog::startJob(const std::function<JobResult()> &work, const std::function<void(const JobResult &)> &done, bool probeOnly) {
     cancel.store(false);
+    probing = probeOnly;
     onDone = done;
     setRunning(true);
     watcher.setFuture(QtConcurrent::run(work));
@@ -111,18 +116,24 @@ void DyldCacheDialog::startJob(const std::function<JobResult()> &work, const std
 
 void DyldCacheDialog::probeSource() {
     sourceLabel->setText("Reading the volume…");
-    const QString vol = volume;
-    startJob([vol] {
+    probeCancel->store(false);
+    // the thread gets copies only: it can outlive this page
+    startJob([vol = volume, probe = probe, flag = probeCancel] {
         JobResult r;
-        if (!resolveSourceDir(vol, &r.sourceDir, &r.sourceError)) return r;
-        if (!DyldCacheStore::sourceId(r.sourceDir, kArch, &r.sourceId, &r.sourceError)) r.sourceDir.clear();
+        if (!probe(vol, *flag, &r.sourceDir, &r.sourceId, &r.sourceError)) { r.sourceDir.clear(); r.sourceId.clear(); }
         return r;
     }, [this](const JobResult &r) {
         sourceDir = r.sourceDir; sourceId = r.sourceId; sourceError = r.sourceError; haveSource = !sourceId.isEmpty();
         // the store location is the only path the page shows; the volume is named by what is read from it
         sourceLabel->setText(haveSource ? "Source: System/Library/dyld on the selected macOS volume" : "Source unavailable: " + sourceError);
         showOverview(); updatePrefix(); setRunning(false);
-    });
+    }, true);
+}
+
+bool DyldCacheDialog::defaultProbe(const QString &volume, const std::atomic<bool> &cancel, QString *dir, QString *id, QString *error) {
+    if (!resolveSourceDir(volume, dir, error)) return false;
+    if (cancel.load()) { *error = "Stopped"; return false; }
+    return DyldCacheStore::sourceId(*dir, kArch, id, error);
 }
 
 void DyldCacheDialog::showOverview() {
