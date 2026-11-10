@@ -4,6 +4,7 @@
 #include "safefs.h"
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QFileInfo>
 #include <QThread>
 #include <cerrno>
 #include <cstring>
@@ -203,6 +204,13 @@ Outcome copyCache(const QString &sourceDir, const QString &arch, const QString &
     }
     const QString id = storeId(arch, uuidHex(header.uuid));
 
+    // Refuse for lack of space before this creates anything on disk; the check below counts what a resume still needs.
+    const FreeBytesFn freeFn = opt.freeBytes ? opt.freeBytes : FreeBytesFn(&DyldCacheStore::freeBytes);
+    if (!QFileInfo::exists(storeRoot)) {
+        qint64 all = 0;
+        for (const Item &it : items) all += it.size;
+        if (!checkFreeSpace(storeRoot, all, opt.marginBytes, &err, freeFn)) return failed(err);
+    }
     if (!ensureRoot(storeRoot, &err)) return failed(err);
     Fd lock(SafeFs::lockFile(storeRoot, ".copy.lock", 0700, &err));
     if (lock.fd < 0) return failed(err);
@@ -223,7 +231,7 @@ Outcome copyCache(const QString &sourceDir, const QString &arch, const QString &
         QByteArray ph; qint64 psize = 0;
         needed += it.size - (readHead(storeRoot, id + "/" + it.name + ".partial", 0, &ph, &psize, &e) ? qMin(psize, it.size) : 0);
     }
-    if (!checkFreeSpace(storeRoot, needed, opt.marginBytes, &err, opt.freeBytes ? opt.freeBytes : FreeBytesFn(&DyldCacheStore::freeBytes))) return failed(err);
+    if (!checkFreeSpace(storeRoot, needed, opt.marginBytes, &err, freeFn)) return failed(err);
 
     for (int i = 0; i < items.size(); ++i) {
         tally.index = i + 1;
