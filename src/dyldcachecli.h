@@ -9,8 +9,11 @@
 //   status  [--source DIR] [--store-root R] [--arch A]   TSV per store: id, state, files, bytes, copiedAt[, current|stale]; with --source also a source line
 //   verify  [--store-root R] [--store ID]                 re-checks sizes, header UUIDs and sha256 of the local store(s)
 //   prefix  --prefix P (--enable [--store ID] [--lib NAME]... | --disable) [--store-root R]
-//           writes <P>/.darling-launcher/dyld-cache.json and the policy file; only validated libraries are accepted
-// The store location defaults to the launcher setting. Neither it nor a resolved source path is ever printed.
+//           writes <P>/.darling-launcher/dyld-cache.json and the policy file; only validated libraries are accepted;
+//           --store-root must be the location in the launcher settings, because a launch reads it from there;
+//           --disable also replaces an unreadable dyld-cache.json
+// The store location defaults to the launcher setting. An explicit --store-root of copy needs an existing parent directory.
+// Neither the store location nor a resolved source path is ever printed. Options need a non-empty value and may not repeat.
 // Exit codes: 0 ok, 1 refused or failed (one line on err), 2 usage, 130 copy cancelled by SIGINT (partial copy kept).
 // `dyld-cache --help` prints the usage and returns 0.
 int dyldCacheMain(const QStringList &args, QTextStream &out, QTextStream &err);
