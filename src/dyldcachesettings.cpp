@@ -9,13 +9,6 @@ namespace DyldCacheSettings {
 using LauncherCore::fail;
 const char *const kArch = "arm64e";
 
-DyldCacheCopy::Options copyOptions() {
-    DyldCacheCopy::Options o;
-    o.windowBytes = kWindowBytes;
-    o.pauseMs = kThrottleMs;
-    return o;
-}
-
 bool resolveSourceDir(const QString &volume, QString *dir, QString *error) {
     if (volume.isEmpty()) return fail(error, "No mounted macOS volume is selected");
     const QString root = QFileInfo(volume).canonicalFilePath();

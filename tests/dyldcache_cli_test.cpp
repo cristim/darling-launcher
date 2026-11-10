@@ -32,7 +32,8 @@ struct Fx {
     QString root() const { return work.path() + "/store"; }
     QString id() const { return DyldCacheStore::storeId("arm64e", DyldCache::uuidHex(uuid)); }
     QStringList names() const { QStringList n{kMain}; for (const QString &s : subs) n << kMain + s; return n; }
-    QStringList copyArgs() const { return {"copy", "--source", src.path(), "--store-root", root(), "--margin-mib", "0"}; }
+    // The tests would otherwise wait out the engine's default pause between windows.
+    QStringList copyArgs(const QString &throttleMs = "0") const { return {"copy", "--source", src.path(), "--store-root", root(), "--margin-mib", "0", "--throttle-ms", throttleMs}; }
     QStringList rootArg(const QString &verb) const { return {verb, "--store-root", root()}; }
     QString file(const QString &name) const { return root() + "/" + id() + "/" + name; }
 };
@@ -85,7 +86,7 @@ private slots:
         Fx fx(2, 12, qint64(3) << 20);
         QProcess p;
         p.setReadChannel(QProcess::StandardError);
-        p.start(LAUNCHER_BIN, QStringList{"dyld-cache"} + fx.copyArgs() + QStringList{"--window-mib", "1", "--throttle-ms", "100"});
+        p.start(LAUNCHER_BIN, QStringList{"dyld-cache"} + fx.copyArgs("100") + QStringList{"--window-mib", "1"});
         QVERIFY(p.waitForStarted());
         QByteArray errText;
         QElapsedTimer waited; waited.start();
@@ -114,18 +115,25 @@ private slots:
     void throttleAndWindowReachTheEngineAndProgressIsRateLimited() {
         Fx fx(3, 12, qint64(3) << 20);
         QElapsedTimer t; t.start();
-        const Result r = run(fx.copyArgs() + QStringList{"--window-mib", "1", "--throttle-ms", "50"});
+        const Result r = run(fx.copyArgs("50") + QStringList{"--window-mib", "1"});
         const qint64 ms = t.elapsed();
         QCOMPARE(r.code, 0);
         QVERIFY2(ms >= 1200, qPrintable(QString::number(ms))); // 13 files, two pauses each (three 1 MiB windows), 50 ms per pause
         const int lines = r.err.count("\n[");
         QVERIFY2(lines >= 12 && lines <= 13 + ms / 1000 + 1, qPrintable(QString::number(lines) + " progress lines in " + QString::number(ms) + " ms")); // not one per MiB block
     }
+    void withoutOptionsTheEngineDefaultPauseApplies() {
+        Fx fx(4, 2);                                                           // three files, so two pauses between windows
+        QElapsedTimer t; t.start();
+        const Result r = run({"copy", "--source", fx.src.path(), "--store-root", fx.root(), "--margin-mib", "0"});
+        QCOMPARE(r.code, 0);
+        QVERIFY2(t.elapsed() >= 2 * 300 - 50, qPrintable(QString::number(t.elapsed())));
+    }
     void aLongThrottlePauseIsInterruptedBySigintAtOnce() {
         Fx fx(5, 12, qint64(3) << 20);
         QProcess p;
         p.setReadChannel(QProcess::StandardError);
-        p.start(LAUNCHER_BIN, QStringList{"dyld-cache"} + fx.copyArgs() + QStringList{"--window-mib", "1", "--throttle-ms", "8000"});
+        p.start(LAUNCHER_BIN, QStringList{"dyld-cache"} + fx.copyArgs("8000") + QStringList{"--window-mib", "1"});
         QVERIFY(p.waitForStarted());
         const pid_t pid = pid_t(p.processId());
         QByteArray errText;
@@ -187,7 +195,7 @@ private slots:
     }
     void aMistypedStoreRootCreatesNothing() {
         Fx fx;
-        const Result r = run({"copy", "--source", fx.src.path(), "--store-root", fx.work.path() + "/typo/store", "--margin-mib", "0"});
+        const Result r = run({"copy", "--source", fx.src.path(), "--store-root", fx.work.path() + "/typo/store", "--margin-mib", "0", "--throttle-ms", "0"});
         QCOMPARE(r.code, 1); QVERIFY2(r.err.contains("parent directory") && !r.err.contains(fx.work.path()), qPrintable(r.err));
         QVERIFY(!QFileInfo::exists(fx.work.path() + "/typo"));
     }
@@ -366,7 +374,7 @@ private slots:
         const QStringList base = {"prefix", "--prefix", fx.prefix.path(), "--store-root", fx.root(), "--enable"};
         QCOMPARE(run(base).code, 1); QCOMPARE(run(base + QStringList{"--store", fx.id()}).code, 1); // nothing copied yet
         QCOMPARE(run(fx.copyArgs()).code, 0);
-        Fx other(9); QCOMPARE(run({"copy", "--source", other.src.path(), "--store-root", fx.root(), "--margin-mib", "0"}).code, 0);
+        Fx other(9); QCOMPARE(run({"copy", "--source", other.src.path(), "--store-root", fx.root(), "--margin-mib", "0", "--throttle-ms", "0"}).code, 0);
         const Result amb = run(base); QCOMPARE(amb.code, 1); QVERIFY2(amb.err.contains("--store"), qPrintable(amb.err));
         QVERIFY(!QFileInfo::exists(cfg));
         QFile pid(fx.prefix.path() + "/.init.pid"); QVERIFY(pid.open(QIODevice::WriteOnly)); pid.write(QByteArray::number(qint64(::getpid()))); pid.close();
@@ -404,6 +412,7 @@ private slots:
         const Result r = run(args);
         QCOMPARE(r.code, 2); QVERIFY(r.err.startsWith("usage error: ")); QVERIFY(r.out.isEmpty());
         const Result h = run({"--help"}); QCOMPARE(h.code, 0); QVERIFY(h.out.startsWith("usage: darling-launcher dyld-cache"));
+        QVERIFY(h.out.contains("--window-mib 32")); QVERIFY(h.out.contains("--throttle-ms 300"));   // the documented defaults are the engine's
     }
 };
 QTEST_MAIN(DyldCacheCliTest)

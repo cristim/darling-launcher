@@ -63,6 +63,7 @@ bool parse(const QStringList &args, Args *out) {
 const char *const kHelp =
     "usage: darling-launcher dyld-cache <verb> [options]\n"
     "  copy   --source DIR [--store-root R] [--arch arm64e|arm64] [--window-mib N] [--throttle-ms N] [--margin-mib N]\n"
+    "         defaults: --window-mib 32, --throttle-ms 300 (pause after each window)\n"
     "  status [--source DIR] [--store-root R] [--arch arm64e|arm64]\n"
     "  verify [--store-root R] [--store ID]\n"
     "  prefix --prefix P (--enable [--store ID] [--lib INSTALLNAME]... | --disable) [--store-root R]\n"
@@ -99,12 +100,12 @@ qint64 totalBytes(const StoreManifest &m) { qint64 n = 0; for (const StoreFile &
 
 int copyVerb(const Args &a, QTextStream &err) {
     const QString arch = a.values.value("--arch", "arm64e");
-    int windowMib = 128, throttleMs = 0, marginMib = int(DyldCacheStore::kDefaultMarginBytes >> 20);
+    DyldCacheCopy::Options opt; // the engine defaults
+    int windowMib = int(opt.windowBytes >> 20), throttleMs = opt.pauseMs, marginMib = int(DyldCacheStore::kDefaultMarginBytes >> 20);
     if (!validArch(a)) return usage(err, "--arch must be arm64e or arm64");
     if (!intOption(a, "--window-mib", 1, 4096, &windowMib)) return usage(err, "--window-mib must be 1 to 4096");
     if (!intOption(a, "--throttle-ms", 0, 60000, &throttleMs)) return usage(err, "--throttle-ms must be 0 to 60000");
     if (!intOption(a, "--margin-mib", 0, 1 << 20, &marginMib)) return usage(err, "--margin-mib must be 0 to 1048576");
-    DyldCacheCopy::Options opt;
     opt.windowBytes = qint64(windowMib) << 20;
     opt.pauseMs = throttleMs;
     opt.marginBytes = qint64(marginMib) << 20;

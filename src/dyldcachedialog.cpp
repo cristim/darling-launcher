@@ -35,7 +35,7 @@ DyldCacheDialog::DyldCacheDialog(const QString &volume, const QString &prefix, c
     progressLabel = new QLabel; progressLabel->setObjectName("progressLabel"); progressLabel->setWordWrap(true); storeLayout->addWidget(progressLabel);
     auto *buttons = new QHBoxLayout;
     copyButton = new QPushButton("Copy / Refresh from volume"); copyButton->setObjectName("copyStore");
-    copyButton->setToolTip("Copies the dyld cache of the selected macOS volume into the private store, in the background (32 MiB at a time with a short pause, so a slow mount is not starved). A stopped copy resumes where it left off.");
+    copyButton->setToolTip("Copies the dyld cache of the selected macOS volume into the private store, in the background (small windows with a short pause, so a slow mount is not starved). A stopped copy resumes where it left off.");
     cancelButton = new QPushButton("Cancel"); cancelButton->setObjectName("cancelJob"); cancelButton->setToolTip("Stops cleanly; the partial copy is kept and Copy resumes it");
     verifyButton = new QPushButton("Verify"); verifyButton->setObjectName("verifyStore"); verifyButton->setToolTip("Re-checks sizes, headers and hashes of the local store; never reads the volume");
     refreshButton = new QPushButton("Re-read"); refreshButton->setObjectName("rereadStore"); refreshButton->setToolTip("Looks at the volume and the store again");

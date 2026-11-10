@@ -12,9 +12,10 @@
 namespace DyldCacheCopy {
 constexpr qint64 kMaxBlockBytes = qint64(1) << 30; // one read buffer; also keeps the QByteArray size in int range
 struct Options {
-    qint64 windowBytes = qint64(128) << 20; // read this much, flush, then pause
+    // Small windows and a pause keep a slow FUSE daemon behind the source volume from being starved.
+    qint64 windowBytes = qint64(32) << 20;  // read this much, flush, then pause
     qint64 blockBytes = qint64(1) << 20;    // one read; progress and cancel are checked per block
-    int pauseMs = 0;                        // pause after each window
+    int pauseMs = 300;                      // pause after each window
     qint64 marginBytes = DyldCacheStore::kDefaultMarginBytes;
     // Test seams.
     DyldCacheStore::FreeBytesFn freeBytes;                                   // default: statvfs

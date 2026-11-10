@@ -30,7 +30,7 @@ public:
     // Error text for the user; the default is a message box. Tests replace it.
     std::function<void(const QString &title, const QString &text)> showError;
     // Test seam: the copy options (a test shrinks the throttle).
-    std::function<DyldCacheCopy::Options()> copyOptions = &DyldCacheSettings::copyOptions;
+    std::function<DyldCacheCopy::Options()> copyOptions = [] { return DyldCacheCopy::Options{}; };
 signals:
     void jobFinished(); // a background job ended and the page has refreshed
 private:
