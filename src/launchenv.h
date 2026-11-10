@@ -21,6 +21,9 @@ void stripDyld(QProcessEnvironment *env);
 // withheld and *note says why; the caller logs it. Child processes still inherit the variables, so the cache needs a
 // dyld that continues without a cache when the file for a process's arch is missing.
 enum class RunKind { Maintenance, App };
+// The arm64e rule on its own: true when the executable (relative to the prefix) has exactly one arm64 slice and it is
+// arm64e. Otherwise *note says why the cache would be withheld. Reads the file only; used by forRun and by the settings UI.
+bool appRunsAsArm64e(const QString &prefix, const QString &executableRel, QString *note);
 bool forRun(RunKind kind, QProcessEnvironment *env, const QString &prefix, const QString &storeRoot, const QString &executableRel,
             QString *error, QString *note);
 

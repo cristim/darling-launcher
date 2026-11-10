@@ -98,6 +98,19 @@ private slots:
         QVERIFY(LaunchEnv::forRun(LaunchEnv::RunKind::App, &e, fx.prefix.path(), fx.stores.path(), "Applications/Gone.app/Contents/MacOS/Gone", &err, &note));
         QCOMPARE(Fx::dyldKeys(e).size(), 0); QVERIFY(note.contains("could not be determined"));
     }
+    // The settings UI asks the same rule without building an environment.
+    void appRunsAsArm64eIsTheRuleForRunUses() {
+        QTemporaryDir prefix; QDir().mkpath(prefix.path() + "/bin");
+        const auto put = [&](const char *name, const QByteArray &data) { QFile f(prefix.path() + "/bin/" + name); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(data); };
+        put("e", thin(2, {})); put("p", thin(0, {})); put("fat", fatOf({{0x0100000c, 0}, {0x0100000c, 2}}));
+        QString note;
+        QVERIFY(LaunchEnv::appRunsAsArm64e(prefix.path(), "bin/e", &note)); QVERIFY(note.isEmpty());
+        QVERIFY(!LaunchEnv::appRunsAsArm64e(prefix.path(), "bin/p", &note)); QVERIFY(note.contains("non-arm64e"));
+        QVERIFY(!LaunchEnv::appRunsAsArm64e(prefix.path(), "bin/fat", &note)); QVERIFY(note.contains("non-arm64e"));
+        QVERIFY(!LaunchEnv::appRunsAsArm64e(prefix.path(), "bin/gone", &note)); QVERIFY(note.contains("could not be determined"));
+        QVERIFY(!LaunchEnv::appRunsAsArm64e(prefix.path(), QString(), &note)); QVERIFY(note.contains("no executable"));
+        QVERIFY(note.endsWith("not used for this launch."));
+    }
     void forRunMaintenanceNeverGetsTheCacheAndAnAppWithoutTheCacheGetsNoNote() {
         Fx fx; QVERIFY(fx.save(fx.config()));
         const QString rel = "Applications/X.app/Contents/MacOS/X";
