@@ -173,6 +173,15 @@ private slots:
         }
         QVERIFY2(run(base + QStringList{"--lib", "/usr/lib/libSystem.B.dylib"}).err.contains("not validated"), "message");
     }
+    void controlBytesInArgumentsAreEscapedSoErrorsStayOneLine() {
+        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0);
+        const Result lib = run({"prefix", "--prefix", fx.prefix.path(), "--store-root", fx.root(), "--enable", "--lib", "/usr/lib/a\nerror: fake\tb"});
+        QCOMPARE(lib.code, 1); QCOMPARE(lib.err.count('\n'), 1); QVERIFY2(lib.err.contains("\\x0a") && lib.err.contains("\\x09"), qPrintable(lib.err));
+        const Result id = run(fx.rootArg("verify") + QStringList{"--store", "arm64e-x\ny"});
+        QCOMPARE(id.code, 1); QCOMPARE(id.err.count('\n'), 1); QVERIFY2(id.err.contains("\\x0a"), qPrintable(id.err));
+        const Result verb = run({"frob\nnicate"});
+        QCOMPARE(verb.code, 2); QVERIFY2(verb.err.startsWith("usage error: unknown verb frob\\x0anicate\n"), qPrintable(verb.err));
+    }
     void prefixRefusesAMissingOrAmbiguousStoreAndARunningPrefix() {
         Fx fx;
         const QString cfg = fx.prefix.path() + "/.darling-launcher/dyld-cache.json";
@@ -201,6 +210,16 @@ private slots:
         QTest::newRow("disable with lib") << QStringList{"prefix", "--prefix", "/x", "--disable", "--lib", "/usr/lib/libz.1.dylib"};
         QTest::newRow("option of another verb") << QStringList{"verify", "--source", "/x"};
         QTest::newRow("enable on copy") << QStringList{"copy", "--source", "/x", "--enable"};
+        QTest::newRow("empty prefix") << QStringList{"prefix", "--prefix", "", "--enable"};
+        QTest::newRow("empty source") << QStringList{"copy", "--source", ""};
+        QTest::newRow("empty store root") << QStringList{"status", "--store-root", ""};
+        QTest::newRow("empty lib") << QStringList{"prefix", "--prefix", "/x", "--enable", "--lib", ""};
+        QTest::newRow("repeated source") << QStringList{"status", "--source", "/a", "--source", "/b"};
+        QTest::newRow("repeated store root") << QStringList{"verify", "--store-root", "/a", "--store-root", "/b"};
+        QTest::newRow("bad arch on copy") << QStringList{"copy", "--source", "/x", "--arch", "x86_64"};
+        QTest::newRow("bad arch on status") << QStringList{"status", "--arch", "x86_64"};
+        QTest::newRow("throttle too long") << QStringList{"copy", "--source", "/x", "--throttle-ms", "60001"};
+        QTest::newRow("window not a number") << QStringList{"copy", "--source", "/x", "--window-mib", "1x"};
     }
     void usageErrorsExitTwoAndHelpExitsZero() {
         QFETCH(QStringList, args);

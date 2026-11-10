@@ -24,8 +24,12 @@ bool parse(const QStringList &args, Args *out) {
     for (int i = 0; i < args.size(); ++i) {
         if (args[i] == "--enable") out->enable = true;
         else if (args[i] == "--disable") out->disable = true;
-        else if (args[i] == "--lib") { if (i + 1 >= args.size()) return false; out->libs << args[++i]; }
-        else if (valued.contains(args[i])) { if (i + 1 >= args.size()) return false; const QString key = args[i]; out->values[key] = args[++i]; }
+        else if (args[i] == "--lib") { if (i + 1 >= args.size() || args[i + 1].isEmpty()) return false; out->libs << args[++i]; }
+        else if (valued.contains(args[i])) {
+            // an empty value would resolve to the current directory, and a repeated option would silently win or lose
+            if (i + 1 >= args.size() || args[i + 1].isEmpty() || out->values.contains(args[i])) return false;
+            const QString key = args[i]; out->values[key] = args[++i];
+        }
         else return false;
     }
     return true;
@@ -37,23 +41,32 @@ const char *const kHelp =
     "  verify [--store-root R] [--store ID]\n"
     "  prefix --prefix P (--enable [--store ID] [--lib INSTALLNAME]... | --disable) [--store-root R]\n"
     "exit codes: 0 ok, 1 refused or failed, 2 usage, 130 copy cancelled (partial copy kept, run again to resume)\n";
+// Text that comes from the command line or from files in the store must not break the one-line shape of the output.
+QString oneLine(const QString &text) {
+    QString out;
+    for (const QChar c : text) out += (c.unicode() < 0x20 || c.unicode() == 0x7f) ? QString("\\x%1").arg(int(c.unicode()), 2, 16, QChar(u'0')) : QString(c);
+    return out;
+}
 int usage(QTextStream &err, const QString &why) {
-    err << "usage error: " << why << "\n" << kHelp;
+    err << "usage error: " << oneLine(why) << "\n" << kHelp;
     return 2;
 }
 int refused(QTextStream &err, const QString &reason) {
-    err << "error: " << reason << "\n";
+    err << "error: " << oneLine(reason) << "\n";
     return 1;
 }
 // Absolute without resolving symlinks: the store code refuses those itself.
 QString absolute(const QString &p) { return QDir::cleanPath(QDir(p).absolutePath()); }
-bool positiveInt(const QString &s, int max, int *out) {
+// Absent option: *out keeps its default. Present: a whole number in [min, max].
+bool intOption(const Args &a, const char *key, int min, int max, int *out) {
+    if (!a.values.contains(key)) return true;
     bool ok = false;
-    const int v = s.toInt(&ok);
-    if (!ok || v < 0 || v > max) return false;
+    const int v = a.values[key].toInt(&ok);
+    if (!ok || v < min || v > max) return false;
     *out = v;
     return true;
 }
+bool validArch(const Args &a) { const QString arch = a.values.value("--arch", "arm64e"); return arch == "arm64e" || arch == "arm64"; }
 QString storeRoot(const Args &a) { return a.values.contains("--store-root") ? absolute(a.values["--store-root"]) : DyldCacheStore::configuredRoot(); }
 
 qint64 totalBytes(const StoreManifest &m) { qint64 n = 0; for (const StoreFile &f : m.files) n += f.size; return n; }
@@ -61,9 +74,10 @@ qint64 totalBytes(const StoreManifest &m) { qint64 n = 0; for (const StoreFile &
 int copyVerb(const Args &a, QTextStream &err) {
     const QString arch = a.values.value("--arch", "arm64e");
     int windowMib = 128, throttleMs = 0, marginMib = int(DyldCacheStore::kDefaultMarginBytes >> 20);
-    if (a.values.contains("--window-mib") && (!positiveInt(a.values["--window-mib"], 4096, &windowMib) || windowMib < 1)) return usage(err, "--window-mib must be 1 to 4096");
-    if (a.values.contains("--throttle-ms") && !positiveInt(a.values["--throttle-ms"], 60000, &throttleMs)) return usage(err, "--throttle-ms must be 0 to 60000");
-    if (a.values.contains("--margin-mib") && !positiveInt(a.values["--margin-mib"], 1 << 20, &marginMib)) return usage(err, "--margin-mib must be 0 to 1048576");
+    if (!validArch(a)) return usage(err, "--arch must be arm64e or arm64");
+    if (!intOption(a, "--window-mib", 1, 4096, &windowMib)) return usage(err, "--window-mib must be 1 to 4096");
+    if (!intOption(a, "--throttle-ms", 0, 60000, &throttleMs)) return usage(err, "--throttle-ms must be 0 to 60000");
+    if (!intOption(a, "--margin-mib", 0, 1 << 20, &marginMib)) return usage(err, "--margin-mib must be 0 to 1048576");
     DyldCacheCopy::Options opt;
     opt.windowBytes = qint64(windowMib) << 20;
     opt.pauseMs = throttleMs;
@@ -100,8 +114,8 @@ int copyVerb(const Args &a, QTextStream &err) {
 int statusVerb(const Args &a, QTextStream &out, QTextStream &err) {
     const QString root = storeRoot(a), arch = a.values.value("--arch", "arm64e");
     QString sourceId;
+    if (!validArch(a)) return usage(err, "--arch must be arm64e or arm64");
     if (a.values.contains("--source")) {
-        if (arch != "arm64" && arch != "arm64e") return usage(err, "--arch must be arm64e or arm64");
         QByteArray head; qint64 size = 0; DyldCache::MainHeader header; QString error;
         if (!DyldCacheStore::readHead(absolute(a.values["--source"]), DyldCache::mainFileName(arch), DyldCache::kHeaderWindow, &head, &size, &error)
             || !DyldCache::parseMainHeader(head, size, &header, &error)) return refused(err, error);
@@ -128,10 +142,10 @@ int verifyVerb(const Args &a, QTextStream &out, QTextStream &err) {
     int rc = 0;
     for (const QString &id : ids) {
         QString error;
-        if (!DyldCacheStore::checkPrivate(root, id, &error)) { err << "error: " << id << ": " << error << "\n"; rc = 1; continue; }
+        if (!DyldCacheStore::checkPrivate(root, id, &error)) { refused(err, id + ": " + error); rc = 1; continue; }
         const DyldCacheCopy::Outcome r = DyldCacheCopy::verifyStore(root, id);
         if (r.result == DyldCacheCopy::Result::Done) out << "ok\t" << id << '\n';
-        else { err << "error: " << id << ": " << r.error << "\n"; rc = 1; }
+        else { refused(err, id + ": " + r.error); rc = 1; }
     }
     return rc;
 }
