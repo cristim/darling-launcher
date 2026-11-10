@@ -77,10 +77,7 @@ StoreOverview overview(const QString &storeRoot, const QString &sourceId, const 
 QString enableBlocker(const QString &storeRoot, const QString &storeId) {
     if (storeId.isEmpty()) return "No ready store: copy the cache from the macOS volume first";
     QString error;
-    if (!DyldCacheStore::checkPrivate(storeRoot, storeId, &error)) return "The store cannot be trusted: " + error;
-    const StoreStatus st = DyldCacheStore::status(storeRoot, storeId);
-    if (st.state == StoreState::Ready) return {};
-    return QString("Store %1 is not ready (%2)").arg(shortId(storeId), st.detail.isEmpty() ? QString(stateName(st.state)) : st.detail);
+    return DyldCacheStore::checkUsable(storeRoot, storeId, &error) ? QString() : error;
 }
 
 PrefixStatus prefixStatus(const DyldCacheConfig &config, const QString &storeRoot) {

@@ -137,6 +137,14 @@ bool readHead(const QString &root, const QString &relPath, qint64 window, QByteA
     return true;
 }
 
+bool checkUsable(const QString &root, const QString &id, QString *error, const QString &dataRoot) {
+    QString why;
+    if (!checkPrivate(root, id, &why, dataRoot)) return fail(error, "The store cannot be trusted: " + why);
+    const StoreStatus st = status(root, id);
+    if (st.state != StoreState::Ready) return fail(error, "The store " + id + " is not ready" + (st.detail.isEmpty() ? QString() : " (" + st.detail + ")") + "; copy and verify it first");
+    return true;
+}
+
 bool sourceId(const QString &sourceDir, const QString &arch, QString *id, QString *error) {
     QByteArray head; qint64 size = 0; DyldCache::MainHeader header;
     if (!readHead(sourceDir, DyldCache::mainFileName(arch), DyldCache::kHeaderWindow, &head, &size, error)

@@ -165,6 +165,41 @@ private slots:
         QVERIFY(DyldCacheConfigFile::load(env.prefix.path(), &c, &err)); QVERIFY(c.mode == DyldCacheMode::Off);
         QVERIFY(!enable->isEnabled());                                                       // now off and still no ready store
     }
+    void savingNeverPinsAnEnabledPrefixToAStoreThatIsNotReady() {
+        Env env; env.makeSource();
+        const QString a = makeFakeStore(env.stores.path(), "arm64e", 1, {});
+        const QString b = makeFakeStore(env.stores.path(), "arm64e", 2, {});
+        QVERIFY(QFile::remove(env.stores.path() + "/" + b + "/store.json"));               // B is a partial copy
+        DyldCacheConfig c; c.mode = DyldCacheMode::Off; c.store = b; c.served = {};
+        QString err; QVERIFY2(DyldCacheConfigFile::save(env.prefix.path(), c, &err), qPrintable(err));
+        const QByteArray before = [&] { QFile f(DyldCacheConfigFile::configPath(env.prefix.path())); f.open(QIODevice::ReadOnly); return f.readAll(); }();
+        std::unique_ptr<DyldCacheDialog> d(env.dialog()); idle(d.get());
+        auto *combo = child<QComboBox>(d.get(), "storeChoice"); auto *save = child<QPushButton>(d.get(), "savePrefix");
+        combo->setCurrentIndex(combo->findData(a));
+        child<QCheckBox>(d.get(), "enableCache")->setChecked(true);
+        for (auto *box : d->findChildren<QCheckBox *>()) if (box->text() == kLibz) box->setChecked(true);
+        QVERIFY(save->isEnabled());                                                         // A is ready
+        combo->setCurrentIndex(combo->findData(b));                                         // switch to the partial one
+        QVERIFY(child<QLabel>(d.get(), "prefixStatus")->text().startsWith("Not active"));
+        QVERIFY(!save->isEnabled());
+        save->click();                                                                      // a click on a disabled button does nothing
+        QVERIFY(env.errors.isEmpty());
+        QFile f(DyldCacheConfigFile::configPath(env.prefix.path())); QVERIFY(f.open(QIODevice::ReadOnly)); QCOMPARE(f.readAll(), before);
+    }
+    void saveChecksTheStoreAgainAtSaveTime() {
+        Env env; env.makeSource();
+        const QString a = makeFakeStore(env.stores.path(), "arm64e", 1, {});
+        std::unique_ptr<DyldCacheDialog> d(env.dialog()); idle(d.get());
+        child<QCheckBox>(d.get(), "enableCache")->setChecked(true);
+        for (auto *box : d->findChildren<QCheckBox *>()) if (box->text() == kLibz) box->setChecked(true);
+        auto *save = child<QPushButton>(d.get(), "savePrefix"); QVERIFY(save->isEnabled());
+        QVERIFY(QFile::remove(env.stores.path() + "/" + a + "/store.json"));               // the store changes after the box was ticked
+        save->click();
+        QCOMPARE(env.errors.size(), 1); QVERIFY(env.errors[0].second.contains("is not ready"));
+        QVERIFY(!QFileInfo::exists(DyldCacheConfigFile::configPath(env.prefix.path())));
+        QVERIFY(!QFileInfo::exists(DyldCacheConfigFile::policyPath(env.prefix.path())));
+        QVERIFY(!save->isEnabled());                                                        // the page re-evaluated
+    }
     void anUnreadableConfigIsReportedAndSavingReplacesIt() {
         Env env; env.makeSource();
         makeFakeStore(env.stores.path(), "arm64e", 1, {});

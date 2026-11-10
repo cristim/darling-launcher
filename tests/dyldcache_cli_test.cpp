@@ -381,6 +381,18 @@ private slots:
         const Result busy = run(base + QStringList{"--store", fx.id()}); QCOMPARE(busy.code, 1); QVERIFY2(busy.err.contains("running"), qPrintable(busy.err));
         QVERIFY(!QFileInfo::exists(cfg));
     }
+    // --enable goes through DyldCacheStore::checkUsable, the check the settings page repeats when it saves.
+    void enableRefusesAPartialStoreAndAnOpenStoreRoot() {
+        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0); useStoreRoot(fx.root());
+        const QString cfg = fx.prefix.path() + "/.darling-launcher/dyld-cache.json";
+        const QStringList base = {"prefix", "--prefix", fx.prefix.path(), "--store-root", fx.root(), "--enable", "--store", fx.id()};
+        QVERIFY(::chmod((fx.file("store.json")).toUtf8().constData(), 0600) == 0); QVERIFY(QFile::remove(fx.file("store.json")));
+        const Result partial = run(base); QCOMPARE(partial.code, 1); QVERIFY2(partial.err.contains("is not ready (The copy is incomplete)"), qPrintable(partial.err));
+        QVERIFY(!QFileInfo::exists(cfg));
+        QVERIFY(::chmod(fx.root().toUtf8().constData(), 0755) == 0);
+        const Result open = run(base); QCOMPARE(open.code, 1); QVERIFY2(open.err.contains("cannot be trusted"), qPrintable(open.err));
+        QVERIFY(!QFileInfo::exists(cfg));
+    }
     void usageErrorsExitTwoAndHelpExitsZero_data() {
         QTest::addColumn<QStringList>("args");
         QTest::newRow("no verb") << QStringList{};
