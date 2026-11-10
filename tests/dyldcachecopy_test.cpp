@@ -83,6 +83,17 @@ private slots:
         int total = 0; Fx full; full.opt.pauseMs = 250; full.opt.windowBytes = qint64(1) << 20; full.opt.sleepFn = [&](int ms) { QVERIFY(ms <= 100); total += ms; };
         QVERIFY(full.run().result == Result::Done); QCOMPARE(total, 3 * 250);
     }
+    // The real main file keeps its sub-cache table at 0x392d8, beyond the first 64 KiB; the 4 KiB fixtures above keep it early.
+    void copiesACacheWhoseSubCacheTableIsBeyondTheFirst64KiB() {
+        QTemporaryDir src, store; Fx fx;
+        makeFakeCache(src.path(), "arm64e", 1, kSubs, 4096, kRealTableOffset);
+        const QString root = store.path() + "/root";
+        const auto r = copyCache(src.path(), "arm64e", root, fx.opt);
+        QVERIFY2(r.result == Result::Done, qPrintable(r.error));
+        for (const QString &n : fx.names()) QCOMPARE(slurp(root + "/" + fx.id + "/" + n), slurp(src.path() + "/" + n));
+        QVERIFY(QFileInfo(src.path() + "/" + kMain).size() > 64 * 1024);
+        QVERIFY(verifyStore(root, fx.id).result == Result::Done);
+    }
     void lowFreeSpaceCreatesNothingOnDisk() {
         Fx fx; fx.opt.freeBytes = [](const QString &) { return qint64(1000); };
         const QString root = fx.store.path() + "/a/b/store";

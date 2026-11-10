@@ -9,7 +9,9 @@
 // (dyld3/shared-cache/dyld_cache_format.h). The bytes come from a user-supplied volume, so every field is checked.
 namespace DyldCache {
 constexpr int kMaxFiles = 64;           // main file plus sub-caches
-constexpr qint64 kHeaderWindow = 64 * 1024; // bytes read from the start of the main file; the sub-cache table must lie inside
+// Bytes read from the start of the main file; the sub-cache table must lie inside. The real table sits at about 230 KiB
+// in a main file of about 560 KiB, so this is well above both; a file shorter than the window is read whole.
+constexpr qint64 kHeaderWindow = qint64(1) << 20;
 constexpr int kUuidBytes = 16;
 
 struct SubCache {
