@@ -10,12 +10,6 @@
 // The decisions behind the dyld cache page of the launcher settings, kept out of the widgets so they can be tested
 // without a display. Nothing here writes anything; the page calls DyldCacheCopy and DyldCacheConfigFile for that.
 namespace DyldCacheSettings {
-// A slow FUSE daemon behind the mounted volume is easy to starve, so the page copies in small windows with a pause.
-// (The CLI defaults to 128 MiB and no pause; a user who wants that runs the CLI.)
-constexpr qint64 kWindowBytes = qint64(32) << 20;
-constexpr int kThrottleMs = 300;
-DyldCacheCopy::Options copyOptions();
-
 // The architecture of the cache the page manages: the only one an arm64e app launch can use.
 extern const char *const kArch;
 

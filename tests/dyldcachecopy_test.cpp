@@ -21,7 +21,7 @@ struct Fx {
     Fx() {
         uuid = makeFakeCache(src.path(), "arm64e", 1, kSubs, 4096);
         id = DyldCacheStore::storeId("arm64e", DyldCache::uuidHex(uuid));
-        opt.windowBytes = 1024; opt.blockBytes = 512; opt.marginBytes = 0;
+        opt.windowBytes = 1024; opt.blockBytes = 512; opt.marginBytes = 0; opt.pauseMs = 0;
         opt.freeBytes = [](const QString &) { return qint64(1) << 40; };
     }
     QString root() const { return store.path() + "/root"; }
@@ -33,6 +33,14 @@ struct Fx {
 class DyldCacheCopyTest : public QObject {
     Q_OBJECT
 private slots:
+    // The engine's own defaults are the safe ones: every caller (CLI, settings page) starts from them.
+    void defaultsAreGentleToASlowMount() {
+        const Options o;
+        QCOMPARE(o.windowBytes, qint64(32) << 20);
+        QCOMPARE(o.pauseMs, 300);
+        QCOMPARE(o.blockBytes, qint64(1) << 20);
+        QCOMPARE(o.marginBytes, DyldCacheStore::kDefaultMarginBytes);
+    }
     void copiesEveryFileAndWritesAVerifiedStore() {
         Fx fx; QList<Progress> seen;
         const auto r = fx.run(nullptr, [&](const Progress &p) { seen << p; });

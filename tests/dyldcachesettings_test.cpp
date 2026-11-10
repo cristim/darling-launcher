@@ -13,13 +13,6 @@ static QString idOfSeed(int seed) { return DyldCacheStore::storeId("arm64e", Dyl
 class DyldCacheSettingsTest : public QObject {
     Q_OBJECT
 private slots:
-    void copyOptionsAreTheGentleDefaults() {
-        const auto o = copyOptions();
-        QCOMPARE(o.windowBytes, qint64(32) << 20);
-        QCOMPARE(o.pauseMs, 300);
-        QCOMPARE(o.marginBytes, DyldCacheStore::kDefaultMarginBytes);
-        QCOMPARE(o.blockBytes, qint64(1) << 20);
-    }
     void sourceDirIsTheVolumesDyldDirectoryAndStaysInsideTheVolume() {
         QTemporaryDir vol, outside; QString dir, err;
         QVERIFY(!resolveSourceDir(QString(), &dir, &err)); QVERIFY(err.contains("No mounted"));
