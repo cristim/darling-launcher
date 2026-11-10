@@ -11,7 +11,10 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTemporaryDir>
+#include <QElapsedTimer>
+#include <QSemaphore>
 #include <QThread>
+#include <QThreadPool>
 
 static const QString kLibz = "/usr/lib/libz.1.dylib";
 constexpr int kWaitMs = 30000;
@@ -68,6 +71,40 @@ private slots:
         QVERIFY(child<QLabel>(&d, "sourceLabel")->text().contains("No mounted macOS volume"));
         QVERIFY(!child<QPushButton>(&d, "copyStore")->isEnabled());
         QVERIFY(!d.findChild<QWidget *>("prefixGroup")->isEnabled());
+    }
+    // A stalled FUSE mount blocks the probe in a syscall; the page must still close, and must not wait for it.
+    void closingDuringAStuckVolumeReadDoesNotBlockOrTouchTheClosedPage() {
+        Env env; env.makeSource();
+        QSemaphore entered, release; std::atomic<bool> sawCancel{false};
+        auto *d = new DyldCacheDialog(env.volume.path(), env.prefix.path(), env.stores.path(), {}, nullptr,
+            [&](const QString &, const std::atomic<bool> &cancel, QString *, QString *, QString *error) {
+                entered.release();
+                while (!release.tryAcquire(1, 5)) if (cancel.load()) sawCancel = true;   // stuck, but looking at the flag
+                *error = "late"; return false; });
+        d->show();
+        QVERIFY(entered.tryAcquire(1, kWaitMs));
+        QVERIFY(d->isBusy()); QVERIFY(!child<QPushButton>(d, "cancelJob")->isEnabled());
+        d->reject();
+        QVERIFY(!d->isVisible());                                                   // closed although the read has not returned
+        QTRY_VERIFY_WITH_TIMEOUT(sawCancel.load(), kWaitMs);                        // the read was told to stop by the close itself
+        QElapsedTimer t; t.start();
+        delete d;                                                                   // and destroying it does not wait for the read
+        QVERIFY2(t.elapsed() < 2000, qPrintable(QString::number(t.elapsed())));
+        release.release();
+        QVERIFY(QThreadPool::globalInstance()->waitForDone(kWaitMs));
+        QTest::qWait(50);                                                           // a late result reaches no deleted page
+    }
+    void aLateVolumeReadIsDroppedWhenThePageWasClosedButNotDeleted() {
+        Env env; env.makeSource();
+        QSemaphore entered, release;
+        DyldCacheDialog d(env.volume.path(), env.prefix.path(), env.stores.path(), {}, nullptr,
+            [&](const QString &, const std::atomic<bool> &, QString *dir, QString *id, QString *) {
+                entered.release(); release.acquire(); *dir = "/late"; *id = "arm64e-" + QString(32, 'a'); return true; });
+        d.show(); QVERIFY(entered.tryAcquire(1, kWaitMs));
+        d.reject(); release.release();
+        QTRY_VERIFY_WITH_TIMEOUT(!d.isBusy(), kWaitMs);
+        QCOMPARE(child<QLabel>(&d, "sourceLabel")->text(), QString("Reading the volume…"));     // the result changed nothing
+        QVERIFY(!child<QPushButton>(&d, "copyStore")->isEnabled());
     }
     void aSourceProblemNamesNoPath() {
         Env env; QVERIFY(QDir().mkpath(env.volume.path() + "/System/Library/dyld"));       // a dyld directory without a cache in it
