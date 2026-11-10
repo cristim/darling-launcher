@@ -48,6 +48,8 @@ private slots:
         QVERIFY(child<QLabel>(d.get(), "launchRuleHelp")->text().contains("exactly one arm64 slice"));
         QVERIFY(child<QLabel>(d.get(), "storeHeadline")->text().startsWith("No private store yet"));
         QVERIFY(child<QPushButton>(d.get(), "copyStore")->isEnabled());
+        const QString source = child<QLabel>(d.get(), "sourceLabel")->text();         // the store location is the only path on the page
+        QVERIFY(source.contains("System/Library/dyld")); QVERIFY(!source.contains(env.volume.path())); QVERIFY(!source.contains(QFileInfo(env.volume.path()).canonicalFilePath()));
         QVERIFY(!child<QPushButton>(d.get(), "verifyStore")->isEnabled());      // nothing to verify yet
         QVERIFY(!child<QPushButton>(d.get(), "cancelJob")->isEnabled());
         QVERIFY(!child<QProgressBar>(d.get(), "copyProgress")->isVisible());
@@ -66,6 +68,13 @@ private slots:
         QVERIFY(child<QLabel>(&d, "sourceLabel")->text().contains("No mounted macOS volume"));
         QVERIFY(!child<QPushButton>(&d, "copyStore")->isEnabled());
         QVERIFY(!d.findChild<QWidget *>("prefixGroup")->isEnabled());
+    }
+    void aSourceProblemNamesNoPath() {
+        Env env; QVERIFY(QDir().mkpath(env.volume.path() + "/System/Library/dyld"));       // a dyld directory without a cache in it
+        std::unique_ptr<DyldCacheDialog> d(env.dialog()); idle(d.get());
+        const QString text = child<QLabel>(d.get(), "sourceLabel")->text();
+        QVERIFY(text.startsWith("Source unavailable")); QVERIFY2(!text.contains(env.volume.path()), qPrintable(text));
+        QVERIFY(!child<QPushButton>(d.get(), "copyStore")->isEnabled());
     }
     void copyRunsInTheBackgroundAndEndsCurrent() {
         Env env; env.makeSource(1, 16384);
