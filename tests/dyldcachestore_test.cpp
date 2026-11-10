@@ -143,6 +143,8 @@ private slots:
         QString deep = d.path(); while (deep.size() < 190) deep += "/dddddddddd";
         const QString deepId = makeFakeStore(deep, "arm64e", 1, {});
         QVERIFY(!guestDir(deep, deepId, &guest, &err)); QVERIFY(err.contains("200"));
+        QVERIFY(::chmod(deep.toUtf8().constData(), 0700) == 0);
+        QVERIFY(!checkUsable(deep, deepId, &err)); QVERIFY(err.contains("200")); QVERIFY(!err.contains(deep)); // complete and private, but the launch would refuse it
     }
 };
 QTEST_APPLESS_MAIN(DyldCacheStoreTest)

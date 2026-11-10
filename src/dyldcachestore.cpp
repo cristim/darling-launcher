@@ -142,6 +142,8 @@ bool checkUsable(const QString &root, const QString &id, QString *error, const Q
     if (!checkPrivate(root, id, &why, dataRoot)) return fail(error, "The store cannot be trusted: " + why);
     const StoreStatus st = status(root, id);
     if (st.state != StoreState::Ready) return fail(error, "The store " + id + " is not ready" + (st.detail.isEmpty() ? QString() : " (" + st.detail + ")") + "; copy and verify it first");
+    QString guest;
+    if (!guestDir(root, id, &guest, &why)) return fail(error, why); // what the launch would refuse for this store
     return true;
 }
 
