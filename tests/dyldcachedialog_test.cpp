@@ -101,6 +101,24 @@ private slots:
         child<QPushButton>(d.get(), "rereadStore")->click(); idle(d.get());
         QVERIFY(child<QLabel>(d.get(), "storeHeadline")->text().startsWith("STALE"));
     }
+    void theBarOnlyMovesForwardWhileSeveralStoresAreVerified() {
+        Env env; env.makeSource(1, 3 << 20);
+        std::unique_ptr<DyldCacheDialog> d(env.dialog()); idle(d.get());
+        child<QPushButton>(d.get(), "copyStore")->click(); idle(d.get());
+        QDir(env.volume.path() + "/System/Library/dyld").removeRecursively();
+        env.makeSource(2, 3 << 20);                                                  // a second build, a second store
+        child<QPushButton>(d.get(), "rereadStore")->click(); idle(d.get());
+        child<QPushButton>(d.get(), "copyStore")->click(); idle(d.get());
+        QCOMPARE(DyldCacheStore::listStores(env.stores.path()).size(), 2);
+        QList<int> values;
+        auto *bar = child<QProgressBar>(d.get(), "copyProgress");
+        QObject::connect(bar, &QProgressBar::valueChanged, [&](int v) { values << v; });
+        child<QPushButton>(d.get(), "verifyStore")->click(); idle(d.get());
+        QVERIFY(child<QLabel>(d.get(), "progressLabel")->text().startsWith("Verified")); QVERIFY(env.errors.isEmpty());
+        QVERIFY2(values.size() >= 4, qPrintable(QString::number(values.size())));
+        for (int i = 1; i < values.size(); ++i) QVERIFY2(values[i] >= values[i - 1], qPrintable(QString("%1 after %2").arg(values[i]).arg(values[i - 1])));
+        QVERIFY(values.last() > 500);                                                // the second store got the second half
+    }
     void cancelStopsCleanlyAndCopyResumes() {
         Env env; env.makeSource(1, 6 << 20);
         QAtomicInt windows;
