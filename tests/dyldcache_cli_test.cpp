@@ -393,6 +393,14 @@ private slots:
         const Result open = run(base); QCOMPARE(open.code, 1); QVERIFY2(open.err.contains("cannot be trusted"), qPrintable(open.err));
         QVERIFY(!QFileInfo::exists(cfg));
     }
+    void enableRefusesAStoreWhoseGuestPathIsTooLong() {
+        Fx fx; QTemporaryDir deepRoot; QString deep = deepRoot.path(); while (deep.size() < 190) deep += "/dddddddddd";
+        const QString id = makeFakeStore(deep, "arm64e", 1, {});
+        QVERIFY(::chmod(deep.toUtf8().constData(), 0700) == 0); useStoreRoot(deep);
+        const Result r = run({"prefix", "--prefix", fx.prefix.path(), "--enable", "--store", id});
+        QCOMPARE(r.code, 1); QVERIFY2(r.err.contains("200"), qPrintable(r.err)); QVERIFY(!r.err.contains(deep));
+        QVERIFY(!QFileInfo::exists(fx.prefix.path() + "/.darling-launcher/dyld-cache.json"));
+    }
     void usageErrorsExitTwoAndHelpExitsZero_data() {
         QTest::addColumn<QStringList>("args");
         QTest::newRow("no verb") << QStringList{};

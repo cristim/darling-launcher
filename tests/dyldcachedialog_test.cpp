@@ -15,6 +15,7 @@
 #include <QSemaphore>
 #include <QThread>
 #include <QThreadPool>
+#include <sys/stat.h>
 
 static const QString kLibz = "/usr/lib/libz.1.dylib";
 constexpr int kWaitMs = 30000;
@@ -263,6 +264,19 @@ private slots:
         QVERIFY(!QFileInfo::exists(DyldCacheConfigFile::configPath(env.prefix.path())));
         QVERIFY(!QFileInfo::exists(DyldCacheConfigFile::policyPath(env.prefix.path())));
         QVERIFY(!save->isEnabled());                                                        // the page re-evaluated
+    }
+    void aStoreTheLaunchWouldRefuseForItsPathLengthCannotBeEnabled() {
+        Env env; env.makeSource();
+        QString deep = env.stores.path(); while (deep.size() < 190) deep += "/dddddddddd";
+        const QString id = makeFakeStore(deep, "arm64e", 1, {});
+        QVERIFY(::chmod(deep.toUtf8().constData(), 0700) == 0);
+        auto *d = new DyldCacheDialog(env.volume.path(), env.prefix.path(), deep, {}); d->showError = [&](const QString &t, const QString &x) { env.errors << qMakePair(t, x); };
+        std::unique_ptr<DyldCacheDialog> guard(d); d->show(); idle(d);
+        auto *enable = child<QCheckBox>(d, "enableCache");
+        QVERIFY(!enable->isEnabled()); QVERIFY(enable->toolTip().contains("200")); QVERIFY(!enable->toolTip().contains(deep));
+        QVERIFY(!child<QPushButton>(d, "savePrefix")->isEnabled());
+        QVERIFY(!QFileInfo::exists(DyldCacheConfigFile::configPath(env.prefix.path())));
+        Q_UNUSED(id);
     }
     void anUnreadableConfigIsReportedAndSavingReplacesIt() {
         Env env; env.makeSource();
