@@ -63,6 +63,7 @@ bool parse(const QStringList &args, Args *out) {
 const char *const kHelp =
     "usage: darling-launcher dyld-cache <verb> [options]\n"
     "  copy   --source DIR [--store-root R] [--arch arm64e|arm64] [--window-mib N] [--throttle-ms N] [--margin-mib N]\n"
+    "         defaults: --window-mib 32, --throttle-ms 300 (pause after each window)\n"
     "  status [--source DIR] [--store-root R] [--arch arm64e|arm64]\n"
     "  verify [--store-root R] [--store ID]\n"
     "  prefix --prefix P (--enable [--store ID] [--lib INSTALLNAME]... | --disable) [--store-root R]\n"
@@ -99,12 +100,12 @@ qint64 totalBytes(const StoreManifest &m) { qint64 n = 0; for (const StoreFile &
 
 int copyVerb(const Args &a, QTextStream &err) {
     const QString arch = a.values.value("--arch", "arm64e");
-    int windowMib = 128, throttleMs = 0, marginMib = int(DyldCacheStore::kDefaultMarginBytes >> 20);
+    DyldCacheCopy::Options opt; // the engine defaults
+    int windowMib = int(opt.windowBytes >> 20), throttleMs = opt.pauseMs, marginMib = int(DyldCacheStore::kDefaultMarginBytes >> 20);
     if (!validArch(a)) return usage(err, "--arch must be arm64e or arm64");
     if (!intOption(a, "--window-mib", 1, 4096, &windowMib)) return usage(err, "--window-mib must be 1 to 4096");
     if (!intOption(a, "--throttle-ms", 0, 60000, &throttleMs)) return usage(err, "--throttle-ms must be 0 to 60000");
     if (!intOption(a, "--margin-mib", 0, 1 << 20, &marginMib)) return usage(err, "--margin-mib must be 0 to 1048576");
-    DyldCacheCopy::Options opt;
     opt.windowBytes = qint64(windowMib) << 20;
     opt.pauseMs = throttleMs;
     opt.marginBytes = qint64(marginMib) << 20;
@@ -140,11 +141,8 @@ int statusVerb(const Args &a, QTextStream &out, QTextStream &err) {
     QString sourceId;
     if (!validArch(a)) return usage(err, "--arch must be arm64e or arm64");
     if (a.values.contains("--source")) {
-        QByteArray head; qint64 size = 0; DyldCache::MainHeader header; QString error;
-        if (!DyldCacheStore::readHead(absolute(a.values["--source"]), DyldCache::mainFileName(arch), DyldCache::kHeaderWindow, &head, &size, &error)
-            || !DyldCache::parseMainHeader(head, size, &header, &error)) return refused(err, error);
-        if (header.arch != arch) return refused(err, "The source cache is for " + header.arch + ", not " + arch);
-        sourceId = DyldCacheStore::storeId(arch, DyldCache::uuidHex(header.uuid));
+        QString error;
+        if (!DyldCacheStore::sourceId(absolute(a.values["--source"]), arch, &sourceId, &error)) return refused(err, error);
     }
     const QFileInfo rootInfo(root);
     if (rootInfo.exists() && (!rootInfo.isDir() || !QDir(root).isReadable())) return refused(err, "The store location is not a readable directory");
@@ -201,8 +199,7 @@ int prefixVerb(const Args &a, QTextStream &out, QTextStream &err) {
             if (ready.size() != 1) return refused(err, "Choose the store with --store: " + QString::number(ready.size()) + " ready stores found");
             config.store = ready.first();
         }
-        if (!DyldCacheStore::checkPrivate(root, config.store, &error)) return refused(err, error); // as the launch path does
-        if (DyldCacheStore::status(root, config.store).state != StoreState::Ready) return refused(err, "The store " + config.store + " is not ready; copy and verify it first");
+        if (!DyldCacheStore::checkUsable(root, config.store, &error)) return refused(err, error); // as the launch path does
         if (!a.libs.isEmpty()) config.served = a.libs;
         else if (config.served.isEmpty()) config.served = DyldCacheConfigFile::validatedLibraries();
     }

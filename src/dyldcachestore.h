@@ -50,6 +50,10 @@ bool validStoreId(const QString &id);
 bool ensureRoot(const QString &root, QString *error, const QString &dataRoot = LauncherDiscovery::dataRoot());
 // The same checks without creating anything, plus the store directory itself: used before a launch trusts the store.
 bool checkPrivate(const QString &root, const QString &id, QString *error, const QString &dataRoot = LauncherDiscovery::dataRoot());
+// What a prefix that turns the cache on must pass, at the moment it does: the store is private (checkPrivate), complete
+// (Ready) and has a guest path dyld accepts (guestDir). Shared by the CLI and the settings page. A launch repeats exactly
+// these three checks, then also compares the prefix's policy file with its config, which only the config writer can satisfy.
+bool checkUsable(const QString &root, const QString &id, QString *error, const QString &dataRoot = LauncherDiscovery::dataRoot());
 
 bool parseManifest(const QByteArray &json, StoreManifest *out, QString *error);
 QByteArray renderManifest(const StoreManifest &m);
@@ -62,6 +66,10 @@ QStringList listStores(const QString &root);
 
 // Reads up to `window` bytes from the start of root/relPath (no symlinks); *fileSize is the full length.
 bool readHead(const QString &root, const QString &relPath, qint64 window, QByteArray *head, qint64 *fileSize, QString *error);
+
+// The store id the copy of `sourceDir` would get: its main file's arch and UUID. Fails (and says why) when the main
+// file is missing, unreadable or for another architecture, so an unreadable source is never reported as "stale".
+bool sourceId(const QString &sourceDir, const QString &arch, QString *id, QString *error);
 
 using FreeBytesFn = std::function<qint64(const QString &existingDir)>;
 qint64 freeBytes(const QString &existingDir); // statvfs, -1 on failure

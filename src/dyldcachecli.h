@@ -5,6 +5,7 @@
 
 // `darling-launcher dyld-cache <verb> ...`. args are the arguments after "dyld-cache".
 //   copy    --source DIR [--store-root R] [--arch arm64e|arm64] [--window-mib N] [--throttle-ms N] [--margin-mib N]
+//           defaults: 32 MiB windows and a 300 ms pause after each, so a slow mount is not starved (--throttle-ms 0 turns the pause off)
 //           copies the cache files into the private store; progress lines on err; SIGINT stops cleanly and keeps the partial copy
 //   status  [--source DIR] [--store-root R] [--arch A]   TSV per store: id, state, files, bytes, copiedAt[, current|stale]; with --source also a source line
 //   verify  [--store-root R] [--store ID]                 re-checks sizes, header UUIDs and sha256 of the local store(s)

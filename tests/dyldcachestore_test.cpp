@@ -105,6 +105,29 @@ private slots:
         QVERIFY(!checkFreeSpace(d.path(), 1, 1, &err, [](const QString &) { return qint64(-1); }));
         QVERIFY(freeBytes(d.path()) > 0);
     }
+    void checkUsableNeedsAPrivateAndCompleteStore() {
+        QTemporaryDir d; QString err;
+        const QString id = makeFakeStore(d.path(), "arm64e", 1, {".01"});
+        QVERIFY2(checkUsable(d.path(), id, &err), qPrintable(err));
+        QVERIFY(!checkUsable(d.path(), storeId("arm64e", QString(32, 'c')), &err)); QVERIFY(err.contains("is not ready"));   // missing
+        QVERIFY(!checkUsable(d.path(), "../x", &err));                                                                      // not an id
+        QVERIFY(QFile::remove(d.path() + "/" + id + "/store.json"));
+        QVERIFY(!checkUsable(d.path(), id, &err)); QVERIFY(err.contains("is not ready (The copy is incomplete)"));         // partial
+        const QString id2 = makeFakeStore(d.path(), "arm64e", 2, {});
+        QVERIFY(::chmod(d.path().toUtf8().constData(), 0755) == 0);
+        QVERIFY(!checkUsable(d.path(), id2, &err)); QVERIFY(err.contains("cannot be trusted")); QVERIFY(!err.contains(d.path())); // open root
+    }
+    void sourceIdNamesTheCopyAndRefusesWhatCannotBeRead() {
+        QTemporaryDir src, empty, other; QString id, err;
+        const QByteArray uuid = makeFakeCache(src.path(), "arm64e", 3, {".01"});
+        QVERIFY2(sourceId(src.path(), "arm64e", &id, &err), qPrintable(err));
+        QCOMPARE(id, storeId("arm64e", DyldCache::uuidHex(uuid)));
+        QVERIFY(!sourceId(empty.path(), "arm64e", &id, &err));                    // no main file: an error, never "stale"
+        makeFakeCache(other.path(), "arm64", 4, {});
+        QVERIFY(!sourceId(other.path(), "arm64e", &id, &err));                    // wrong arch for the file name asked
+        QVERIFY(QFile::rename(other.path() + "/dyld_shared_cache_arm64", other.path() + "/dyld_shared_cache_arm64e"));
+        QVERIFY(!sourceId(other.path(), "arm64e", &id, &err)); QVERIFY(err.contains("arm64, not arm64e")); // arch comes from the header
+    }
     void guestDirPrefixesCanonicalHostPathAndCapsLength() {
         QTemporaryDir d, link; QString err, guest;
         const QString id = makeFakeStore(d.path(), "arm64e", 1, {});
@@ -120,6 +143,8 @@ private slots:
         QString deep = d.path(); while (deep.size() < 190) deep += "/dddddddddd";
         const QString deepId = makeFakeStore(deep, "arm64e", 1, {});
         QVERIFY(!guestDir(deep, deepId, &guest, &err)); QVERIFY(err.contains("200"));
+        QVERIFY(::chmod(deep.toUtf8().constData(), 0700) == 0);
+        QVERIFY(!checkUsable(deep, deepId, &err)); QVERIFY(err.contains("200")); QVERIFY(!err.contains(deep)); // complete and private, but the launch would refuse it
     }
 };
 QTEST_APPLESS_MAIN(DyldCacheStoreTest)
