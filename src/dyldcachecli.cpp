@@ -13,7 +13,32 @@
 
 namespace {
 std::atomic<bool> gCancel{false};
-extern "C" void onSigint(int) { gCancel.store(true); }
+// The first Ctrl-C asks the copy to stop; it then restores the default action, so a second one kills the process at once.
+extern "C" void onSigint(int) {
+    gCancel.store(true);
+    struct sigaction dfl{};
+    dfl.sa_handler = SIG_DFL;
+    ::sigaction(SIGINT, &dfl, nullptr);
+}
+// For the length of a copy: SIGINT is a clean cancel, and SIGXFSZ (a file size limit) is ignored so that a write over
+// the limit fails with an error instead of killing the process. Restores the previous handlers.
+struct CopySignals {
+    struct sigaction oldInt{}, oldXfsz{};
+    CopySignals() {
+        gCancel.store(false);
+        struct sigaction cancel{}, ignore{};
+        cancel.sa_handler = onSigint;
+        sigemptyset(&cancel.sa_mask);
+        ignore.sa_handler = SIG_IGN;
+        sigemptyset(&ignore.sa_mask);
+        ::sigaction(SIGINT, &cancel, &oldInt);
+        ::sigaction(SIGXFSZ, &ignore, &oldXfsz);
+    }
+    ~CopySignals() {
+        ::sigaction(SIGINT, &oldInt, nullptr);
+        ::sigaction(SIGXFSZ, &oldXfsz, nullptr);
+    }
+};
 
 struct Args {
     QMap<QString, QString> values;
@@ -95,13 +120,11 @@ int copyVerb(const Args &a, QTextStream &err) {
         err.flush();
     };
 
-    gCancel.store(false);
-    struct sigaction sa{}, old{};
-    sa.sa_handler = onSigint;
-    sigemptyset(&sa.sa_mask);
-    ::sigaction(SIGINT, &sa, &old);
-    const DyldCacheCopy::Outcome r = DyldCacheCopy::copyCache(absolute(a.values["--source"]), arch, storeRoot(a), opt, progress, &gCancel);
-    ::sigaction(SIGINT, &old, nullptr);
+    const QString root = storeRoot(a);
+    // A mistyped location must not make this create directories; only the launcher's own default location gets its parents made.
+    if (a.values.contains("--store-root") && !QFileInfo(QFileInfo(root).absolutePath()).isDir()) return refused(err, "The parent directory of --store-root does not exist");
+    DyldCacheCopy::Outcome r;
+    { const CopySignals handlers; r = DyldCacheCopy::copyCache(absolute(a.values["--source"]), arch, root, opt, progress, &gCancel); }
 
     if (r.result == DyldCacheCopy::Result::Cancelled) {
         err << "cancelled: the partial copy is kept, run the same command again to resume\n";

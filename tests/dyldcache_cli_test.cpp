@@ -6,6 +6,7 @@
 #include <QProcess>
 #include <QTemporaryDir>
 #include <csignal>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -119,6 +120,76 @@ private slots:
         QVERIFY2(ms >= 1200, qPrintable(QString::number(ms))); // 13 files, two pauses each (three 1 MiB windows), 50 ms per pause
         const int lines = r.err.count("\n[");
         QVERIFY2(lines >= 12 && lines <= 13 + ms / 1000 + 1, qPrintable(QString::number(lines) + " progress lines in " + QString::number(ms) + " ms")); // not one per MiB block
+    }
+    void aLongThrottlePauseIsInterruptedBySigintAtOnce() {
+        Fx fx(5, 12, qint64(3) << 20);
+        QProcess p;
+        p.setReadChannel(QProcess::StandardError);
+        p.start(LAUNCHER_BIN, QStringList{"dyld-cache"} + fx.copyArgs() + QStringList{"--window-mib", "1", "--throttle-ms", "8000"});
+        QVERIFY(p.waitForStarted());
+        const pid_t pid = pid_t(p.processId());
+        QByteArray errText;
+        QElapsedTimer waited; waited.start();
+        while (!errText.contains("[1/13]") && waited.elapsed() < 20000) { p.waitForReadyRead(50); errText += p.readAllStandardError(); }
+        QVERIFY2(errText.contains("[1/13]"), errText.constData());
+        QTest::qWait(300); // inside the first 8 s pause
+        QElapsedTimer t; t.start();
+        ::kill(pid, SIGINT);
+        QVERIFY(p.waitForFinished(5000));
+        QVERIFY2(t.elapsed() < 1500, qPrintable(QString::number(t.elapsed()))); // not the 8 s pause
+        QCOMPARE(p.exitStatus(), QProcess::NormalExit); QCOMPARE(p.exitCode(), 130);
+    }
+    // After the first SIGINT the default action is back, so a second Ctrl-C kills a copy stuck in a hung read.
+    void theFirstSigintRestoresTheDefaultAction() {
+        struct Spy : QIODevice {
+            bool raised = false, defaultAfter = false;
+            qint64 readData(char *, qint64) override { return -1; }
+            qint64 writeData(const char *data, qint64 len) override {
+                if (!raised && QByteArray(data, int(len)).contains("[2/13]")) {
+                    raised = true;
+                    ::raise(SIGINT);
+                    struct sigaction now{}; ::sigaction(SIGINT, nullptr, &now);
+                    defaultAfter = now.sa_handler == SIG_DFL;
+                }
+                return len;
+            }
+        } spy;
+        QVERIFY(spy.open(QIODevice::WriteOnly));
+        Fx fx; QString o; QTextStream out(&o), err(&spy);
+        QCOMPARE(dyldCacheMain(fx.copyArgs(), out, err), 130);
+        QVERIFY(spy.raised); QVERIFY(spy.defaultAfter);
+    }
+    void signalHandlersAreRestoredAfterACopy() {
+        Fx fx;
+        struct sigaction mine{}, saved[2]{}, now{};
+        mine.sa_handler = [](int) {}; // a handler of the caller's own, so "restored" is not the same as "default"
+        sigemptyset(&mine.sa_mask);
+        const int sigs[2] = {SIGINT, SIGXFSZ};
+        for (int i = 0; i < 2; ++i) ::sigaction(sigs[i], &mine, &saved[i]);
+        QCOMPARE(run(fx.copyArgs()).code, 0);
+        QCOMPARE(run({"copy", "--source", fx.src.path() + "/missing", "--store-root", fx.root()}).code, 1); // and after a refusal
+        for (int i = 0; i < 2; ++i) {
+            ::sigaction(sigs[i], nullptr, &now);
+            QVERIFY2(now.sa_handler == mine.sa_handler, qPrintable(QString::number(sigs[i])));
+            ::sigaction(sigs[i], &saved[i], nullptr);
+        }
+    }
+    void aFileSizeLimitIsAnErrorNotADeadProcess() {
+        Fx fx(6, 12, qint64(3) << 20);
+        struct rlimit old{}; QCOMPARE(::getrlimit(RLIMIT_FSIZE, &old), 0);
+        struct rlimit small = old; small.rlim_cur = qint64(1) << 20;
+        QCOMPARE(::setrlimit(RLIMIT_FSIZE, &small), 0);
+        const Result r = run(fx.copyArgs());
+        QCOMPARE(::setrlimit(RLIMIT_FSIZE, &old), 0);
+        QCOMPARE(r.code, 1); QVERIFY2(r.err.contains("error: Cannot write") && r.err.count("error:") == 1, qPrintable(r.err));
+        QVERIFY(!QFileInfo::exists(fx.file("store.json")));
+        QCOMPARE(run(fx.copyArgs()).code, 0); // the partial it left resumes
+    }
+    void aMistypedStoreRootCreatesNothing() {
+        Fx fx;
+        const Result r = run({"copy", "--source", fx.src.path(), "--store-root", fx.work.path() + "/typo/store", "--margin-mib", "0"});
+        QCOMPARE(r.code, 1); QVERIFY2(r.err.contains("parent directory") && !r.err.contains(fx.work.path()), qPrintable(r.err));
+        QVERIFY(!QFileInfo::exists(fx.work.path() + "/typo"));
     }
     void statusIsFreshForTheSameSourceAndStaleForAnotherBuild() {
         Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0);
