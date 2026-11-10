@@ -83,6 +83,18 @@ private slots:
         int total = 0; Fx full; full.opt.pauseMs = 250; full.opt.windowBytes = qint64(1) << 20; full.opt.sleepFn = [&](int ms) { QVERIFY(ms <= 100); total += ms; };
         QVERIFY(full.run().result == Result::Done); QCOMPARE(total, 3 * 250);
     }
+    void lowFreeSpaceCreatesNothingOnDisk() {
+        Fx fx; fx.opt.freeBytes = [](const QString &) { return qint64(1000); };
+        const QString root = fx.store.path() + "/a/b/store";
+        const auto r = copyCache(fx.src.path(), "arm64e", root, fx.opt);
+        QCOMPARE(r.result, Result::Failed); QVERIFY2(r.error.contains("Not enough free space"), qPrintable(r.error));
+        QVERIFY(!QFileInfo::exists(fx.store.path() + "/a"));
+    }
+    void directoriesCreatedOnTheWayToTheRootArePrivate() {
+        Fx fx; const QString root = fx.store.path() + "/a/b/store";
+        const auto r = copyCache(fx.src.path(), "arm64e", root, fx.opt); QVERIFY2(r.result == Result::Done, qPrintable(r.error));
+        for (const QString &d : {QString("/a"), QString("/a/b"), QString("/a/b/store")}) QCOMPARE(modeOf(fx.store.path() + d), 0700);
+    }
     void cancelKeepsThePartialAndResumeContinuesFromAWindow() {
         Fx fx; std::atomic<bool> cancel(false); int blocks = 0;
         auto r = fx.run(&cancel, [&](const Progress &p) { if (p.fileName == kMain + ".02" && p.fileBytes == 2560 && ++blocks == 1) cancel = true; });
