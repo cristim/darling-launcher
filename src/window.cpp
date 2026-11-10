@@ -7,6 +7,7 @@
 #include "prefixdialog.h"
 #include "discovery.h"
 #include "troubleshooting.h"
+#include "dyldcachedialog.h"
 #include "dyldcachestore.h"
 #include "launchenv.h"
 #include <QApplication>
@@ -152,7 +153,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
             connect(button, &QPushButton::clicked, this, callback);
             return button;
         }
-        bool setting = title == "Create prefix" || title == "Initialize selected prefix" || title == "Detect mounted macOS volumes" || title == "Mount macOS source…" || title == "Stop background agents" || title == "Launch recovery preferences…";
+        bool setting = title == "Create prefix" || title == "Initialize selected prefix" || title == "Detect mounted macOS volumes" || title == "Mount macOS source…" || title == "Stop background agents" || title == "Launch recovery preferences…" || title == "dyld shared cache…";
         int &count = setting ? settingsActionCount : actionCount;
         (setting ? settingsToolbar : toolbar)->addWidget(button, count / 3, count % 3); ++count;
         connect(button, &QPushButton::clicked, this, callback);
@@ -164,6 +165,12 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
         connect(&choices, &LaunchChoicesDialog::mountRequested, this, [this] { findChild<QPushButton *>("Mount macOS source…")->click(); });
         connect(volume, &QLineEdit::textChanged, &choices, [this, &choices] { choices.setSourceAvailability(hasMountedSource(), hasPossibleMacOSSource()); });
         if (choices.exec() == QDialog::Accepted) LauncherTroubleshooting::saveRecoveryChoices(choices.choices());
+    });
+    add("dyld shared cache…", [this] {
+        const QString key = selectedKey(); const AppEntry selected = entries.value(key);
+        DyldCacheDialog cache(volume->text(), prefix->text(), DyldCacheStore::configuredRoot(),
+                              {selected.name, selected.executable.isEmpty() ? QString() : selected.relativeBundle + "/Contents/MacOS/" + selected.executable}, settingsDialog);
+        cache.exec();
     });
     connect(volume, &QLineEdit::textChanged, this, [this] { for (const auto &key : recoveryDialogs.keys()) updateRecovery(key); });
     add("Stop background agents", [this] { for (auto *job : findChildren<BackgroundFix *>()) if (job->isRunning()) job->stop(); });
