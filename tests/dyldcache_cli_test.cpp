@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "dyldcache_fixture.h"
 #include "dyldcachecli.h"
+#include "dyldcacheconfig.h"
+#include <QSettings>
 #include <QProcess>
 #include <QTemporaryDir>
 #include <csignal>
@@ -34,9 +36,22 @@ struct Fx {
     QString file(const QString &name) const { return root() + "/" + id() + "/" + name; }
 };
 
+// `prefix` reads the store location from the launcher settings, so the tests keep those in a private config home.
+static QTemporaryDir *gConfigHome = nullptr;
+static void useStoreRoot(const QString &root) {
+    QSettings settings("cristim", "darling-launcher");
+    settings.setValue("dyldCacheRoot", root);
+    settings.sync();
+}
+
 class DyldCacheCliTest : public QObject {
     Q_OBJECT
 private slots:
+    void initTestCase() {
+        gConfigHome = new QTemporaryDir;
+        qputenv("XDG_CONFIG_HOME", gConfigHome->path().toUtf8()); // before the first QSettings of this process
+    }
+    void cleanupTestCase() { delete gConfigHome; }
     void copiesTheThirteenFilesAndReportsProgressWithoutPaths() {
         Fx fx;
         const Result r = run(fx.copyArgs());
@@ -188,7 +203,7 @@ private slots:
         QCOMPARE(run(fx.rootArg("verify") + QStringList{"--store", "../x"}).code, 1);
     }
     void prefixEnableWritesConfigAndPolicyAndDisableKeepsTheSelection() {
-        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0);
+        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0); useStoreRoot(fx.root());
         const QString cfg = fx.prefix.path() + "/.darling-launcher/dyld-cache.json", pol = fx.prefix.path() + "/.darling-launcher/dyld-cache.policy";
         const QStringList base = {"prefix", "--prefix", fx.prefix.path(), "--store-root", fx.root()};
         const Result on = run(base + QStringList{"--enable"});
@@ -206,7 +221,7 @@ private slots:
         QVERIFY(QFileInfo::exists(pol));
     }
     void prefixRefusesALibraryThatIsNotValidated() {
-        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0);
+        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0); useStoreRoot(fx.root());
         const QString cfg = fx.prefix.path() + "/.darling-launcher/dyld-cache.json", pol = fx.prefix.path() + "/.darling-launcher/dyld-cache.policy";
         const QStringList base = {"prefix", "--prefix", fx.prefix.path(), "--store-root", fx.root(), "--enable"};
         for (const QString &lib : {QString("/usr/lib/libSystem.B.dylib"), QString("@rpath/libz.1.dylib"), QString("/usr/lib/../../x")}) {
@@ -217,7 +232,7 @@ private slots:
         QVERIFY2(run(base + QStringList{"--lib", "/usr/lib/libSystem.B.dylib"}).err.contains("not validated"), "message");
     }
     void controlBytesInArgumentsAreEscapedSoErrorsStayOneLine() {
-        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0);
+        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0); useStoreRoot(fx.root());
         const Result lib = run({"prefix", "--prefix", fx.prefix.path(), "--store-root", fx.root(), "--enable", "--lib", "/usr/lib/a\nerror: fake\tb"});
         QCOMPARE(lib.code, 1); QCOMPARE(lib.err.count('\n'), 1); QVERIFY2(lib.err.contains("\\x0a") && lib.err.contains("\\x09"), qPrintable(lib.err));
         const Result id = run(fx.rootArg("verify") + QStringList{"--store", "arm64e-x\ny"});
@@ -225,8 +240,47 @@ private slots:
         const Result verb = run({"frob\nnicate"});
         QCOMPARE(verb.code, 2); QVERIFY2(verb.err.startsWith("usage error: unknown verb frob\\x0anicate\n"), qPrintable(verb.err));
     }
+    void prefixRefusesAStoreRootThatTheLaunchWouldNotUse() {
+        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0);
+        useStoreRoot(fx.work.path() + "/elsewhere");
+        const QString cfg = fx.prefix.path() + "/.darling-launcher/dyld-cache.json";
+        for (const QString &mode : {QString("--enable"), QString("--disable")}) {
+            const Result r = run({"prefix", "--prefix", fx.prefix.path(), "--store-root", fx.root(), mode});
+            QCOMPARE(r.code, 1); QVERIFY2(r.err.contains("--store-root") && r.err.count('\n') == 1, qPrintable(r.err));
+            QVERIFY(!QFileInfo::exists(cfg));
+        }
+        useStoreRoot(fx.root());
+        QCOMPARE(run({"prefix", "--prefix", fx.prefix.path(), "--store-root", fx.root() + "/", "--enable"}).code, 0); // same place, spelled differently
+    }
+    void prefixEnableChecksTheStoreIsPrivateAsALaunchDoes() {
+        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0); useStoreRoot(fx.root());
+        QVERIFY(QFile::setPermissions(fx.root() + "/" + fx.id(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner | QFileDevice::ReadGroup | QFileDevice::ExeGroup));
+        const Result r = run({"prefix", "--prefix", fx.prefix.path(), "--enable"});
+        QCOMPARE(r.code, 1); QVERIFY2(r.err.contains("must not be accessible"), qPrintable(r.err));
+        QVERIFY(!QFileInfo::exists(fx.prefix.path() + "/.darling-launcher/dyld-cache.json"));
+        QCOMPARE(run({"prefix", "--prefix", fx.prefix.path(), "--enable", "--store", "../x"}).code, 1);
+    }
+    void verifyChecksTheStoreIsPrivate() {
+        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0);
+        QVERIFY(QFile::setPermissions(fx.root() + "/" + fx.id(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner | QFileDevice::ReadGroup | QFileDevice::ExeGroup));
+        const Result r = run(fx.rootArg("verify"));
+        QCOMPARE(r.code, 1); QVERIFY2(r.err.contains("must not be accessible") && r.out.isEmpty(), qPrintable(r.err));
+    }
+    void disableReplacesAMalformedConfigButEnableRefusesIt() {
+        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0); useStoreRoot(fx.root());
+        const QString cfg = fx.prefix.path() + "/.darling-launcher/dyld-cache.json";
+        QVERIFY(QDir().mkpath(fx.prefix.path() + "/.darling-launcher"));
+        { QFile f(cfg); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("{ not json"); }
+        const Result en = run({"prefix", "--prefix", fx.prefix.path(), "--enable"});
+        QCOMPARE(en.code, 1); QCOMPARE(slurp(cfg), QByteArray("{ not json")); // fail closed, file untouched
+        const Result off = run({"prefix", "--prefix", fx.prefix.path(), "--disable"});
+        QCOMPARE(off.code, 0); QCOMPARE(off.out, QString("ok disabled\n"));
+        DyldCacheConfig back; QString err; QVERIFY2(DyldCacheConfigFile::load(fx.prefix.path(), &back, &err), qPrintable(err));
+        QCOMPARE(back.mode, DyldCacheMode::Off);
+        QCOMPARE(run({"prefix", "--prefix", fx.prefix.path(), "--enable"}).code, 0); // usable again
+    }
     void prefixRefusesAMissingOrAmbiguousStoreAndARunningPrefix() {
-        Fx fx;
+        Fx fx; useStoreRoot(fx.root());
         const QString cfg = fx.prefix.path() + "/.darling-launcher/dyld-cache.json";
         const QStringList base = {"prefix", "--prefix", fx.prefix.path(), "--store-root", fx.root(), "--enable"};
         QCOMPARE(run(base).code, 1); QCOMPARE(run(base + QStringList{"--store", fx.id()}).code, 1); // nothing copied yet

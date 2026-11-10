@@ -160,9 +160,13 @@ int prefixVerb(const Args &a, QTextStream &out, QTextStream &err) {
     if (a.enable == a.disable) return usage(err, "prefix needs exactly one of --enable and --disable");
     if (a.disable && (!a.libs.isEmpty() || a.values.contains("--store"))) return usage(err, "--lib and --store go with --enable");
     const QString prefix = absolute(a.values["--prefix"]), root = storeRoot(a);
+    // The prefix config records a store id only; a launch looks for it in the location from the launcher settings.
+    if (root != absolute(DyldCacheStore::configuredRoot())) return refused(err, "--store-root is not the store location in the launcher settings, so a launch would not find this store");
     QString error;
     DyldCacheConfig config;
-    if (!DyldCacheConfigFile::load(prefix, &config, &error)) return refused(err, error);
+    // load() leaves the default (off) behind when the file is unreadable, and "off" must still replace such a file,
+    // or the prefix could not be switched back.
+    if (!DyldCacheConfigFile::load(prefix, &config, &error) && a.enable) return refused(err, error);
     if (a.disable) {
         config.mode = DyldCacheMode::Off;
     } else {
@@ -174,7 +178,7 @@ int prefixVerb(const Args &a, QTextStream &out, QTextStream &err) {
             if (ready.size() != 1) return refused(err, "Choose the store with --store: " + QString::number(ready.size()) + " ready stores found");
             config.store = ready.first();
         }
-        if (!DyldCacheStore::validStoreId(config.store)) return refused(err, "Invalid cache store id");
+        if (!DyldCacheStore::checkPrivate(root, config.store, &error)) return refused(err, error); // as the launch path does
         if (DyldCacheStore::status(root, config.store).state != StoreState::Ready) return refused(err, "The store " + config.store + " is not ready; copy and verify it first");
         if (!a.libs.isEmpty()) config.served = a.libs;
         else if (config.served.isEmpty()) config.served = DyldCacheConfigFile::validatedLibraries();
