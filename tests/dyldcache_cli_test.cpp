@@ -124,6 +124,49 @@ private slots:
         QTemporaryDir empty;
         QCOMPARE(run(fx.rootArg("status") + QStringList{"--source", empty.path()}).code, 1); // unreadable source is not "stale"
     }
+    void statusDoesNotCallAnIncompleteOrDamagedStoreCurrent() {
+        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0);
+        const QStringList status = fx.rootArg("status") + QStringList{"--source", fx.src.path()};
+        QVERIFY(QFile::remove(fx.file("store.json"))); // an interrupted copy has no manifest yet
+        const Result partial = run(status);
+        QCOMPARE(partial.code, 0);
+        QVERIFY2(partial.out.contains(fx.id() + "\tpartial\t0\t0\t\t-\n") && partial.out.contains("source\t" + fx.id() + "\tstore not ready\n"), qPrintable(partial.out));
+        QVERIFY(!partial.out.contains("current") && !partial.out.contains("\tstored"));
+        QCOMPARE(run(fx.copyArgs()).code, 0); // finishes the store again
+        QVERIFY(QFile::setPermissions(fx.file(kMain + ".02"), QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+        QVERIFY(QFile(fx.file(kMain + ".02")).resize(100)); // now a file differs from the manifest
+        const Result corrupt = run(status);
+        QVERIFY2(corrupt.out.contains(fx.id() + "\tcorrupt\t") && corrupt.out.contains("\t-\n") && corrupt.out.contains("source\t" + fx.id() + "\tstore not ready\n"), qPrintable(corrupt.out));
+        QVERIFY(!corrupt.out.contains("current") && !corrupt.out.contains("\tstored"));
+    }
+    void statusRefusesASourceCacheOfAnotherArchitecture() {
+        Fx fx; QTemporaryDir other;
+        makeFakeCache(other.path(), "arm64", 4, {".01"});
+        QVERIFY(QFile::rename(other.path() + "/" + "dyld_shared_cache_arm64", other.path() + "/" + kMain)); // an arm64 header under the arm64e name
+        const Result r = run(fx.rootArg("status") + QStringList{"--source", other.path()});
+        QCOMPARE(r.code, 1); QVERIFY2(r.err.contains("The source cache is for arm64, not arm64e"), qPrintable(r.err)); QVERIFY(r.out.isEmpty());
+    }
+    void statusReportsAnUnreadableStoreLocationInsteadOfNoStore() {
+        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0);
+        QVERIFY(QFile::setPermissions(fx.root(), QFileDevice::ExeOwner)); // present but not listable
+        const Result r = run(fx.rootArg("status"));
+        QFile::setPermissions(fx.root(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        QCOMPARE(r.code, 1); QVERIFY(r.out.isEmpty()); QVERIFY2(r.err.startsWith("error: ") && !r.err.contains(fx.root()), qPrintable(r.err));
+        QFile f(fx.work.path() + "/file"); QVERIFY(f.open(QIODevice::WriteOnly)); f.close();
+        QCOMPARE(run({"status", "--store-root", fx.work.path() + "/file"}).code, 1);
+        QCOMPARE(run({"status", "--store-root", fx.work.path() + "/absent"}).out, QString("no store\n")); // not created yet is fine
+    }
+    void statusKeepsAHostileCopiedAtOnOneLine() {
+        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0);
+        QByteArray json = slurp(fx.file("store.json"));
+        const int at = json.indexOf("\"copiedAt\": \"") + 13; const int end = json.indexOf('"', at);
+        json.replace(at, end - at, "x\\ty\\nz");
+        QVERIFY(QFile::setPermissions(fx.file("store.json"), QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+        { QFile f(fx.file("store.json")); QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate)); f.write(json); }
+        const Result r = run(fx.rootArg("status"));
+        QCOMPARE(r.code, 0); QCOMPARE(r.out.count('\n'), 1); QCOMPARE(r.out.count('\t'), 4);
+        QVERIFY2(r.out.contains("x\\x09y\\x0az"), qPrintable(r.out));
+    }
     void statusWithoutAStoreSaysSo() {
         Fx fx;
         const Result r = run(fx.rootArg("status") + QStringList{"--source", fx.src.path()});

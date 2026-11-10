@@ -6,6 +6,7 @@
 #include "dyldcachestore.h"
 #include <QDir>
 #include <QElapsedTimer>
+#include <QFileInfo>
 #include <QMap>
 #include <atomic>
 #include <csignal>
@@ -122,16 +123,21 @@ int statusVerb(const Args &a, QTextStream &out, QTextStream &err) {
         if (header.arch != arch) return refused(err, "The source cache is for " + header.arch + ", not " + arch);
         sourceId = DyldCacheStore::storeId(arch, DyldCache::uuidHex(header.uuid));
     }
+    const QFileInfo rootInfo(root);
+    if (rootInfo.exists() && (!rootInfo.isDir() || !QDir(root).isReadable())) return refused(err, "The store location is not a readable directory");
     const QStringList ids = DyldCacheStore::listStores(root);
+    QStringList ready;
     static const QMap<StoreState, QString> names = {{StoreState::Missing, "missing"}, {StoreState::Partial, "partial"}, {StoreState::Ready, "ready"}, {StoreState::Corrupt, "corrupt"}};
     for (const QString &id : ids) {
         const StoreStatus st = DyldCacheStore::status(root, id);
-        out << id << '\t' << names[st.state] << '\t' << st.manifest.files.size() << '\t' << totalBytes(st.manifest) << '\t' << st.manifest.copiedAt;
-        if (!sourceId.isEmpty() && id.startsWith(arch + "-")) out << '\t' << (id == sourceId ? "current" : "stale");
+        if (st.state == StoreState::Ready) ready << id;
+        out << id << '\t' << names[st.state] << '\t' << st.manifest.files.size() << '\t' << totalBytes(st.manifest) << '\t' << oneLine(st.manifest.copiedAt);
+        // only a complete store can be current or stale
+        if (!sourceId.isEmpty() && id.startsWith(arch + "-")) out << '\t' << (st.state != StoreState::Ready ? "-" : id == sourceId ? "current" : "stale");
         out << '\n';
     }
     if (ids.isEmpty()) out << "no store\n";
-    if (!sourceId.isEmpty()) out << "source\t" << sourceId << '\t' << (ids.contains(sourceId) ? "stored" : "not stored (stale)") << '\n';
+    if (!sourceId.isEmpty()) out << "source\t" << sourceId << '\t' << (ready.contains(sourceId) ? "stored" : ids.contains(sourceId) ? "store not ready" : "not stored (stale)") << '\n';
     return 0;
 }
 
