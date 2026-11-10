@@ -315,13 +315,22 @@ private slots:
         Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0);
         useStoreRoot(fx.work.path() + "/elsewhere");
         const QString cfg = fx.prefix.path() + "/.darling-launcher/dyld-cache.json";
-        for (const QString &mode : {QString("--enable"), QString("--disable")}) {
-            const Result r = run({"prefix", "--prefix", fx.prefix.path(), "--store-root", fx.root(), mode});
-            QCOMPARE(r.code, 1); QVERIFY2(r.err.contains("--store-root") && r.err.count('\n') == 1, qPrintable(r.err));
-            QVERIFY(!QFileInfo::exists(cfg));
-        }
+        const Result r = run({"prefix", "--prefix", fx.prefix.path(), "--store-root", fx.root(), "--enable"});
+        QCOMPARE(r.code, 1); QVERIFY2(r.err.contains("--store-root") && r.err.count('\n') == 1, qPrintable(r.err));
+        QVERIFY(!QFileInfo::exists(cfg));
+        QCOMPARE(run({"prefix", "--prefix", fx.prefix.path(), "--store-root", fx.root(), "--disable"}).code, 0); // disable never reads the store
         useStoreRoot(fx.root());
         QCOMPARE(run({"prefix", "--prefix", fx.prefix.path(), "--store-root", fx.root() + "/", "--enable"}).code, 0); // same place, spelled differently
+    }
+    void prefixAcceptsAConfiguredRootSpelledWithASlashOrDotDot() {
+        Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0);
+        for (const QString &spelling : {fx.root() + "/", fx.work.path() + "/store/../store", fx.work.path() + "//store/."}) {
+            useStoreRoot(spelling);
+            const Result on = run({"prefix", "--prefix", fx.prefix.path(), "--enable"});
+            QVERIFY2(on.code == 0, qPrintable(spelling + ": " + on.err));
+            const Result off = run({"prefix", "--prefix", fx.prefix.path(), "--disable"});
+            QVERIFY2(off.code == 0, qPrintable(spelling + ": " + off.err));
+        }
     }
     void prefixEnableChecksTheStoreIsPrivateAsALaunchDoes() {
         Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0); useStoreRoot(fx.root());

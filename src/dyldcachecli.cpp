@@ -93,7 +93,7 @@ bool intOption(const Args &a, const char *key, int min, int max, int *out) {
     return true;
 }
 bool validArch(const Args &a) { const QString arch = a.values.value("--arch", "arm64e"); return arch == "arm64e" || arch == "arm64"; }
-QString storeRoot(const Args &a) { return a.values.contains("--store-root") ? absolute(a.values["--store-root"]) : DyldCacheStore::configuredRoot(); }
+QString storeRoot(const Args &a) { return absolute(a.values.contains("--store-root") ? a.values["--store-root"] : DyldCacheStore::configuredRoot()); }
 
 qint64 totalBytes(const StoreManifest &m) { qint64 n = 0; for (const StoreFile &f : m.files) n += f.size; return n; }
 
@@ -183,8 +183,8 @@ int prefixVerb(const Args &a, QTextStream &out, QTextStream &err) {
     if (a.enable == a.disable) return usage(err, "prefix needs exactly one of --enable and --disable");
     if (a.disable && (!a.libs.isEmpty() || a.values.contains("--store"))) return usage(err, "--lib and --store go with --enable");
     const QString prefix = absolute(a.values["--prefix"]), root = storeRoot(a);
-    // The prefix config records a store id only; a launch looks for it in the location from the launcher settings.
-    if (root != absolute(DyldCacheStore::configuredRoot())) return refused(err, "--store-root is not the store location in the launcher settings, so a launch would not find this store");
+    // (--disable never reads the store.) The prefix config records a store id only; a launch looks for it in the location from the launcher settings.
+    if (a.enable && root != absolute(DyldCacheStore::configuredRoot())) return refused(err, "--store-root is not the store location in the launcher settings, so a launch would not find this store");
     QString error;
     DyldCacheConfig config;
     // load() leaves the default (off) behind when the file is unreadable, and "off" must still replace such a file,
