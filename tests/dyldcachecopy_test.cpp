@@ -52,8 +52,59 @@ private slots:
         const auto r = fx.run(nullptr, [&](const Progress &p) { if (p.fileName == prevFile) maxStep = qMax(maxStep, p.fileBytes - prev); prev = p.fileBytes; prevFile = p.fileName; });
         QVERIFY2(r.result == Result::Done, qPrintable(r.error));
         QCOMPARE(lens.size(), 16); for (qint64 l : lens) QCOMPARE(l, qint64(1024));
-        QCOMPARE(pauses, 12);          // between windows, not after the last one of a file
+        QCOMPARE(pauses, 15);          // before every window but the first, across the file boundaries too
         QVERIFY(maxStep <= 512);
+    }
+    // The source must never see two windows back to back, whatever the file sizes: files smaller than a window used to
+    // be copied with no pause at all.
+    void pausesBetweenSmallFilesAndBetweenWindowsAcrossFiles() {
+        Fx fx; fx.opt.windowBytes = qint64(1) << 20; fx.opt.pauseMs = 5; int pauses = 0;
+        fx.opt.sleepFn = [&](int ms) { QCOMPARE(ms, 5); ++pauses; };
+        const auto r = fx.run(); QVERIFY2(r.result == Result::Done, qPrintable(r.error));
+        QCOMPARE(pauses, 3); // four files of one window each
+    }
+    void pausesBetweenTheCheckOfAKeptPrefixAndTheCopy() {
+        Fx fx; fx.opt.pauseMs = 5; int pauses = 0, copyWindows = 0;
+        QDir().mkpath(fx.root() + "/" + fx.id);
+        QVERIFY(QFile::setPermissions(fx.root(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        const QString name = kMain + ".01";
+        { QFile f(fx.dst(name + ".partial")); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(slurp(fx.src.path() + "/" + name).left(2048)); f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner); }
+        fx.opt.sleepFn = [&](int ms) { QCOMPARE(ms, 5); ++pauses; };
+        fx.opt.onWindow = [&](const QString &, qint64, qint64) { ++copyWindows; };
+        const auto r = fx.run(); QVERIFY2(r.result == Result::Done, qPrintable(r.error));
+        QCOMPARE(copyWindows, 14);
+        QCOMPARE(pauses, 15); // 14 copied windows plus the 2 windows that proved the kept prefix, minus the first
+    }
+    void aLongPauseIsSlicedSoACancelIsSeenAtOnce() {
+        Fx fx; fx.opt.pauseMs = 1000; std::atomic<bool> cancel(false); QList<int> slices;
+        fx.opt.sleepFn = [&](int ms) { slices << ms; cancel = true; };
+        QCOMPARE(fx.run(&cancel).result, Result::Cancelled);
+        QCOMPARE(slices.size(), 1); QVERIFY(slices.first() <= 100);
+        int total = 0; Fx full; full.opt.pauseMs = 250; full.opt.windowBytes = qint64(1) << 20; full.opt.sleepFn = [&](int ms) { QVERIFY(ms <= 100); total += ms; };
+        QVERIFY(full.run().result == Result::Done); QCOMPARE(total, 3 * 250);
+    }
+    // The real main file keeps its sub-cache table at 0x392d8, beyond the first 64 KiB; the 4 KiB fixtures above keep it early.
+    void copiesACacheWhoseSubCacheTableIsBeyondTheFirst64KiB() {
+        QTemporaryDir src, store; Fx fx;
+        makeFakeCache(src.path(), "arm64e", 1, kSubs, 4096, kRealTableOffset);
+        const QString root = store.path() + "/root";
+        const auto r = copyCache(src.path(), "arm64e", root, fx.opt);
+        QVERIFY2(r.result == Result::Done, qPrintable(r.error));
+        for (const QString &n : fx.names()) QCOMPARE(slurp(root + "/" + fx.id + "/" + n), slurp(src.path() + "/" + n));
+        QVERIFY(QFileInfo(src.path() + "/" + kMain).size() > 64 * 1024);
+        QVERIFY(verifyStore(root, fx.id).result == Result::Done);
+    }
+    void lowFreeSpaceCreatesNothingOnDisk() {
+        Fx fx; fx.opt.freeBytes = [](const QString &) { return qint64(1000); };
+        const QString root = fx.store.path() + "/a/b/store";
+        const auto r = copyCache(fx.src.path(), "arm64e", root, fx.opt);
+        QCOMPARE(r.result, Result::Failed); QVERIFY2(r.error.contains("Not enough free space"), qPrintable(r.error));
+        QVERIFY(!QFileInfo::exists(fx.store.path() + "/a"));
+    }
+    void directoriesCreatedOnTheWayToTheRootArePrivate() {
+        Fx fx; const QString root = fx.store.path() + "/a/b/store";
+        const auto r = copyCache(fx.src.path(), "arm64e", root, fx.opt); QVERIFY2(r.result == Result::Done, qPrintable(r.error));
+        for (const QString &d : {QString("/a"), QString("/a/b"), QString("/a/b/store")}) QCOMPARE(modeOf(fx.store.path() + d), 0700);
     }
     void cancelKeepsThePartialAndResumeContinuesFromAWindow() {
         Fx fx; std::atomic<bool> cancel(false); int blocks = 0;
@@ -139,7 +190,7 @@ private slots:
         fx.opt.onWindow = [&](const QString &, qint64, qint64) { copying = true; };
         const auto r = fx.run(nullptr, [&](const Progress &p) { if (!copying && p.fileName == name) checkProgress << p.fileBytes; });
         QVERIFY2(r.result == Result::Done, qPrintable(r.error));
-        QCOMPARE(checkPauses, 5);                       // main: after 1200, 2400, 3600 bytes; partial: after 1200 and 2400
+        QCOMPARE(checkPauses, 7);                       // main: before its 2nd to 4th window of 1200 bytes; partial: before each of its 3 windows; one more before the copy starts
         QVERIFY(checkProgress.size() >= 4); QVERIFY(checkProgress.contains(300)); QVERIFY(checkProgress.contains(2400));
     }
     // A final file left behind before the manifest was written is compared with the source too: a planted file with a

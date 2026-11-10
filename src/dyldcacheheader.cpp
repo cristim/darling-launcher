@@ -54,7 +54,8 @@ bool parseMainHeader(const QByteArray &head, qint64 fileSize, MainHeader *out, Q
     if (count != 0) {
         const qint64 end = qint64(offset) + qint64(count) * kSubCacheEntryBytes;
         if (offset < quint32(kFirstUsableTableOffset) || offset % 8 != 0) return fail(error, "Sub-cache table offset is invalid");
-        if (end > fileSize || end > head.size()) return fail(error, "Sub-cache table lies outside the cache file header");
+        if (end > fileSize) return fail(error, "Sub-cache table lies outside the cache file");
+        if (end > head.size()) return fail(error, "Sub-cache table lies beyond the first " + QString::number(kHeaderWindow >> 10) + " KiB of the cache file");
     }
     QSet<QString> seen;
     for (quint32 i = 0; i != count; ++i) {

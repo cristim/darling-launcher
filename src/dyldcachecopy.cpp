@@ -4,6 +4,7 @@
 #include "safefs.h"
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QFileInfo>
 #include <QThread>
 #include <cerrno>
 #include <cstring>
@@ -21,7 +22,11 @@ constexpr int kHeaderProbe = 0x58 + kUuidBytes;
 using SafeFs::Fd;
 using SafeFs::preadFull;
 struct Item { QString name; qint64 size; QByteArray uuid; };
-struct Tally { qint64 done = 0, total = 0; int index = 0, count = 0; };
+struct Tally {
+    qint64 done = 0, total = 0;
+    int index = 0, count = 0;
+    bool windowRead = false; // a window of source bytes was read earlier, in this file or an earlier one
+};
 
 bool cancelled(const std::atomic<bool> *c) { return c && c->load(); }
 DyldCopy failed(const QString &message) { DyldCopy o; o.error = message; return o; }
@@ -40,23 +45,38 @@ bool headerMatches(const QByteArray &head, const QString &arch, const QByteArray
 }
 
 constexpr qint64 kCancelled = -2;
-void pauseFor(const DyldCacheCopy::Options &opt) {
-    if (opt.sleepFn) opt.sleepFn(opt.pauseMs); else QThread::msleep(unsigned(opt.pauseMs));
+constexpr int kPauseSliceMs = 100;
+// Waits pauseMs in short slices so a cancel is seen within one slice. False when cancelled.
+bool pauseFor(const DyldCacheCopy::Options &opt, const std::atomic<bool> *cancel) {
+    for (int left = opt.pauseMs; left > 0 && !cancelled(cancel);) {
+        const int slice = qMin(left, kPauseSliceMs);
+        if (opt.sleepFn) opt.sleepFn(slice); else QThread::msleep(unsigned(slice));
+        left -= slice;
+    }
+    return !cancelled(cancel);
+}
+// Called before every window of source reads, whether it checks a kept prefix or copies: the pause falls between any two
+// windows, across file boundaries and between the check and the copy, so the source never sees back-to-back windows.
+bool beforeWindow(const DyldCacheCopy::Options &opt, const std::atomic<bool> *cancel, Tally *tally) {
+    const bool pause = tally->windowRead && opt.pauseMs > 0;
+    tally->windowRead = true;
+    return !pause || pauseFor(opt, cancel);
 }
 // Length of the prefix (at most `limit`) of dst that equals src, to the block; -1 on a read error, kCancelled on cancel.
 // Reads the source, so it pauses after every window's worth of bytes like the copy does. onBlock gets the verified length.
-qint64 matchingPrefix(int srcFd, int dstFd, qint64 limit, const DyldCacheCopy::Options &opt, const std::atomic<bool> *cancel, QByteArray *buf,
+qint64 matchingPrefix(int srcFd, int dstFd, qint64 limit, const DyldCacheCopy::Options &opt, const std::atomic<bool> *cancel, QByteArray *buf, Tally *tally,
                       const std::function<void(qint64)> &onBlock = {}) {
     QByteArray other(buf->size(), Qt::Uninitialized);
     qint64 sinceWindow = 0;
     for (qint64 pos = 0; pos < limit;) {
         if (cancelled(cancel)) return kCancelled;
+        if (sinceWindow == 0 && !beforeWindow(opt, cancel, tally)) return kCancelled;
         const qint64 n = qMin<qint64>(buf->size(), limit - pos);
         if (!preadFull(srcFd, buf->data(), n, pos) || !preadFull(dstFd, other.data(), n, pos)) return -1;
         if (std::memcmp(buf->constData(), other.constData(), size_t(n)) != 0) return pos;
         pos += n; sinceWindow += n;
         if (onBlock) onBlock(pos);
-        if (opt.pauseMs > 0 && sinceWindow >= opt.windowBytes && pos < limit) { pauseFor(opt); sinceWindow = 0; }
+        if (sinceWindow >= opt.windowBytes) sinceWindow = 0;
     }
     return limit;
 }
@@ -72,7 +92,7 @@ DyldCopy checkDoneFile(const QString &sourceDir, const QString &root, const QStr
     if (dst.fd < 0) return failed(err);
     QByteArray buf(int(qMin(opt.blockBytes, item.size ? item.size : qint64(1))), Qt::Uninitialized);
     const qint64 base = tally->done;
-    const qint64 same = matchingPrefix(src.fd, dst.fd, item.size, opt, cancel, &buf, [&](qint64 pos) {
+    const qint64 same = matchingPrefix(src.fd, dst.fd, item.size, opt, cancel, &buf, tally, [&](qint64 pos) {
         if (progress) progress({tally->index, tally->count, item.name, pos, item.size, base + pos, tally->total});
     });
     if (same == kCancelled) { DyldCopy c; c.result = DyldCacheCopy::Result::Cancelled; return c; }
@@ -100,7 +120,7 @@ DyldCopy copyFile(const QString &sourceDir, const QString &root, const QString &
     // user, so the kept prefix is proven equal to the source and cut at the first block that differs.
     qint64 offset = 0;
     if (existing <= srcSize) {
-        const qint64 kept = matchingPrefix(src.fd, dst.fd, existing / opt.windowBytes * opt.windowBytes, opt, cancel, &buf, [&](qint64 pos) {
+        const qint64 kept = matchingPrefix(src.fd, dst.fd, existing / opt.windowBytes * opt.windowBytes, opt, cancel, &buf, tally, [&](qint64 pos) {
             if (progress) progress({tally->index, tally->count, item.name, pos, srcSize, tally->done + pos, tally->total});
         });
         if (kept == kCancelled) { DyldCopy c; c.result = DyldCacheCopy::Result::Cancelled; return c; }
@@ -115,6 +135,7 @@ DyldCopy copyFile(const QString &sourceDir, const QString &root, const QString &
     };
     report(offset);
     for (qint64 pos = offset; pos < srcSize;) {
+        if (!beforeWindow(opt, cancel, tally)) { DyldCopy c; c.result = DyldCacheCopy::Result::Cancelled; return c; }
         const qint64 windowEnd = qMin(pos + opt.windowBytes, srcSize);
         if (opt.onWindow) opt.onWindow(item.name, pos, windowEnd - pos);
         while (pos < windowEnd) {
@@ -127,7 +148,6 @@ DyldCopy copyFile(const QString &sourceDir, const QString &root, const QString &
         }
         if (::fdatasync(dst.fd) != 0) return failed("Cannot flush " + item.name + " to the store");
         ::posix_fadvise(src.fd, 0, 0, POSIX_FADV_DONTNEED);
-        if (opt.pauseMs > 0 && pos < srcSize) pauseFor(opt);
     }
     struct stat st, ss;
     if (::fstat(dst.fd, &st) != 0 || st.st_size != srcSize) return failed(item.name + " has the wrong size after copying");
@@ -184,6 +204,13 @@ Outcome copyCache(const QString &sourceDir, const QString &arch, const QString &
     }
     const QString id = storeId(arch, uuidHex(header.uuid));
 
+    // Refuse for lack of space before this creates anything on disk; the check below counts what a resume still needs.
+    const FreeBytesFn freeFn = opt.freeBytes ? opt.freeBytes : FreeBytesFn(&DyldCacheStore::freeBytes);
+    if (!QFileInfo::exists(storeRoot)) {
+        qint64 all = 0;
+        for (const Item &it : items) all += it.size;
+        if (!checkFreeSpace(storeRoot, all, opt.marginBytes, &err, freeFn)) return failed(err);
+    }
     if (!ensureRoot(storeRoot, &err)) return failed(err);
     Fd lock(SafeFs::lockFile(storeRoot, ".copy.lock", 0700, &err));
     if (lock.fd < 0) return failed(err);
@@ -204,7 +231,7 @@ Outcome copyCache(const QString &sourceDir, const QString &arch, const QString &
         QByteArray ph; qint64 psize = 0;
         needed += it.size - (readHead(storeRoot, id + "/" + it.name + ".partial", 0, &ph, &psize, &e) ? qMin(psize, it.size) : 0);
     }
-    if (!checkFreeSpace(storeRoot, needed, opt.marginBytes, &err, opt.freeBytes ? opt.freeBytes : FreeBytesFn(&DyldCacheStore::freeBytes))) return failed(err);
+    if (!checkFreeSpace(storeRoot, needed, opt.marginBytes, &err, freeFn)) return failed(err);
 
     for (int i = 0; i < items.size(); ++i) {
         tally.index = i + 1;

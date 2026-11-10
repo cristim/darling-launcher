@@ -56,10 +56,20 @@ bool refuseSymlinks(const QString &root, const QString &dataRoot, QString *error
 }
 }
 
+namespace {
+// Missing directories on the way to the root are ours, so they are private too (mkpath would make them 0755).
+bool makePrivateAncestors(const QString &dir) {
+    const QFileInfo info(dir);
+    if (info.exists()) return info.isDir();
+    if (!makePrivateAncestors(info.absolutePath())) return false;
+    return ::mkdir(QFile::encodeName(dir).constData(), 0700) == 0 || errno == EEXIST;
+}
+}
+
 bool ensureRoot(const QString &root, QString *error, const QString &dataRoot) {
     if (!refuseSymlinks(root, dataRoot, error)) return false;
     const QFileInfo info(root);
-    if (!QDir().mkpath(info.absolutePath())) return fail(error, "Cannot create the parent of the store location");
+    if (!makePrivateAncestors(info.absolutePath())) return fail(error, "Cannot create the parent of the store location");
     if (::mkdir(QFile::encodeName(root).constData(), 0700) != 0 && errno != EEXIST) return fail(error, "Cannot create the store location");
     return SafeFs::checkPrivateDir(info.absolutePath(), info.fileName(), error);
 }
