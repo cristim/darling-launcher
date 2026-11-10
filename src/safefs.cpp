@@ -14,14 +14,7 @@
 
 namespace {
 using LauncherCore::fail;
-struct Fd {
-    int fd;
-    explicit Fd(int f = -1) : fd(f) {}
-    ~Fd() { if (fd >= 0) ::close(fd); }
-    Fd(const Fd &) = delete;
-    Fd &operator=(const Fd &) = delete;
-    int release() { const int f = fd; fd = -1; return f; }
-};
+using SafeFs::Fd;
 QString sysError(const QString &what) { return what + ": " + QString::fromLocal8Bit(strerror(errno)); }
 
 // Opens root then each component of `dirs` without following symlinks. *missing is set (and -1 returned
@@ -29,7 +22,8 @@ QString sysError(const QString &what) { return what + ": " + QString::fromLocal8
 int openDirs(const QString &root, const QStringList &dirs, bool create, mode_t dirMode, bool *missing, QString *error) {
     if (missing) *missing = false;
     int cur = ::open(QFile::encodeName(root).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (cur < 0) { fail(error, sysError("Cannot open " + root)); return -1; }
+    // never the absolute path: errors reach logs and the MCP server
+    if (cur < 0) { fail(error, sysError("Cannot open the base directory")); return -1; }
     for (const QString &name : dirs) {
         const QByteArray n = name.toUtf8();
         const auto openNext = [&] { return ::openat(cur, n.constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC); };
@@ -57,6 +51,18 @@ bool split(const QString &relPath, QStringList *dirs, QString *leaf, QString *er
 }
 
 namespace SafeFs {
+Fd::~Fd() { if (fd >= 0) ::close(fd); }
+
+bool preadFull(int fd, char *buf, qint64 len, qint64 off) {
+    for (qint64 got = 0; got < len;) {
+        const ssize_t n = ::pread(fd, buf + got, size_t(len - got), off + got);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        got += n;
+    }
+    return true;
+}
+
 bool writeFile(const QString &root, const QString &relPath, const QByteArray &data, mode_t fileMode, mode_t dirMode,
                bool replace, QString *error, const Hooks &hooks) {
     QStringList dirs; QString leaf;
@@ -105,12 +111,15 @@ bool readFile(const QString &root, const QString &relPath, qint64 maxBytes, QByt
     return true;
 }
 
-bool renameInDir(const QString &root, const QString &dirRelPath, const QString &from, const QString &to, QString *error) {
+bool renameInDir(const QString &root, const QString &dirRelPath, const QString &from, const QString &to, QString *error,
+                 bool noReplace) {
     QStringList dirs; QString leaf;
     if (!split(dirRelPath + "/x", &dirs, &leaf, error) || from.contains('/') || to.contains('/')) return fail(error, "Bad rename request");
     Fd dir(openDirs(root, dirs, false, 0, nullptr, error));
     if (dir.fd < 0) return false;
-    if (::renameat(dir.fd, from.toUtf8().constData(), dir.fd, to.toUtf8().constData()) != 0) return fail(error, sysError("Cannot rename " + from));
+    const int rc = noReplace ? ::renameat2(dir.fd, from.toUtf8().constData(), dir.fd, to.toUtf8().constData(), RENAME_NOREPLACE)
+                             : ::renameat(dir.fd, from.toUtf8().constData(), dir.fd, to.toUtf8().constData());
+    if (rc != 0) return fail(error, sysError("Cannot rename " + from));
     ::fsync(dir.fd);
     return true;
 }
@@ -144,5 +153,49 @@ int lockFile(const QString &root, const QString &relPath, mode_t dirMode, QStrin
     if (file.fd < 0 || ::fstat(file.fd, &st) != 0 || !S_ISREG(st.st_mode)) { fail(error, "Cannot open lock file " + relPath); return -1; }
     if (::flock(file.fd, LOCK_EX | LOCK_NB) != 0) { fail(error, "Another launcher process holds " + relPath); return -1; }
     return file.release();
+}
+
+int openRead(const QString &root, const QString &relPath, qint64 *size, QString *error) {
+    QStringList dirs; QString leaf; bool missing = false;
+    if (!split(relPath, &dirs, &leaf, error)) return -1;
+    Fd dir(openDirs(root, dirs, false, 0, &missing, error));
+    if (dir.fd < 0) { if (missing) fail(error, "No such file: " + relPath); return -1; }
+    Fd file(::openat(dir.fd, leaf.toUtf8().constData(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
+    if (file.fd < 0) { fail(error, sysError("Cannot open " + relPath)); return -1; }
+    struct stat st;
+    if (::fstat(file.fd, &st) != 0 || !S_ISREG(st.st_mode)) { fail(error, relPath + " is not a regular file"); return -1; }
+    if (size) *size = st.st_size;
+    return file.release();
+}
+
+int openWrite(const QString &root, const QString &relPath, mode_t fileMode, mode_t dirMode, bool resume,
+              qint64 *existingSize, QString *error) {
+    QStringList dirs; QString leaf;
+    if (!split(relPath, &dirs, &leaf, error)) return -1;
+    Fd dir(openDirs(root, dirs, true, dirMode, nullptr, error));
+    if (dir.fd < 0) return -1;
+    const QByteArray name = leaf.toUtf8();
+    Fd file(::openat(dir.fd, name.constData(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | (resume ? 0 : O_EXCL), fileMode));
+    if (file.fd < 0) { fail(error, sysError("Cannot open " + relPath + " for writing")); return -1; }
+    struct stat st;
+    if (::fstat(file.fd, &st) != 0 || !S_ISREG(st.st_mode)) { fail(error, relPath + " is not a regular file"); return -1; }
+    // A file planted by the guest (same uid, so uid alone proves little) can be a hard link to something else or carry loose modes.
+    if (st.st_uid != ::geteuid()) { fail(error, relPath + " is not owned by this user"); return -1; }
+    if (st.st_nlink != 1) { fail(error, relPath + " has more than one hard link"); return -1; }
+    if (::fchmod(file.fd, fileMode) != 0) { fail(error, sysError("Cannot set the mode of " + relPath)); return -1; }
+    if (existingSize) *existingSize = st.st_size;
+    return file.release();
+}
+
+bool checkPrivateDir(const QString &root, const QString &relPath, QString *error) {
+    QStringList dirs; QString leaf;
+    if (!split(relPath + "/x", &dirs, &leaf, error)) return false;
+    Fd dir(openDirs(root, dirs, false, 0, nullptr, error));
+    if (dir.fd < 0) return false;
+    struct stat st;
+    if (::fstat(dir.fd, &st) != 0) return fail(error, sysError("Cannot stat " + relPath));
+    if (st.st_uid != ::geteuid()) return fail(error, relPath + " is not owned by this user");
+    if (st.st_mode & 077) return fail(error, relPath + " must not be accessible to group or others (mode 0700)");
+    return true;
 }
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "core.h"
 #include "sources.h"
+#include "launchenv.h"
 #include <QProcess>
 #include <functional>
 #include <QUuid>
@@ -340,7 +341,7 @@ namespace {
 struct GuestRun { bool ok; QString output; };
 GuestRun runInPrefix(const QString &launcher, const QString &runtimeRoot, const QString &prefix, const QStringList &args, int timeoutMs = 120000) {
     QProcess process; QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    for (const auto &name : env.keys()) if (name.startsWith("DYLD_")) env.remove(name);
+    LaunchEnv::stripDyld(&env); // maintenance run: never the dyld cache variables
     env.remove("DARLING_INSTALL_PREFIX"); if (!runtimeRoot.isEmpty()) env.insert("DARLING_INSTALL_PREFIX", runtimeRoot);
     env.insert("DPREFIX", prefix);
     process.setProcessEnvironment(env); process.setProcessChannelMode(QProcess::MergedChannels); process.start(launcher, args);

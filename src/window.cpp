@@ -7,6 +7,8 @@
 #include "prefixdialog.h"
 #include "discovery.h"
 #include "troubleshooting.h"
+#include "dyldcachestore.h"
+#include "launchenv.h"
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDir>
@@ -654,9 +656,13 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     QString p = prefix->text();
     if (!QDir::isAbsolutePath(p) || !QFileInfo(p).isDir()) { invalid("Select an existing prefix directory."); return; }
     if (!runtimeRoot->text().isEmpty() && (!QDir::isAbsolutePath(runtimeRoot->text()) || !QFileInfo(runtimeRoot->text()).isDir())) { invalid("Select a valid runtime install root."); return; }
-    auto *process = new QProcess(this);
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    for (const auto &name : env.keys()) if (name.startsWith("DYLD_")) env.remove(name);
+    // the dyld cache goes to the user's app launch (it has a key) when the app runs as arm64e, never to maintenance runs
+    QString envError, envNote; const AppEntry launched = entries.value(key);
+    if (!LaunchEnv::forRun(key.isEmpty() ? LaunchEnv::RunKind::Maintenance : LaunchEnv::RunKind::App, &env, p, DyldCacheStore::configuredRoot(),
+                           launched.relativeBundle + "/Contents/MacOS/" + launched.executable, &envError, &envNote)) { invalid(envError); return; }
+    if (!envNote.isEmpty()) { LauncherLog::write("launch", label + ": " + envNote); if (!key.isEmpty()) outputs[key] += envNote + "\n"; }
+    auto *process = new QProcess(this);
     env.remove("DARLING_INSTALL_PREFIX");
     if (!runtimeRoot->text().isEmpty()) env.insert("DARLING_INSTALL_PREFIX", runtimeRoot->text());
     env.insert("DPREFIX", p);

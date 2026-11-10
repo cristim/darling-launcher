@@ -6,6 +6,8 @@
 #include <QCryptographicHash>
 #include "core.h"
 #include "discovery.h"
+#include "dyldcachestore.h"
+#include "launchenv.h"
 #include <QComboBox>
 #include <QCheckBox>
 #include <QDir>
@@ -112,8 +114,10 @@ void FixVerifier::start() {
     const QString prefix = diagnostic.value("prefix").toString(), bundle = diagnostic.value("bundle").toString(), executable = diagnostic.value("executable").toString();
     if (!QFileInfo(prefix).isDir() || bundle.isEmpty() || executable.isEmpty()) { finish(false, "The failed app or its prefix is no longer available."); return; }
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    for (const auto &name : env.keys()) if (name.startsWith("DYLD_")) env.remove(name);
+    QString envError; // the app runs as the user's own launch of it does, so a fix is judged in the real environment
+    if (!LaunchEnv::guestEnvironment(&env, prefix, DyldCacheStore::configuredRoot(), &envError)) { finish(false, envError); return; }
     env.insert("DPREFIX", prefix); env.insert("DARLING_INSTALL_PREFIX", runtimeRoot);
+    QProcessEnvironment stopEnv = env; LaunchEnv::stripDyld(&stopEnv); // shutdown is a maintenance run
     process.setProcessEnvironment(env);
     connect(&process, &QProcess::readyReadStandardOutput, this, [this] { output += QString::fromLocal8Bit(process.readAllStandardOutput()); });
     connect(&process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) { if (error == QProcess::FailedToStart && running) finish(false, "Cannot start the patched launcher: " + process.errorString()); });
@@ -124,10 +128,10 @@ void FixVerifier::start() {
         if (exit == QProcess::NormalExit && code == 0 && !missing.valid()) finish(true, "The app ran and exited cleanly in the prefix.");
         else finish(false, missing.valid() ? "The app still fails to load: " + (missing.missingLibrary ? missing.expectedIn : missing.symbol) : exit == QProcess::CrashExit ? "The launcher crashed." : "The app exited with status " + QString::number(code) + (code > 128 ? QString(" (") + strsignal(code - 128) + ")" : QString()));
     });
-    QTimer::singleShot(stableSeconds * 1000, this, [this, prefix, env] {
+    QTimer::singleShot(stableSeconds * 1000, this, [this, prefix, stopEnv] {
         if (!running || process.state() == QProcess::NotRunning) return;
         const auto missing = LauncherCore::diagnose(output);
-        auto *stop = new QProcess(this); stop->setProcessEnvironment(env);
+        auto *stop = new QProcess(this); stop->setProcessEnvironment(stopEnv);
         connect(stop, &QProcess::finished, stop, &QObject::deleteLater);
         stop->start(launcher, {"shutdown"});
         process.disconnect(this); process.terminate();
