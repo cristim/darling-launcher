@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "window.h"
+#include "dyldcachecli.h"
 #include "libscli.h"
 #include "log.h"
 #include "stagesupervisor.h"
@@ -15,6 +16,11 @@ int main(int argc, char **argv) {
         QStringList args; for (int i = 2; i < argc; ++i) args << QString::fromLocal8Bit(argv[i]);
         QTextStream out(stdout), err(stderr);
         return libsMain(args, out, err);
+    }
+    if (argc > 1 && QByteArray(argv[1]) == "dyld-cache") {
+        QStringList args; for (int i = 2; i < argc; ++i) args << QString::fromLocal8Bit(argv[i]);
+        QTextStream out(stdout), err(stderr);
+        return dyldCacheMain(args, out, err);
     }
     QApplication app(argc, argv);
     app.setApplicationName("Darling Launcher");
