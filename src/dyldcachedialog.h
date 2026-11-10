@@ -47,6 +47,8 @@ private:
     std::function<void(const JobResult &)> onDone;
     QMutex progressLock;
     DyldCacheCopy::Progress latest;
+    QString latestLabel;
+    int latestIndex = 0, latestCount = 1;
     std::atomic<bool> progressPosted{false};
     QString sourceDir, sourceId, sourceError;
 
@@ -65,7 +67,7 @@ private:
     void startJob(const std::function<JobResult()> &work, const std::function<void(const JobResult &)> &done);
     void setRunning(bool busy);
     void probeSource();
-    void postProgress(const DyldCacheCopy::Progress &p, const QString &label);
+    void postProgress(const DyldCacheCopy::Progress &p, const QString &label, int storeIndex = 0, int storeCount = 1);
     void startCopy();
     void startVerify();
     void showOverview();

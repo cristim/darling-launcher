@@ -135,13 +135,16 @@ void DyldCacheDialog::showOverview() {
 }
 
 // Called from the worker thread. At most one queued update is pending, so a fast copy does not flood the event loop.
-void DyldCacheDialog::postProgress(const DyldCacheCopy::Progress &p, const QString &label) {
-    { QMutexLocker lock(&progressLock); latest = p; }
+// A job over several stores reports each from zero; the bar spreads them over its range so it only moves forward.
+void DyldCacheDialog::postProgress(const DyldCacheCopy::Progress &p, const QString &label, int storeIndex, int storeCount) {
+    { QMutexLocker lock(&progressLock); latest = p; latestLabel = label; latestIndex = storeIndex; latestCount = storeCount; }
     if (progressPosted.exchange(true)) return;
-    QMetaObject::invokeMethod(this, [this, label] {
+    QMetaObject::invokeMethod(this, [this] {
         progressPosted.store(false);
-        DyldCacheCopy::Progress p; { QMutexLocker lock(&progressLock); p = latest; }
-        bar->setValue(p.totalSize > 0 ? int(p.totalBytes * 1000 / p.totalSize) : 0);
+        DyldCacheCopy::Progress p; QString label; int index, count;
+        { QMutexLocker lock(&progressLock); p = latest; label = latestLabel; index = latestIndex; count = latestCount; }
+        const int within = p.totalSize > 0 ? int(p.totalBytes * 1000 / p.totalSize) : 0;
+        bar->setValue((index * 1000 + within) / count);
         progressLabel->setText(label + progressText(p));
     }, Qt::QueuedConnection);
 }
@@ -172,10 +175,11 @@ void DyldCacheDialog::startVerify() {
     startJob([this, ids, root] {
         JobResult r;
         r.outcome.result = DyldCacheCopy::Result::Done;
-        for (const QString &id : ids) {
+        for (int i = 0; i < ids.size(); ++i) {
+            const QString &id = ids[i];
             QString error;
             if (!DyldCacheStore::checkPrivate(root, id, &error)) { r.lines << id + ": " + error; r.outcome.result = DyldCacheCopy::Result::Failed; continue; }
-            const DyldCacheCopy::Outcome v = DyldCacheCopy::verifyStore(root, id, [this](const DyldCacheCopy::Progress &p) { postProgress(p, "Verifying: "); }, &cancel);
+            const DyldCacheCopy::Outcome v = DyldCacheCopy::verifyStore(root, id, [this, i, n = int(ids.size())](const DyldCacheCopy::Progress &p) { postProgress(p, QString("Verifying store %1 of %2: ").arg(i + 1).arg(n), i, n); }, &cancel);
             if (v.result == DyldCacheCopy::Result::Cancelled) { r.outcome.result = DyldCacheCopy::Result::Cancelled; break; }
             if (v.result == DyldCacheCopy::Result::Failed) { r.lines << id + ": " + v.error; r.outcome.result = DyldCacheCopy::Result::Failed; }
         }
