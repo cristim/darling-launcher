@@ -27,7 +27,7 @@ struct Fx {
     QByteArray uuid;
     explicit Fx(int seed = 1, int subCount = 12, qint64 fileSize = 4096) {
         for (int i = 1; i <= subCount; ++i) subs << QString(".%1").arg(i, 2, 10, QChar('0'));
-        uuid = makeFakeCache(src.path(), "arm64e", seed, subs, fileSize);
+        uuid = makeFakeCache(src.path(), "arm64e", seed, subs, fileSize, kRealTableOffset); // the table where the real main file has it
     }
     QString root() const { return work.path() + "/store"; }
     QString id() const { return DyldCacheStore::storeId("arm64e", DyldCache::uuidHex(uuid)); }
@@ -195,7 +195,8 @@ private slots:
         Fx fx; QCOMPARE(run(fx.copyArgs()).code, 0);
         const Result plain = run(fx.rootArg("status"));
         QCOMPARE(plain.code, 0);
-        QVERIFY2(plain.out.startsWith(fx.id() + "\tready\t13\t" + QString::number(13 * 4096) + "\t"), qPrintable(plain.out));
+        qint64 bytes = 0; for (const QString &n : fx.names()) bytes += QFileInfo(fx.src.path() + "/" + n).size();
+        QVERIFY2(plain.out.startsWith(fx.id() + "\tready\t13\t" + QString::number(bytes) + "\t"), qPrintable(plain.out));
         QVERIFY(!plain.out.contains("source"));
         const Result fresh = run(fx.rootArg("status") + QStringList{"--source", fx.src.path()});
         QCOMPARE(fresh.code, 0);
