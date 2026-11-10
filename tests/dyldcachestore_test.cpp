@@ -105,6 +105,18 @@ private slots:
         QVERIFY(!checkFreeSpace(d.path(), 1, 1, &err, [](const QString &) { return qint64(-1); }));
         QVERIFY(freeBytes(d.path()) > 0);
     }
+    void checkUsableNeedsAPrivateAndCompleteStore() {
+        QTemporaryDir d; QString err;
+        const QString id = makeFakeStore(d.path(), "arm64e", 1, {".01"});
+        QVERIFY2(checkUsable(d.path(), id, &err), qPrintable(err));
+        QVERIFY(!checkUsable(d.path(), storeId("arm64e", QString(32, 'c')), &err)); QVERIFY(err.contains("is not ready"));   // missing
+        QVERIFY(!checkUsable(d.path(), "../x", &err));                                                                      // not an id
+        QVERIFY(QFile::remove(d.path() + "/" + id + "/store.json"));
+        QVERIFY(!checkUsable(d.path(), id, &err)); QVERIFY(err.contains("is not ready (The copy is incomplete)"));         // partial
+        const QString id2 = makeFakeStore(d.path(), "arm64e", 2, {});
+        QVERIFY(::chmod(d.path().toUtf8().constData(), 0755) == 0);
+        QVERIFY(!checkUsable(d.path(), id2, &err)); QVERIFY(err.contains("cannot be trusted")); QVERIFY(!err.contains(d.path())); // open root
+    }
     void sourceIdNamesTheCopyAndRefusesWhatCannotBeRead() {
         QTemporaryDir src, empty, other; QString id, err;
         const QByteArray uuid = makeFakeCache(src.path(), "arm64e", 3, {".01"});

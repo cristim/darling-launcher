@@ -231,7 +231,9 @@ void DyldCacheDialog::updatePrefix() {
     if (loadFailed) prefixStatusLabel->setText("The prefix's cache settings cannot be read (" + loadError + "). Saving replaces them. " + prefixStatusLabel->text());
     // the pinned store only matters once the cache is on
     const bool changed = edited.mode != loaded.mode || edited.served != loaded.served || (edited.mode == DyldCacheMode::AllowList && edited.store != loaded.store);
-    saveButton->setEnabled(prefixGroup->isEnabled() && error.isEmpty() && (changed || loadFailed));
+    // A config that wants the cache but pins a store that is not usable would stop every launch of the prefix.
+    const bool wantsUnusable = DyldCacheConfigFile::wantsCache(edited) && !enableBlocker(storeRoot, edited.store).isEmpty();
+    saveButton->setEnabled(prefixGroup->isEnabled() && error.isEmpty() && !wantsUnusable && (changed || loadFailed));
     appLabel->setText(app.name.isEmpty() ? "Select an app in the launcher to see whether its launch would get the cache."
                                         : DyldCacheSettings::appLine(prefix, app.name, app.executableRel, error.isEmpty() ? edited : loaded));
 }
@@ -239,7 +241,9 @@ void DyldCacheDialog::updatePrefix() {
 void DyldCacheDialog::savePrefix() {
     QString error;
     const DyldCacheConfig edited = editedConfig(&error);
-    if (!error.isEmpty() || !DyldCacheConfigFile::save(prefix, edited, &error)) { showError("dyld cache settings", error); return; }
+    // checked again here: the store may have changed since the box was ticked
+    if (error.isEmpty() && DyldCacheConfigFile::wantsCache(edited)) DyldCacheStore::checkUsable(storeRoot, edited.store, &error);
+    if (!error.isEmpty() || !DyldCacheConfigFile::save(prefix, edited, &error)) { showError("dyld cache settings", error); updatePrefix(); return; }
     loaded = edited; loadFailed = false;
     updatePrefix();
     prefixStatusLabel->setText("Saved. " + prefixStatusLabel->text());

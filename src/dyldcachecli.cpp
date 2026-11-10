@@ -199,8 +199,7 @@ int prefixVerb(const Args &a, QTextStream &out, QTextStream &err) {
             if (ready.size() != 1) return refused(err, "Choose the store with --store: " + QString::number(ready.size()) + " ready stores found");
             config.store = ready.first();
         }
-        if (!DyldCacheStore::checkPrivate(root, config.store, &error)) return refused(err, error); // as the launch path does
-        if (DyldCacheStore::status(root, config.store).state != StoreState::Ready) return refused(err, "The store " + config.store + " is not ready; copy and verify it first");
+        if (!DyldCacheStore::checkUsable(root, config.store, &error)) return refused(err, error); // as the launch path does
         if (!a.libs.isEmpty()) config.served = a.libs;
         else if (config.served.isEmpty()) config.served = DyldCacheConfigFile::validatedLibraries();
     }

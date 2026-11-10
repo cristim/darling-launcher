@@ -50,6 +50,9 @@ bool validStoreId(const QString &id);
 bool ensureRoot(const QString &root, QString *error, const QString &dataRoot = LauncherDiscovery::dataRoot());
 // The same checks without creating anything, plus the store directory itself: used before a launch trusts the store.
 bool checkPrivate(const QString &root, const QString &id, QString *error, const QString &dataRoot = LauncherDiscovery::dataRoot());
+// What a prefix that turns the cache on must pass, at the moment it does: the store is private and complete (Ready).
+// Shared by the CLI and the settings page; a launch checks the same again.
+bool checkUsable(const QString &root, const QString &id, QString *error, const QString &dataRoot = LauncherDiscovery::dataRoot());
 
 bool parseManifest(const QByteArray &json, StoreManifest *out, QString *error);
 QByteArray renderManifest(const StoreManifest &m);
