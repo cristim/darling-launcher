@@ -119,7 +119,8 @@ void DyldCacheDialog::probeSource() {
         return r;
     }, [this](const JobResult &r) {
         sourceDir = r.sourceDir; sourceId = r.sourceId; sourceError = r.sourceError; haveSource = !sourceId.isEmpty();
-        sourceLabel->setText(haveSource ? "Source: " + sourceDir : "Source unavailable: " + sourceError);
+        // the store location is the only path the page shows; the volume is named by what is read from it
+        sourceLabel->setText(haveSource ? "Source: System/Library/dyld on the selected macOS volume" : "Source unavailable: " + sourceError);
         showOverview(); updatePrefix(); setRunning(false);
     });
 }
