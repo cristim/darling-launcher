@@ -9,6 +9,10 @@ namespace DyldCacheSettings {
 using LauncherCore::fail;
 const char *const kArch = "arm64e";
 
+bool isInside(const QString &root, const QString &path) {
+    return path == root || path.startsWith(root.endsWith('/') ? root : root + '/');
+}
+
 bool resolveSourceDir(const QString &volume, QString *dir, QString *error) {
     if (volume.isEmpty()) return fail(error, "No mounted macOS volume is selected");
     const QString root = QFileInfo(volume).canonicalFilePath();
@@ -16,7 +20,7 @@ bool resolveSourceDir(const QString &volume, QString *dir, QString *error) {
     const QString canonical = QFileInfo(root + "/System/Library/dyld").canonicalFilePath();
     if (canonical.isEmpty() || !QFileInfo(canonical).isDir()) return fail(error, "The selected volume has no System/Library/dyld directory; mount the macOS cryptex OS image or a volume that holds the dyld cache");
     // a symlink inside a mounted volume must not lead the copy to files outside it
-    if (!canonical.startsWith(root + "/")) return fail(error, "System/Library/dyld on the selected volume leads outside the volume");
+    if (canonical == root || !isInside(root, canonical)) return fail(error, "System/Library/dyld on the selected volume leads outside the volume");
     *dir = canonical;
     return true;
 }

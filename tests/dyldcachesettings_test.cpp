@@ -30,6 +30,14 @@ private slots:
         QVERIFY(QFile::link(outside.path(), evil.path() + "/System/Library/dyld"));
         QVERIFY(!resolveSourceDir(evil.path(), &dir, &err)); QVERIFY(err.contains("outside the volume"));
     }
+    void insideKnowsTheFilesystemRootAndSiblingPrefixes() {
+        QVERIFY(isInside("/", "/System/Library/dyld"));          // a root of "/" must not become "//"
+        QVERIFY(isInside("/vol", "/vol/System/Library/dyld"));
+        QVERIFY(isInside("/vol", "/vol"));
+        QVERIFY(!isInside("/vol", "/volume/System"));            // a sibling that shares the name prefix
+        QVERIFY(!isInside("/vol", "/other"));
+        QVERIFY(!isInside("/vol/", "/volume"));
+    }
     void overviewWithoutAStoreSaysSo() {
         QTemporaryDir stores;
         auto o = overview(stores.path(), idOfSeed(1), {});

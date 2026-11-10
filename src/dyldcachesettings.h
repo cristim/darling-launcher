@@ -15,6 +15,8 @@ extern const char *const kArch;
 
 // The directory holding the cache files on the selected macOS volume: <volume>/System/Library/dyld, resolved and
 // required to stay inside the volume. Fails with a sentence for the user when it is missing or leaves the volume.
+// True when `path` is `root` or lies below it; both canonical. "/" contains everything.
+bool isInside(const QString &root, const QString &path);
 bool resolveSourceDir(const QString &volume, QString *dir, QString *error);
 
 struct StoreRow {
