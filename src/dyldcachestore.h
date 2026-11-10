@@ -63,6 +63,10 @@ QStringList listStores(const QString &root);
 // Reads up to `window` bytes from the start of root/relPath (no symlinks); *fileSize is the full length.
 bool readHead(const QString &root, const QString &relPath, qint64 window, QByteArray *head, qint64 *fileSize, QString *error);
 
+// The store id the copy of `sourceDir` would get: its main file's arch and UUID. Fails (and says why) when the main
+// file is missing, unreadable or for another architecture, so an unreadable source is never reported as "stale".
+bool sourceId(const QString &sourceDir, const QString &arch, QString *id, QString *error);
+
 using FreeBytesFn = std::function<qint64(const QString &existingDir)>;
 qint64 freeBytes(const QString &existingDir); // statvfs, -1 on failure
 // Refuses unless at least needed + margin bytes are free on the filesystem that holds root (or its nearest existing ancestor).

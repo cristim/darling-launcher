@@ -140,11 +140,8 @@ int statusVerb(const Args &a, QTextStream &out, QTextStream &err) {
     QString sourceId;
     if (!validArch(a)) return usage(err, "--arch must be arm64e or arm64");
     if (a.values.contains("--source")) {
-        QByteArray head; qint64 size = 0; DyldCache::MainHeader header; QString error;
-        if (!DyldCacheStore::readHead(absolute(a.values["--source"]), DyldCache::mainFileName(arch), DyldCache::kHeaderWindow, &head, &size, &error)
-            || !DyldCache::parseMainHeader(head, size, &header, &error)) return refused(err, error);
-        if (header.arch != arch) return refused(err, "The source cache is for " + header.arch + ", not " + arch);
-        sourceId = DyldCacheStore::storeId(arch, DyldCache::uuidHex(header.uuid));
+        QString error;
+        if (!DyldCacheStore::sourceId(absolute(a.values["--source"]), arch, &sourceId, &error)) return refused(err, error);
     }
     const QFileInfo rootInfo(root);
     if (rootInfo.exists() && (!rootInfo.isDir() || !QDir(root).isReadable())) return refused(err, "The store location is not a readable directory");

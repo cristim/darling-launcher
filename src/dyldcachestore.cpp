@@ -137,6 +137,15 @@ bool readHead(const QString &root, const QString &relPath, qint64 window, QByteA
     return true;
 }
 
+bool sourceId(const QString &sourceDir, const QString &arch, QString *id, QString *error) {
+    QByteArray head; qint64 size = 0; DyldCache::MainHeader header;
+    if (!readHead(sourceDir, DyldCache::mainFileName(arch), DyldCache::kHeaderWindow, &head, &size, error)
+        || !DyldCache::parseMainHeader(head, size, &header, error)) return false;
+    if (header.arch != arch) return fail(error, "The source cache is for " + header.arch + ", not " + arch);
+    *id = storeId(arch, DyldCache::uuidHex(header.uuid));
+    return true;
+}
+
 StoreStatus status(const QString &root, const QString &id) {
     StoreStatus st;
     if (!validStoreId(id)) { st.state = StoreState::Corrupt; st.detail = "Invalid store id"; return st; }

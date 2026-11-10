@@ -105,6 +105,17 @@ private slots:
         QVERIFY(!checkFreeSpace(d.path(), 1, 1, &err, [](const QString &) { return qint64(-1); }));
         QVERIFY(freeBytes(d.path()) > 0);
     }
+    void sourceIdNamesTheCopyAndRefusesWhatCannotBeRead() {
+        QTemporaryDir src, empty, other; QString id, err;
+        const QByteArray uuid = makeFakeCache(src.path(), "arm64e", 3, {".01"});
+        QVERIFY2(sourceId(src.path(), "arm64e", &id, &err), qPrintable(err));
+        QCOMPARE(id, storeId("arm64e", DyldCache::uuidHex(uuid)));
+        QVERIFY(!sourceId(empty.path(), "arm64e", &id, &err));                    // no main file: an error, never "stale"
+        makeFakeCache(other.path(), "arm64", 4, {});
+        QVERIFY(!sourceId(other.path(), "arm64e", &id, &err));                    // wrong arch for the file name asked
+        QVERIFY(QFile::rename(other.path() + "/dyld_shared_cache_arm64", other.path() + "/dyld_shared_cache_arm64e"));
+        QVERIFY(!sourceId(other.path(), "arm64e", &id, &err)); QVERIFY(err.contains("arm64, not arm64e")); // arch comes from the header
+    }
     void guestDirPrefixesCanonicalHostPathAndCapsLength() {
         QTemporaryDir d, link; QString err, guest;
         const QString id = makeFakeStore(d.path(), "arm64e", 1, {});
