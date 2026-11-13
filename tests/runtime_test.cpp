@@ -31,7 +31,7 @@ private slots:
     void initTestCase() {
         QVERIFY(home.isValid()); qputenv("HOME", home.path().toUtf8()); qputenv("XDG_CONFIG_HOME", (home.path() + "/config").toUtf8());
         originalPath = qgetenv("PATH");
-        QVERIFY(write(home.path() + "/gh", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/attestation-calls\"\nexit 0\n", true));
+        QVERIFY(write(home.path() + "/gh", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/attestation-calls\"\nprintf '[{\"verificationResult\":{\"signature\":{\"certificate\":{\"sourceRepositoryDigest\":\"aaaaaaa0000000000000000000000000000000000\"}}}}]'\nexit 0\n", true));
         qputenv("PATH", home.path().toUtf8() + ':' + originalPath);
     }
     void cleanupTestCase() { qputenv("PATH", originalPath); }
@@ -84,7 +84,7 @@ private slots:
             }
         });
         QVERIFY(write(home.path() + "/attestation-calls", {}));
-        QVERIFY(write(home.path() + "/gh", mode == "attestation" ? "#!/bin/sh\necho rejected >&2\nexit 1\n" : mode == "verify-cancel" ? "#!/bin/sh\nexec /usr/bin/sleep 30\n" : "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/attestation-calls\"\nexit 0\n", true));
+        QVERIFY(write(home.path() + "/gh", mode == "attestation" ? "#!/bin/sh\necho rejected >&2\nexit 1\n" : mode == "verify-cancel" ? "#!/bin/sh\nexec /usr/bin/sleep 30\n" : "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/attestation-calls\"\nprintf '[{\"verificationResult\":{\"signature\":{\"certificate\":{\"sourceRepositoryDigest\":\"aaaaaaa0000000000000000000000000000000000\"}}}}]'\nexit 0\n", true));
         if (mode.startsWith("window")) {
             const QString windowHome = root + "/home"; QVERIFY(QDir().mkpath(windowHome));
             qputenv("HOME", windowHome.toUtf8()); auto restore = qScopeGuard([this] { qputenv("HOME", home.path().toUtf8()); });

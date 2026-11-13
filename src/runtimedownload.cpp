@@ -135,7 +135,7 @@ void RuntimeDownload::start(const QString &root) {
             const auto declared = asset(release, name).value("size");
             if (!declared.isUndefined() && (declared.toInteger(-1) < 0 || QFileInfo(path).size() != declared.toInteger(-1))) return "Downloaded metadata size differs from the release asset: " + name;
             report("Verifying " + name);
-            error = LauncherReleases::verifyAttestation(gh, path, repo, stop);
+            error = LauncherReleases::verifyAttestation(gh, path, repo, release.value("tag_name").toString(), stop);
             if (!error.isEmpty()) return error;
             QFile file(path); if (!file.open(QIODevice::ReadOnly)) return file.errorString(); *bytes = file.readAll(); return {};
         };
@@ -168,8 +168,8 @@ void RuntimeDownload::start(const QString &root) {
         error = fetch(QUrl(artifact.url), artifact.size, "Downloading runtime", archive, nullptr); if (!error.isEmpty()) return fail(error);
         if (QFileInfo(archive).size() != artifact.size) return fail("Downloaded runtime size differs from manifest.json.");
         report("Verifying and installing runtime");
-        error = LauncherReleases::installArchive(archive, artifact.sha256, root + "/runtimes", selected.tag, gh, repo, stop);
-        if (!error.isEmpty()) return fail(error);
+        const auto result = LauncherReleases::installArchive(archive, artifact.sha256, root + "/runtimes", selected.tag, gh, repo, artifact.unpackedSize, stop);
+        if (result.status != LauncherReleases::InstallStatus::Installed) return fail(result.error);
         return {root + "/runtimes/" + selected.tag + "/usr/local", {}};
     }));
 }

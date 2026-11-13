@@ -59,7 +59,7 @@ target_compile_definitions(darling-launcher PRIVATE LAUNCHER_MOUNT_SCRIPT="${LAU
 install(PROGRAMS tools/mount-macos.py DESTINATION "${LAUNCHER_MOUNT_SCRIPT_DIR}" RENAME "${LAUNCHER_MOUNT_SCRIPT_NAME}")
 install(PROGRAMS tools/mount-cryptex.py DESTINATION "${LAUNCHER_MOUNT_CRYPTEX_DIR}" RENAME "${LAUNCHER_MOUNT_CRYPTEX_NAME}")
 enable_testing()
-add_executable(launcher-runtime-tests tests/runtime_test.cpp src/window.cpp src/mountdialog.cpp src/appbrowser.cpp src/prefixdialog.cpp src/troubleshooting.cpp)
+add_executable(launcher-runtime-tests tests/runtime_test.cpp src/window.cpp src/mountdialog.cpp src/appbrowser.cpp src/prefixdialog.cpp src/troubleshooting.cpp src/pipeline.cpp src/dyldcachedialog.cpp)
 target_link_libraries(launcher-runtime-tests PRIVATE launcher_core Qt6::Widgets Qt6::Test)
 target_compile_definitions(launcher-runtime-tests PRIVATE LAUNCHER_MOUNT_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/tools/mount-macos.py" LAUNCHER_MOUNT_CRYPTEX_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/tools/mount-cryptex.py")
 add_test(NAME launcher-runtime-tests COMMAND launcher-runtime-tests -nocrashhandler)
