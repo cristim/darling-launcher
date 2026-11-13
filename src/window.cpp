@@ -210,6 +210,8 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     auto *darlingButton = add("Darling runtime…", [this] { openRuntimeBuilder(true); });
     verifyButton->setIcon(style()->standardIcon(QStyle::SP_DialogApplyButton)); repairButton->setIcon(style()->standardIcon(QStyle::SP_BrowserReload)); darlingButton->setIcon(style()->standardIcon(QStyle::SP_ComputerIcon));
     troubleshoot = add("Troubleshoot failed app…", [this] { openTroubleshooting(); });
+    auto *langidButton = add("Import language data", [this] { importLangid(); });
+    langidButton->setToolTip("Copy macOS /usr/share/langid from the mounted source into the prefix (needed by apps such as Calculator)");
     add("Install Brewfile", [this] {
         QString source = QFileDialog::getOpenFileName(this, "Select Brewfile"); if (source.isEmpty()) return;
         QString p = prefix->text();
@@ -549,6 +551,27 @@ void Window::importDependency(const QString &key, const QString &source, const Q
         QString error; LauncherCore::importLibrary(source, destination, missing.expectedIn, &error); return error;
     }));
 
+}
+void Window::importLangid() {
+    if (importRunning) { statusBar()->showMessage("An import is already in progress."); return; }
+    QString error;
+    if (!LauncherCore::validateLocations(volume->text(), prefix->text(), &error)) { QMessageBox::warning(this, "Locations", error); return; }
+    const QString v = volume->text(), p = prefix->text();
+    auto *watcher = new QFutureWatcher<QPair<QStringList, QString>>(this);
+    importRunning = true; setBusy(true, "Importing language data…");
+    connect(watcher, &QFutureWatcher<QPair<QStringList, QString>>::finished, this, [this, watcher] {
+        const auto result = watcher->result(); watcher->deleteLater(); importRunning = false;
+        const QString message = !result.second.isEmpty() ? result.second
+            : result.first.isEmpty() ? QString("Language data is already present and identical; nothing copied.")
+            : "Copied language data: " + result.first.join(", ");
+        setBusy(activeProcesses > 0, message);
+        if (!result.second.isEmpty()) QMessageBox::warning(this, "Language data", message);
+    });
+    watcher->setFuture(QtConcurrent::run([v, p] {
+        QStringList copied; QString failure;
+        LauncherCore::importLangidData(v, p, &copied, &failure);
+        return qMakePair(copied, failure);
+    }));
 }
 void Window::importBundles(const QStringList &names) {
     if (names.isEmpty()) return;
