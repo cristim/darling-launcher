@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "core.h"
+#include "langidcli.h"
 #include "sources.h"
 #include <QCryptographicHash>
 #include <QDir>
@@ -123,6 +124,25 @@ private slots:
         QVERIFY(!LauncherCore::importLibrary(volume, prefix, "/System/Library/PrivateFrameworks/Calculate.framework/Versions/A/Calculate", &error));
         QVERIFY(error.contains("no standalone library file"));
         QVERIFY(!QFileInfo::exists(prefix + "/System/Library/PrivateFrameworks/Calculate.framework"));
+    }
+    void langidImportCli() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QString volume = temporary.path() + "/volume", prefix = temporary.path() + "/prefix";
+        QVERIFY(QDir().mkpath(volume + "/usr/share/langid")); QVERIFY(QDir().mkpath(prefix));
+        QFile data(volume + "/usr/share/langid/langid.inv"); QVERIFY(data.open(QIODevice::WriteOnly)); QVERIFY(data.write("inv") == 3); data.close();
+        auto run = [&](const QStringList &args, QString *outText, QString *errText) {
+            QString o, e; int code; { QTextStream out(&o), err(&e); code = langidImportMain(args, out, err); }
+            *outText = o.trimmed(); *errText = e.trimmed(); return code;
+        };
+        QString out, err;
+        QCOMPARE(run({"--volume", volume}, &out, &err), 2);
+        QCOMPARE(run({"--volume", volume, "--prefix", prefix, "--volume", volume}, &out, &err), 2);
+        QCOMPARE(run({"--volume", volume, "--prefix", prefix}, &out, &err), 0); QCOMPARE(out, QString("imported 1 files"));
+        QFile imported(prefix + "/usr/share/langid/langid.inv"); QVERIFY(imported.open(QIODevice::ReadOnly)); QCOMPARE(imported.readAll(), QByteArray("inv"));
+        QCOMPARE(run({"--volume", volume, "--prefix", prefix}, &out, &err), 0); QCOMPARE(out, QString("already present"));
+        QVERIFY(QDir(volume + "/usr/share/langid").removeRecursively());
+        QVERIFY(QDir(prefix + "/usr/share/langid").removeRecursively());
+        QCOMPARE(run({"--volume", volume, "--prefix", prefix}, &out, &err), 1); QVERIFY2(err.contains("no /usr/share/langid"), qPrintable(err));
     }
     void langidImport() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
