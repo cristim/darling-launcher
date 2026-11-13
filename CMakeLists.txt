@@ -54,8 +54,7 @@ target_compile_definitions(launcher_core PRIVATE LAUNCHER_PYTHON="${LAUNCHER_PYT
 target_link_libraries(launcher_core PUBLIC Qt6::Core PkgConfig::PLIST)
 add_executable(darling-launcher src/main.cpp src/window.cpp src/mountdialog.cpp src/appbrowser.cpp src/prefixdialog.cpp src/troubleshooting.cpp src/pipeline.cpp src/dyldcachedialog.cpp)
 target_link_libraries(darling-launcher PRIVATE launcher_core Qt6::Widgets Qt6::Concurrent)
-target_compile_definitions(darling-launcher PRIVATE LAUNCHER_MOUNT_SCRIPT="${LAUNCHER_MOUNT_SCRIPT}" LAUNCHER_MOUNT_CRYPTEX_SCRIPT="${LAUNCHER_MOUNT_CRYPTEX_SCRIPT}"
-    LAUNCHER_PYTHON="${LAUNCHER_PYTHON_EXECUTABLE}")
+target_compile_definitions(darling-launcher PRIVATE LAUNCHER_MOUNT_SCRIPT="${LAUNCHER_MOUNT_SCRIPT}" LAUNCHER_MOUNT_CRYPTEX_SCRIPT="${LAUNCHER_MOUNT_CRYPTEX_SCRIPT}")
 install(PROGRAMS tools/mount-macos.py DESTINATION "${LAUNCHER_MOUNT_SCRIPT_DIR}" RENAME "${LAUNCHER_MOUNT_SCRIPT_NAME}")
 install(PROGRAMS tools/mount-cryptex.py DESTINATION "${LAUNCHER_MOUNT_CRYPTEX_DIR}" RENAME "${LAUNCHER_MOUNT_CRYPTEX_NAME}")
 enable_testing()

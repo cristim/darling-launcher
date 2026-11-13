@@ -15,7 +15,7 @@ ctest --test-dir build --output-on-failure
 ./build/darling-launcher
 ```
 
-The core tests use synthetic app bundles, libraries, and Brewfiles. Mount tests cover partition discovery, fixed read-only arguments, and fake pkexec success/cancellation/denial. Prefix-builder tests cover both input scopes, lock preservation and integration failure. The offscreen GUI tests decode a synthetic ICNS icon, exercise keyboard and mouse selection in list/grid views, drag an app into the import area before a fake Darling diagnosis/import/retry sequence, and verify that a built prefix selects its own runtime image.
+The core tests use synthetic app bundles, libraries, and Brewfiles. Mount tests cover partition discovery, fixed read-only arguments, and fake pkexec success/cancellation/denial. Prefix-builder tests cover default-branch-only inputs, lock preservation and integration failure. The offscreen GUI tests decode a synthetic ICNS icon, exercise keyboard and mouse selection in list/grid views, drag an app into the import area before a fake Darling diagnosis/import/retry sequence, and verify that a built prefix selects its own runtime image.
 
 Choose a mounted macOS volume and a separate prefix. **Detect mounted macOS volumes** lists current mounts with a macOS directory layout. **Create prefix** opens the isolated VibeDarling build workflow described below. **Initialize selected prefix** initializes a directory with the already configured Darling runtime. **Scan volume** automatically lists `.app` bundles in subdirectories of `Applications` and `System/Applications`; select any set to copy into the prefix. Imports reject source escapes, unsafe symlinks, and existing targets. Bundle metadata is read with libplist; executable bytes are copied privately and never inspected.
 
@@ -65,8 +65,6 @@ The **Opt in: source fix workflow** action opens the troubleshooting dialog desc
 ## Current limits
 
 App scanning includes subdirectories of `Applications` and `System/Applications`, including Utilities, and requires a usable `CFBundleExecutable` in `Info.plist`. It skips directory symlinks and does not scan inside app bundles. It does not configure native Homebrew or resolve failures for which the loader supplies no absolute `Expected in` path. Framework imports copy a whole framework bundle. A successful Darling exit proves the launcher invocation completed, not that the guest app's UI worked. Real import and launch verification needs a user-selected mounted macOS source and an appropriate Darling runtime.
-
-Known issue: the GUI's mount-all action runs the checkout's `tools/mount-macos.py`, which asks `pkexec` to run itself as root, so a copy of that script the user can modify runs with root privileges. This predates the MCP server and is tracked in PR #24 and PR #11; the MCP server's `mount_plan` does not offer that script from a checkout.
 
 ### Guided path setup
 
@@ -266,7 +264,7 @@ picks when CMake configures it. There are three outcomes:
 2. *Explicit override.* `-DLAUNCHER_PYTHON=<path>` uses only that path under the same rule; if it fails, configuration
    stops with the reason (you asked for it).
 3. *None found.* Without an override, configuration succeeds with a CMake warning that lists every candidate and why
-   it was rejected, and bakes no interpreter. The launcher builds and runs, but the cryptex and Preboot actions are
+   it was rejected, and bakes no interpreter. The launcher builds and runs, but the mount actions (batch and cryptex) are
    disabled with the message "No trusted Python 3.8+ was found when the launcher was configured" and never reach
    `pkexec`. Install a system Python (or pass `-DLAUNCHER_PYTHON`) and reconfigure. The script tests then run with
    the Python that `find_package` found, unprivileged.
@@ -348,7 +346,7 @@ fails when the code touches a variable that is not in this table.
 | `DARLING_LAUNCHER_CONFIG` | Replaces the settings file path. | Same check. Its contents select the `darling` that runs. |
 | `XDG_CONFIG_HOME` | Base of the default settings path (`<it>/cristim/darling-launcher.conf`) when set. | Same check. |
 | `DARLING_LAUNCHER_MCP_ALLOW_ACTIONS` | `1` enables `launch_app`, `import_langid_data` and `stop_prefix` (each call still needs `confirm: true`); `0` or empty disables them. | Any other value refuses to start. |
-| `PATH` | Where `findmnt` is found and, when the settings name no `darling`, where `darling` is found (absolute entries only), so a changed `PATH` selects which `darling` runs. Also forwarded to children. | The user's own `PATH`. `mount_plan` never takes a helper program from it. |
+| `PATH` | Where `findmnt` is found, where `darling-launcher` is found for `import_langid_data`, and, when the settings name no `darling`, where `darling` is found (absolute entries only), so a changed `PATH` selects which program runs. Also forwarded to children. | The user's own `PATH`. `mount_plan` never takes a helper program from it. |
 | `USER`, `LOGNAME`, `LANG`, `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR` | Not read by the server; forwarded unchanged to `darling` and `findmnt` so apps can open windows. | Passed through as they are. |
 
 No other variable is read or forwarded: tokens, `DYLD_*` and everything else in the server's
@@ -364,7 +362,7 @@ when the settings name a runtime root, `DARLING_INSTALL_PREFIX` for `darling` ch
 | `tail_log` | Read-only. Last lines of `launcher.log` or of the newest app this server started (`mcp-launch`). |
 | `mount_plan` | Read-only. Returns the `pkexec`/`mount`/script command lines for you to run; runs nothing. |
 | `launch_app` | Not read-only. `darling exec` of an imported app, with the `darling` selected in the launcher settings (or the first on `PATH`). Needs the opt-in and `confirm: true`. |
-| `import_langid_data` | Not read-only. Copies `/usr/share/langid` from a mounted macOS volume into a managed prefix by running the first `darling-launcher` on `PATH` as `darling-launcher langid-import --volume V --prefix P` (the Import language data button's code, same checks). Needs the opt-in and `confirm: true`. |
+| `import_langid_data` | Not read-only. Copies `/usr/share/langid` from a macOS volume under the launcher mount root or `/run/darling-launcher/<uid>` into a managed prefix by running the first `darling-launcher` on `PATH` as `darling-launcher langid-import --volume V --prefix P` (the Import language data button's code, same checks). Needs the opt-in and `confirm: true`. |
 | `stop_prefix` | Not read-only. `darling shutdown` for a prefix, with the same `darling`. Needs the opt-in and `confirm: true`. |
 
 Safety model:
@@ -378,15 +376,14 @@ Safety model:
   caller cannot choose these paths; a missing tool is an error that says where to install it.
   The `batch` and `cryptex` plans run a launcher script that asks `pkexec` to run itself as
   root, so they are offered only when that script is installed root-owned in
-  `/usr/local/libexec/darling-launcher` or `/usr/libexec/darling-launcher`; a copy in a
-  checkout is never used. This branch has no `install()` rule for the scripts (the rule is
-  part of the cryptex mount action, PR #24), so until that is merged and installed with
-  `sudo cmake --install`, these two kinds return a warning and no command. The
-  per-partition `pkexec mount` and `umount` plans need no script and work now.
-  If `apfs-fuse` or `apfsutil` is not in those directories, the `batch` plan passes an explicit
-  empty value for it (so the script does not search `PATH`) and warns; HFS-only machines still work.
-  The cryptex plan mirrors the documented command of the cryptex mount action (PR #24) and,
-  like `batch`, is offered only from the root-owned install location.
+  `/usr/local/libexec/darling-launcher` or `/usr/libexec/darling-launcher` (`sudo cmake --install
+  <build directory>` puts it there); a copy in a checkout is never used, and until it is installed
+  these two kinds return a warning and no command. The per-partition `pkexec mount` and `umount`
+  plans need no script.
+  The `batch` plan is the bare helper command: `mount-macos.py` takes no mount root and no tool paths,
+  finds `apfs-fuse` and `apfsutil` in `/usr/bin` or `/usr/local/bin` itself and mounts under
+  `/run/darling-launcher/<uid>`. If a tool is missing the plan warns; HFS-only machines still work.
+  The `cryptex` plan passes `--mount-root`, `--apfs-fuse` and an optional `--device` to `mount-cryptex.py`.
 - A prefix is a bare name or an absolute path of a direct, non-symlink child of
   `~/.darling-launcher/prefixes`. Mount directories must be inside
   `~/.darling-launcher/mounts` without symlink components. `..` is refused everywhere.

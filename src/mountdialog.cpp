@@ -28,10 +28,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#ifndef LAUNCHER_PYTHON
-#define LAUNCHER_PYTHON "/usr/bin/python3"
-#endif
-
 namespace {
 // Test builds run user-owned fake helpers; production accepts only root-owned ones.
 unsigned helperOwner() {
@@ -39,6 +35,14 @@ unsigned helperOwner() {
     return getuid();
 #else
     return 0;
+#endif
+}
+// The one interpreter root runs: chosen at configure time (cmake/SelectPython.cmake); test builds point it at a fake.
+QString helperPython() {
+#ifdef LAUNCHER_TEST_USER_OWNED_HELPERS
+    return QStringLiteral(LAUNCHER_PYTHON);
+#else
+    return LauncherMount::launcherPython();
 #endif
 }
 QString installHint() {
@@ -107,7 +111,7 @@ MountDialog::MountDialog(QWidget *parent, std::function<QList<SourceMount>()> pr
     auto *cryptexNote = new QLabel("The cryptex action mounts Preboot with one authorization request (select a partition to pin it), then mounts os.dmg as you.\nThe privileged step only uses root-owned apfs-fuse and apfsutil from /usr/local/bin or /usr/bin and mounts Preboot under /run/darling-launcher/<uid>.\napfs-fuse can use several GB of memory while reading it: unmount the cryptex OS first, then Preboot, if the system slows down.");
     cryptexNote->setWordWrap(true); layout->addWidget(cryptexNote);
     output = new QTextEdit; output->setReadOnly(true); output->setObjectName("mountOutput"); layout->addWidget(output);
-    if (LauncherMount::launcherPython().isEmpty()) {
+    if (helperPython().isEmpty()) {
         cryptexButton->setEnabled(false); prebootUnmountButton->setEnabled(false); output->append(LauncherMount::noPythonMessage());
     } else if (QString problem; !LauncherMount::trustedCryptexScript(QStringLiteral(LAUNCHER_MOUNT_CRYPTEX_SCRIPT), helperOwner(), &problem)) {
         cryptexButton->setEnabled(false); prebootUnmountButton->setEnabled(false); output->append("Cryptex OS mount is disabled: " + problem + "\n" + installHint());
@@ -177,7 +181,7 @@ void MountDialog::mountSelected() {
 }
 void MountDialog::runHelper(const QStringList &selection) {
     QString error;
-    const QString python = LauncherMount::trustedExecutable(QStringLiteral(LAUNCHER_PYTHON), helperOwner(), &error);
+    const QString python = LauncherMount::trustedInterpreter(helperPython(), helperOwner(), &error);
     const QString script = python.isEmpty() ? QString() : LauncherMount::trustedExecutable(QStringLiteral(LAUNCHER_MOUNT_SCRIPT), helperOwner(), &error);
     if (script.isEmpty()) {
         output->append(error + "\nThe mount helper runs as root, so it must be installed root-owned at " LAUNCHER_MOUNT_SCRIPT " (sudo cmake --install <build directory>).");
@@ -229,10 +233,10 @@ void MountDialog::runHelper(const QStringList &selection) {
 
 bool MountDialog::cryptexCommandReady(QString *python) {
     QString error;
-    *python = LauncherMount::trustedInterpreter(LauncherMount::launcherPython(), helperOwner(), &error);
+    *python = LauncherMount::trustedInterpreter(helperPython(), helperOwner(), &error);
     if (!python->isEmpty() && LauncherMount::trustedCryptexScript(QStringLiteral(LAUNCHER_MOUNT_CRYPTEX_SCRIPT), helperOwner(), &error)) return true;
     cryptexButton->setEnabled(false); prebootUnmountButton->setEnabled(false);
-    output->append(error + "\n" + installHint() + "\nThe root-run interpreter (" + LauncherMount::launcherPython() + ") was chosen when the launcher was configured; reconfigure with -DLAUNCHER_PYTHON=<trusted python 3.8+> if it is missing or not root-owned.");
+    output->append(error + "\n" + installHint() + "\nThe root-run interpreter (" + helperPython() + ") was chosen when the launcher was configured; reconfigure with -DLAUNCHER_PYTHON=<trusted python 3.8+> if it is missing or not root-owned.");
     return false;
 }
 

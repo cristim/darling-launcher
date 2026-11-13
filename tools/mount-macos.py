@@ -63,7 +63,6 @@ def describe(error):
 
 
 PKEXEC = "/usr/bin/pkexec"
-PYTHON = "/usr/bin/python3"
 INSTALL_HINT = "install it root-owned and not group/other writable, e.g. under /usr/local/libexec/darling-launcher"
 # Root runs these tools on attacker-influenced devices, so only fixed install locations are accepted.
 APFS_TOOLS = {
@@ -340,7 +339,8 @@ def volume_index(text):
 def authorization_command(options):
     # Root runs only fixed, root-owned programs; nothing comes from PATH or a user-writable file.
     selection = ([f"--device={options.device}"] if options.device is not None else []) + ([f"--volume={options.volume}"] if options.volume is not None else []) + (["--kernel"] if options.kernel else [])
-    return [trusted(PKEXEC), trusted(PYTHON), "-I", trusted(__file__), "--privileged", *selection]
+    # Root runs the interpreter that is running this script: the launcher chose it (root-owned, checked at configure time) and trusted() re-checks it.
+    return [trusted(PKEXEC), trusted(sys.executable), "-I", trusted(__file__), "--privileged", *selection]
 
 
 def main(argv=None):

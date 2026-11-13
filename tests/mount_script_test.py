@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import stat
 import struct
+import sys
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -105,7 +106,7 @@ class MountScriptTest(unittest.TestCase):
             with patch.object(mount, "trusted", side_effect=lambda path: path), patch.object(mount.subprocess, "call", return_value=code) as call, patch.object(mount, "emit"):
                 self.assertEqual(mount.main([]), code)
                 self.assertEqual(call.call_count, 1)
-                self.assertEqual(call.call_args.args[0], ["/usr/bin/pkexec", "/usr/bin/python3", "-I", mount.__file__, "--privileged"])
+                self.assertEqual(call.call_args.args[0], ["/usr/bin/pkexec", sys.executable, "-I", mount.__file__, "--privileged"])
 
     def test_metadata_encryption_and_invalid_indices(self):
         result = mount.volumes("Volume 0 12345678-1234-1234-1234-123456789ABC\nName: macOS\nFileVault: No\nVolume 1 12345678-1234-1234-1234-123456789ABC\nFileVault: Yes\nVolume 100 12345678-1234-1234-1234-123456789ABC\nFileVault: No\n")
@@ -245,8 +246,8 @@ class MountScriptTest(unittest.TestCase):
             script = Path(directory) / "installed-mount-macos.py"
             with patch.dict(os.environ, {"PATH": directory + ":" + os.environ.get("PATH", "")}), patch.object(mount, "__file__", str(script)), patch.object(mount, "trusted", side_effect=lambda path: path) as check:
                 command = mount.authorization_command(SimpleNamespace(device=None, volume=None, kernel=False))
-            self.assertEqual(command[:4], ["/usr/bin/pkexec", "/usr/bin/python3", "-I", str(script)])
-            self.assertEqual([c.args[0] for c in check.call_args_list], ["/usr/bin/pkexec", "/usr/bin/python3", str(script)])
+            self.assertEqual(command[:4], ["/usr/bin/pkexec", sys.executable, "-I", str(script)])
+            self.assertEqual([c.args[0] for c in check.call_args_list], ["/usr/bin/pkexec", sys.executable, str(script)])
 
     def test_user_writable_script_is_never_authorized(self):
         # This test file lives in a user-owned checkout, and so does the script next to it.
