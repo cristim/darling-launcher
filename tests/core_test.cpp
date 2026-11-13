@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <sys/stat.h>
 
 class CoreTest : public QObject {
     Q_OBJECT
@@ -122,6 +123,50 @@ private slots:
         QVERIFY(!LauncherCore::importLibrary(volume, prefix, "/System/Library/PrivateFrameworks/Calculate.framework/Versions/A/Calculate", &error));
         QVERIFY(error.contains("no standalone library file"));
         QVERIFY(!QFileInfo::exists(prefix + "/System/Library/PrivateFrameworks/Calculate.framework"));
+    }
+    void langidImport() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QString volume = temporary.path() + "/volume", prefix = temporary.path() + "/prefix", langid = volume + "/usr/share/langid";
+        QVERIFY(QDir().mkpath(volume + "/usr/share")); QVERIFY(QDir().mkpath(prefix));
+        QStringList copied; QString error;
+        QVERIFY(!LauncherCore::importLangidData(volume, prefix, &copied, &error));
+        QVERIFY2(error.contains("no /usr/share/langid"), qPrintable(error));
+        QVERIFY(!QFileInfo::exists(prefix + "/usr/share/langid"));
+        QVERIFY(QDir().mkpath(langid + "/sub"));
+        auto write = [](const QString &path, const QByteArray &data) { QFile f(path); return f.open(QIODevice::WriteOnly) && f.write(data) == data.size(); };
+        QVERIFY(write(langid + "/langid.inv", "inv")); QVERIFY(write(langid + "/langid_base.inv", "base")); QVERIFY(write(langid + "/sub/extra.bin", "extra"));
+        QVERIFY2(LauncherCore::importLangidData(volume, prefix, &copied, &error), qPrintable(error));
+        copied.sort(); QCOMPARE(copied, (QStringList{"langid.inv", "langid_base.inv", "sub/extra.bin"}));
+        QFile imported(prefix + "/usr/share/langid/langid_base.inv"); QVERIFY(imported.open(QIODevice::ReadOnly)); QCOMPARE(imported.readAll(), QByteArray("base"));
+        QVERIFY(QFileInfo::exists(langid + "/langid.inv"));
+        QVERIFY2(LauncherCore::importLangidData(volume, prefix, &copied, &error), qPrintable(error));
+        QVERIFY(copied.isEmpty());
+        QVERIFY(write(prefix + "/usr/share/langid/langid.inv", "locally changed"));
+        QVERIFY(!LauncherCore::importLangidData(volume, prefix, &copied, &error));
+        QVERIFY2(error.contains("different"), qPrintable(error));
+        QCOMPARE(QFileInfo(prefix + "/usr/share/langid/langid.inv").size(), qint64(15));
+        QVERIFY(QDir(prefix + "/usr/share/langid").removeRecursively());
+        QVERIFY(QDir().mkpath(temporary.path() + "/outside")); QVERIFY(write(temporary.path() + "/outside/secret", "private"));
+        QVERIFY(QFile::link(temporary.path() + "/outside/secret", langid + "/escape"));
+        QVERIFY(!LauncherCore::importLangidData(volume, prefix, &copied, &error));
+        QVERIFY2(error.contains("Symlink leaves"), qPrintable(error));
+        QVERIFY(!QFileInfo::exists(prefix + "/usr/share/langid"));
+        QVERIFY(QFile::remove(langid + "/escape"));
+        QVERIFY(QDir(volume + "/usr/share/langid").removeRecursively());
+        QVERIFY(QFile::link(temporary.path() + "/outside", langid));
+        QVERIFY(!LauncherCore::importLangidData(volume, prefix, &copied, &error));
+        QVERIFY2(error.contains("outside the selected volume"), qPrintable(error));
+        QVERIFY(QFile::remove(langid)); QVERIFY(QDir().mkpath(langid)); QVERIFY(write(langid + "/langid.inv", "inv"));
+        QVERIFY(QDir(prefix + "/usr").removeRecursively());
+        QVERIFY(QFile::link(temporary.path() + "/outside", prefix + "/usr"));
+        QVERIFY(!LauncherCore::importLangidData(volume, prefix, &copied, &error));
+        QVERIFY(!QFileInfo::exists(temporary.path() + "/outside/share"));
+        QVERIFY(QFile::remove(prefix + "/usr"));
+        QVERIFY2(::mkfifo(qPrintable(langid + "/pipe"), 0600) == 0, "mkfifo failed");
+        QElapsedTimer timer; timer.start();
+        QVERIFY(!LauncherCore::importLangidData(volume, prefix, &copied, &error));
+        QVERIFY2(error.contains("Not a regular file"), qPrintable(error));
+        QVERIFY(timer.elapsed() < 5000); QVERIFY(!QFileInfo::exists(prefix + "/usr/share/langid"));
     }
     void catalogBrewfileAndIssue() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());

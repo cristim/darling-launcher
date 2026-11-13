@@ -11,6 +11,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QMap>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStorageInfo>
@@ -90,6 +91,22 @@ bool safeCopy(const QString &source, const QString &destination, const QString &
     if (!copyTree(source, destination, sourceRoot, error)) {
         QFileInfo(destination).isDir() ? QDir(destination).removeRecursively() : QFile::remove(destination);
         return false;
+    }
+    return true;
+}
+
+// Relative path -> kind and content digest, so two trees compare equal without following symlinks.
+// Only regular files are opened; a FIFO, socket or device node would block or misbehave, so it is rejected.
+bool treeDigest(const QString &root, QMap<QString, QByteArray> *digest, QString *error) {
+    QDirIterator files(root, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDirIterator::Subdirectories);
+    while (files.hasNext()) {
+        files.next(); const QFileInfo info = files.fileInfo(); const QString relative = QDir(root).relativeFilePath(info.filePath());
+        if (info.isSymLink()) { digest->insert(relative, "l:" + QDir(info.absolutePath()).relativeFilePath(info.symLinkTarget()).toUtf8()); continue; }
+        if (info.isDir()) { digest->insert(relative, "d"); continue; }
+        if (!info.isFile()) return fail(error, "Not a regular file (FIFO, socket or device): " + info.filePath());
+        QFile file(info.filePath()); QCryptographicHash hash(QCryptographicHash::Sha256);
+        if (!file.open(QIODevice::ReadOnly) || !hash.addData(&file)) return fail(error, "Cannot read: " + info.filePath());
+        digest->insert(relative, "f:" + hash.result());
     }
     return true;
 }
@@ -270,6 +287,29 @@ bool importLibrary(const QString &volume, const QString &prefix, const QString &
     if (!QFileInfo(volume + expectedIn).isFile())
         return fail(error, "The source has no standalone library file at " + expectedIn + ". Framework resources alone cannot satisfy the loader. The library may reside in the macOS dyld shared cache; cache extraction is not supported. No library was imported.");
     return safeCopy(volume + '/' + relative, prefix + '/' + relative, volume, prefix, error);
+}
+
+bool importLangidData(const QString &volume, const QString &prefix, QStringList *copied, QString *error) {
+    if (copied) copied->clear();
+    if (!validateLocations(volume, prefix, error)) return false;
+    const QString source = volume + "/usr/share/langid", destination = prefix + "/usr/share/langid";
+    if (!QFileInfo(source).isDir())
+        return fail(error, "This macOS source has no /usr/share/langid directory. Nothing was copied; the language data may not exist on this macOS version.");
+    const QString sourceRoot = QFileInfo(source).canonicalFilePath();
+    if (!within(sourceRoot, QFileInfo(volume).canonicalFilePath())) return fail(error, "Source is outside the selected volume");
+    QMap<QString, QByteArray> wanted;
+    if (!treeDigest(sourceRoot, &wanted, error)) return false;
+    if (QFileInfo::exists(destination) || QFileInfo(destination).isSymLink()) {
+        if (QFileInfo(destination).isSymLink() || !within(QFileInfo(destination).canonicalFilePath(), QFileInfo(prefix).canonicalFilePath()))
+            return fail(error, "Destination is unsafe: " + destination);
+        QMap<QString, QByteArray> present;
+        if (!treeDigest(destination, &present, error)) return false;
+        if (present == wanted) return true;
+        return fail(error, "The prefix already has a different /usr/share/langid; it was left unchanged. Move it aside to import again.");
+    }
+    if (!safeCopy(source, destination, volume, prefix, error)) return false;
+    if (copied) for (auto it = wanted.cbegin(); it != wanted.cend(); ++it) if (it.value() != "d") *copied << it.key();
+    return true;
 }
 
 MissingSymbol diagnose(const QString &output) {
