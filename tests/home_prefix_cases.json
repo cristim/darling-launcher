@@ -1,0 +1,21 @@
+[
+  {"name": "plain", "home": "@ALIAS@/me", "root": "@ALIAS@/me/x", "expect": "@REAL@/me/x"},
+  {"name": "trailing slash on home", "home": "@ALIAS@/me/", "root": "@ALIAS@/me/x", "expect": "@REAL@/me/x"},
+  {"name": "double slashes", "home": "@ALIAS@//me", "root": "@ALIAS@//me//x", "expect": "@REAL@/me/x"},
+  {"name": "leading double slash", "home": "/@ALIAS@/me", "root": "/@ALIAS@/me/x", "expect": "@REAL@/me/x"},
+  {"name": "double slash only on home", "home": "/@ALIAS@/me", "root": "@ALIAS@/me/x", "expect": "@REAL@/me/x"},
+  {"name": "double slash only on root", "home": "@ALIAS@/me", "root": "/@ALIAS@/me/x", "expect": "@REAL@/me/x"},
+  {"name": "dot components", "home": "@ALIAS@/./me", "root": "@ALIAS@/me/./a/./x", "expect": "@REAL@/me/a/x"},
+  {"name": "root is home", "home": "@ALIAS@/me", "root": "@ALIAS@/me", "expect": "@REAL@/me"},
+  {"name": "root is home with trailing slash", "home": "@ALIAS@/me/", "root": "@ALIAS@/me/", "expect": "@REAL@/me"},
+  {"name": "outside home", "home": "@ALIAS@/me", "root": "/run/user/1000/mounts", "expect": "/run/user/1000/mounts"},
+  {"name": "sibling with the same prefix", "home": "@ALIAS@/me", "root": "@ALIAS@/mex/x", "expect": "@ALIAS@/mex/x"},
+  {"name": "dot-dot leaves home", "home": "@ALIAS@/me", "root": "@ALIAS@/me/../you/x", "expect": "@ALIAS@/you/x"},
+  {"name": "real home needs no rewrite", "home": "@REAL@/me", "root": "@REAL@/me/x", "expect": "@REAL@/me/x"},
+  {"name": "missing home below a symlinked prefix", "home": "@ALIAS@/absent", "root": "@ALIAS@/absent/x", "expect": "@REAL@/absent/x"},
+  {"name": "missing home and missing parents below a symlinked prefix", "home": "@ALIAS@/absent/deeper", "root": "@ALIAS@/absent/deeper/x/y", "expect": "@REAL@/absent/deeper/x/y"},
+  {"name": "home is a dangling symlink", "home": "@DANGLING@", "root": "@DANGLING@/x", "expect": null},
+  {"name": "dangling symlink inside the home path", "home": "@DANGLING@/me", "root": "@DANGLING@/me/x", "expect": null},
+  {"name": "dangling symlink outside the home path is irrelevant", "home": "@ALIAS@/me", "root": "@DANGLING@/x", "expect": "@DANGLING@/x"},
+  {"name": "missing home is left alone", "home": "@REAL@/absent", "root": "@REAL@/absent/x", "expect": "@REAL@/absent/x"}
+]
