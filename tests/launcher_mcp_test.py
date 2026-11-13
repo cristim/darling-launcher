@@ -898,6 +898,11 @@ esac
 """
 
 
+FAKE_LAUNCHER = """echo "argv: $*"
+case "$*" in *broken*) echo "no /usr/share/langid" >&2; exit 1;; esac
+"""
+
+
 class ActionToolsTest(unittest.TestCase):
     def setUp(self):
         self.fx = Fixture(allow_actions=True)
@@ -925,7 +930,8 @@ class ActionToolsTest(unittest.TestCase):
         fx.executable("darling", FAKE_DARLING)
         fx.settings(darling=fx.bin / "darling")
         fx.prefix("default", [("Calc", "Calculator")])
-        for name, arguments in (("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}), ("stop_prefix", {"prefix": "default", "confirm": True})):
+        for name, arguments in (("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}), ("stop_prefix", {"prefix": "default", "confirm": True}),
+                                ("import_langid_data", {"prefix": "default", "volume": "/mnt/system", "confirm": True})):
             result = fx.call(name, arguments)
             self.assertTrue(result["isError"])
             self.assertIn("DARLING_LAUNCHER_MCP_ALLOW_ACTIONS=1", result["content"][0]["text"])
@@ -1212,9 +1218,31 @@ class ActionToolsTest(unittest.TestCase):
         self.fx.server.children[0].wait(timeout=10)
         self.assertTrue((self.fx.bin / "finished").exists())
 
+    def test_import_langid_data_runs_the_launcher_cli_for_that_prefix(self):
+        self.fx.executable("darling-launcher", FAKE_LAUNCHER)
+        data = self.ok("import_langid_data", {"prefix": "default", "volume": "/mnt/system", "confirm": True})
+        self.assertEqual(data["exit_code"], 0)
+        self.assertIn("argv: langid-import --volume /mnt/system --prefix ", data["output"])
+        self.assertIn("/prefixes/default", data["output"])
+
+    def test_import_langid_data_refuses_before_running_anything(self):
+        self.fx.executable("darling-launcher", FAKE_LAUNCHER)
+        self.refused("import_langid_data", {"prefix": "default", "volume": "/mnt/system"}, "missing required argument 'confirm'")
+        self.refused("import_langid_data", {"prefix": "default", "volume": "/mnt/system", "confirm": False}, "confirm must be true")
+        self.refused("import_langid_data", {"prefix": "../../etc", "volume": "/mnt/system", "confirm": True}, "prefix")
+        for volume in ("relative/dir", "/mnt/../etc"):
+            self.refused("import_langid_data", {"prefix": "default", "volume": volume, "confirm": True}, "volume must be an absolute path")
+        self.refused("import_langid_data", {"prefix": "default", "volume": "/mnt/sys\ntem", "confirm": True}, "control characters")
+
+    def test_import_langid_data_reports_a_refused_import_and_a_missing_launcher(self):
+        self.refused("import_langid_data", {"prefix": "default", "volume": "/mnt/system", "confirm": True}, "no darling-launcher executable")
+        self.fx.executable("darling-launcher", FAKE_LAUNCHER)
+        self.fx.prefix("broken")
+        self.refused("import_langid_data", {"prefix": "broken", "volume": "/mnt/system", "confirm": True}, "failed (exit 1): argv: langid-import")
+
     def test_action_tools_declare_themselves_as_not_read_only(self):
         tools = self.fx.server.tools
-        for name in ("launch_app", "stop_prefix"):
+        for name in ("launch_app", "import_langid_data", "stop_prefix"):
             self.assertFalse(tools[name].annotations["readOnlyHint"])
             self.assertTrue(tools[name].description.startswith("NOT read-only."))
             self.assertIn("confirm=true", tools[name].description)

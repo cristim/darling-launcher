@@ -8,7 +8,7 @@ Run it as `python3 -I tools/launcher-mcp.py`. Stdout carries the protocol; all l
 Environment variables read (nothing else is trusted):
   DARLING_LAUNCHER_DATA_DIR            launcher data root, default ~/.darling-launcher
   DARLING_LAUNCHER_CONFIG              launcher settings file, default <XDG_CONFIG_HOME or ~/.config>/cristim/darling-launcher.conf
-  DARLING_LAUNCHER_MCP_ALLOW_ACTIONS   "1" enables launch_app and stop_prefix (still needs confirm=true per call)
+  DARLING_LAUNCHER_MCP_ALLOW_ACTIONS   "1" enables launch_app, import_langid_data and stop_prefix (still needs confirm=true per call)
 """
 import csv
 import json
@@ -40,6 +40,7 @@ MAX_LOG_READ_BYTES = 512 * 1024
 MAX_LOG_TOTAL_CHARS = 50_000
 FINDMNT_TIMEOUT = 10.0
 SHUTDOWN_TIMEOUT = 60.0
+LANGID_TIMEOUT = 300.0
 MAX_TRACKED_CHILDREN = 32
 SAFE_ENV_NAMES = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR")
 
@@ -684,7 +685,7 @@ class Server:
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": SERVER_NAME, "title": "Darling Launcher", "version": SERVER_VERSION},
             "instructions": "Inspect the Darling Launcher's runtime, prefixes, apps, mounts and log with the read-only tools. "
-                            "launch_app and stop_prefix only work when the user started this server with "
+                            "launch_app, import_langid_data and stop_prefix only work when the user started this server with "
                             "DARLING_LAUNCHER_MCP_ALLOW_ACTIONS=1 and need confirm=true. Privileged mounts are never run here: "
                             "mount_plan returns the commands for the user to run.",
         }
@@ -1015,6 +1016,24 @@ def build_tools(server):
             raise ToolError(f"darling shutdown failed (exit {code}): {output[:1000]}")
         return {"prefix": str(prefix), "exit_code": code, "output": output, "truncated": truncated}, f"Requested shutdown of all processes in {prefix.name}."
 
+    def import_langid_data(args):
+        require_actions(args)
+        prefix = resolve_prefix(config, args["prefix"])
+        volume = args["volume"]
+        if not volume.startswith("/") or not control_free(volume) or ".." in volume.split("/"):
+            raise ToolError("volume must be an absolute path of the mounted macOS volume, without '..'")
+        # The copy and every check of it (source and destination confinement, symlinks, special files) are
+        # LauncherCore::importLangidData, reached through the launcher's own CLI; nothing is re-implemented here.
+        binary = find_tool("darling-launcher")
+        if not binary:
+            raise ToolError("no darling-launcher executable on PATH; the import runs the launcher's langid-import command")
+        code, output, truncated, proc = run_capped([binary, "langid-import", "--volume", volume, "--prefix", str(prefix)], child_env(), LANGID_TIMEOUT, True)
+        if code is None:
+            raise ToolError(f"langid-import has not finished after {int(LANGID_TIMEOUT)} seconds; it was stopped")
+        if code != 0:
+            raise ToolError(f"langid-import failed (exit {code}): {output[:1000]}")
+        return {"prefix": str(prefix), "exit_code": code, "output": output, "truncated": truncated}, f"Language data for {prefix.name}: {output.strip()}."
+
     def mount_plan(args):
         """Builds, and never runs, the commands for the user. The shapes mirror LauncherMount::makeCommand
         (src/mount.cpp), tools/mount-macos.py and, for the cryptex kind, makeCryptexCommand and
@@ -1162,6 +1181,13 @@ def build_tools(server):
              {"prefix": prefix_property, "app": {"type": "string", "minLength": 1, "maxLength": 256, "description": "App name or bundle path from list_apps."},
               "confirm": confirm_property, "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 60, "description": "How long to wait for an early exit, default 5."}},
              ["prefix", "app", "confirm"], launch_app, False, {"state": {"type": "string"}, "pid": {"type": "integer"}, "output": {"type": "string"}}),
+        Tool("import_langid_data", "Import macOS language data",
+             disabled_note + "Copies /usr/share/langid (langid.inv and friends, needed by apps such as Calculator) from a mounted macOS volume into the prefix, like the launcher's "
+             "Import language data button, by running `darling-launcher langid-import` (the first `darling-launcher` on PATH). The volume must be the mount root that contains usr/share/langid, "
+             "typically the mounted System volume; an existing identical copy is a no-op and a different one is left unchanged.",
+             {"prefix": prefix_property, "volume": {"type": "string", "minLength": 1, "maxLength": 1024, "description": "Absolute path of the mounted macOS volume that has usr/share/langid."},
+              "confirm": confirm_property},
+             ["prefix", "volume", "confirm"], import_langid_data, False, {"exit_code": {"type": "integer"}, "output": {"type": "string"}}),
         Tool("stop_prefix", "Stop prefix processes",
              disabled_note + "Runs `darling shutdown` for the prefix (with the `darling` from the launcher settings, or the first on PATH), which ends every app running in that prefix. It asks Darling to shut down; it never "
              "sends signals itself, and if the command does not finish in 60 seconds it is left running.",

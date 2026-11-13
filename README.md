@@ -19,7 +19,7 @@ The core tests use synthetic app bundles, libraries, and Brewfiles. Mount tests 
 
 Choose a mounted macOS volume and a separate prefix. **Detect mounted macOS volumes** lists current mounts with a macOS directory layout. **Create prefix** opens the isolated VibeDarling build workflow described below. **Initialize selected prefix** initializes a directory with the already configured Darling runtime. **Scan volume** automatically lists `.app` bundles in subdirectories of `Applications` and `System/Applications`; select any set to copy into the prefix. Imports reject source escapes, unsafe symlinks, and existing targets. Bundle metadata is read with libplist; executable bytes are copied privately and never inspected.
 
-**Import language data** copies `/usr/share/langid` (for example `langid.inv` and `langid_base.inv`) from the selected mounted macOS volume to the same path in the selected prefix. Frameworks served from the dyld shared cache, such as Calculator's text stack, assert that these files exist. The data is Apple's and comes only from your own Mac at run time; it is never committed or bundled. The source is read-only, symlinks that leave the directory are rejected, an identical existing copy is reported as already present, a different existing copy is left unchanged, and a source without the directory (older or newer macOS) reports that nothing was copied.
+**Import language data** copies `/usr/share/langid` (for example `langid.inv` and `langid_base.inv`) from the selected mounted macOS volume to the same path in the selected prefix. Frameworks served from the dyld shared cache, such as Calculator's text stack, assert that these files exist. The data is Apple's and comes only from your own Mac at run time; it is never committed or bundled. The source is read-only, symlinks that leave the directory are rejected, an identical existing copy is reported as already present, a different existing copy is left unchanged, and a source without the directory (older or newer macOS) reports that nothing was copied. The same import runs headless as `darling-launcher langid-import --volume DIR --prefix DIR`.
 
 **Mount macOS source** lists detected APFS/HFS partitions using `lsblk`. Choose a partition, a kernel driver or APFS FUSE, and an APFS volume index (required for the kernel driver). It runs the same root-owned helper as the batch mount (`tools/mount-macos.py --device ... --volume ... [--kernel]`) through `pkexec`, which mounts under `/run/darling-launcher/<uid>/` with read-only, nodev, nosuid and noexec options. The kernel path requires an installed filesystem module; APFS FUSE requires `apfs-fuse`. Authorization cancellation and denial stop the action. The source field is updated only after verifying the mount and macOS layout. You can explicitly unmount a source the helper mounted during this launcher session (only mount points under that root-owned directory are accepted); it is not unmounted on exit. Encrypted APFS unlocking is outside this workflow. Driver option references: [APFS FUSE](https://github.com/sgan81/apfs-fuse) and [Linux APFS](https://github.com/eafer/linux-apfs-rw).
 
@@ -327,7 +327,7 @@ and no Qt, and runs as its own process; nothing in the GUI changes. Register it 
 
 ```sh
 claude mcp add darling-launcher -- python3 -I /absolute/path/to/tools/launcher-mcp.py
-# to allow launch_app and stop_prefix as well:
+# to allow launch_app, import_langid_data and stop_prefix as well:
 claude mcp add darling-launcher -e DARLING_LAUNCHER_MCP_ALLOW_ACTIONS=1 -- python3 -I /absolute/path/to/tools/launcher-mcp.py
 ```
 
@@ -346,7 +346,7 @@ fails when the code touches a variable that is not in this table.
 | `DARLING_LAUNCHER_DATA_DIR` | Replaces `~/.darling-launcher` (prefixes, mounts, runtimes, logs). | Same check; every path the tools accept is confined below it. |
 | `DARLING_LAUNCHER_CONFIG` | Replaces the settings file path. | Same check. Its contents select the `darling` that runs. |
 | `XDG_CONFIG_HOME` | Base of the default settings path (`<it>/cristim/darling-launcher.conf`) when set. | Same check. |
-| `DARLING_LAUNCHER_MCP_ALLOW_ACTIONS` | `1` enables `launch_app` and `stop_prefix` (each call still needs `confirm: true`); `0` or empty disables them. | Any other value refuses to start. |
+| `DARLING_LAUNCHER_MCP_ALLOW_ACTIONS` | `1` enables `launch_app`, `import_langid_data` and `stop_prefix` (each call still needs `confirm: true`); `0` or empty disables them. | Any other value refuses to start. |
 | `PATH` | Where `findmnt` is found and, when the settings name no `darling`, where `darling` is found (absolute entries only), so a changed `PATH` selects which `darling` runs. Also forwarded to children. | The user's own `PATH`. `mount_plan` never takes a helper program from it. |
 | `USER`, `LOGNAME`, `LANG`, `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR` | Not read by the server; forwarded unchanged to `darling` and `findmnt` so apps can open windows. | Passed through as they are. |
 
@@ -363,6 +363,7 @@ when the settings name a runtime root, `DARLING_INSTALL_PREFIX` for `darling` ch
 | `tail_log` | Read-only. Last lines of `launcher.log` or of the newest app this server started (`mcp-launch`). |
 | `mount_plan` | Read-only. Returns the `pkexec`/`mount`/script command lines for you to run; runs nothing. |
 | `launch_app` | Not read-only. `darling exec` of an imported app, with the `darling` selected in the launcher settings (or the first on `PATH`). Needs the opt-in and `confirm: true`. |
+| `import_langid_data` | Not read-only. Copies `/usr/share/langid` from a mounted macOS volume into a managed prefix by running the first `darling-launcher` on `PATH` as `darling-launcher langid-import --volume V --prefix P` (the Import language data button's code, same checks). Needs the opt-in and `confirm: true`. |
 | `stop_prefix` | Not read-only. `darling shutdown` for a prefix, with the same `darling`. Needs the opt-in and `confirm: true`. |
 
 Safety model:
