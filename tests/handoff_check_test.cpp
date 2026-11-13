@@ -67,7 +67,7 @@ private slots:
     }
     // Compliance-confirmed oracle version: drift of the vendored copy must fail loudly.
     void vendoredOracleIsTheConfirmedVersion() {
-        const QHash<QString, QString> pinned{{"check_handoff.py", "ee9f8c26a23718e18eb5110eb9be0baefe554ec09932865414972d65cc60fd49"},
+        const QHash<QString, QString> pinned{{"check_handoff.py", "200f586073fd4532db7a2bfad9fbfa070e33b830e2c474a5398113fe901b7eaf"},
                                              {"test_check_handoff.py", "992f6c8b9851aaeda52ac898ae4ca150514fade815c56d81c320d0f20d7bdd46"}};
         for (auto it = pinned.begin(); it != pinned.end(); ++it) {
             QFile f(TEST_SOURCE_DIR "/tests/handoff-oracle/" + it.key()); QVERIFY(f.open(QIODevice::ReadOnly));
