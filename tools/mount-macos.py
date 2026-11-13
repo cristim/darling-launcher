@@ -129,29 +129,42 @@ def open_child(parent_fd, name, mode=None, group=0):
     return descriptor
 
 
-def caller_only_acl(uid):
-    """system.posix_acl_access value: root rwx, the caller r-x, nobody else (Linux xattr ACL v2 layout)."""
+ACL_NAME = "system.posix_acl_access"
+
+
+def caller_acl(uid):
+    """system.posix_acl_access value: root rwx, only <uid> --x, nobody else (Linux POSIX ACL xattr version 2)."""
     undefined = 0xFFFFFFFF
-    entries = ((0x01, 7, undefined), (0x02, 5, uid), (0x04, 0, undefined), (0x10, 5, undefined), (0x20, 0, undefined))
+    entries = ((0x01, 7, undefined),  # user::rwx
+               (0x02, 1, uid),        # user:<uid>:--x
+               (0x04, 0, undefined),  # group::---
+               (0x10, 1, undefined),  # mask::--x
+               (0x20, 0, undefined))  # other::---
     return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries)
 
 
-def restrict_to_caller(descriptor, uid, gid):
-    """Let only the caller into parent/<uid>; without ACL support fall back to the primary group."""
+def restrict_to_caller(target, uid, setxattr=None, getxattr=None):
+    """Make parent/<uid> (a path or a descriptor) root 0700 plus an ACL entry that lets only the caller traverse it.
+
+    Mounts carry the caller's primary group, which may be shared, and Preboot is mounted with allow_other, so
+    there is no weaker fallback: without a working ACL this refuses. tools/mount-cryptex.py uses this same function."""
+    setxattr, getxattr = setxattr or os.setxattr, getxattr or os.getxattr
+    os.chmod(target, 0o700)  # before the ACL: chmod would reset the ACL mask
+    acl = caller_acl(uid)
     try:
-        os.setxattr(descriptor, "system.posix_acl_access", caller_only_acl(uid))
-        return True
+        setxattr(target, ACL_NAME, acl)
+        applied = getxattr(target, ACL_NAME)
     except OSError as error:
-        if error.errno not in (errno.EOPNOTSUPP, errno.ENOTSUP):
-            raise
-    os.fchown(descriptor, 0, gid)
-    return False
+        raise ValueError(f"Cannot restrict the mount directory to your account with a POSIX ACL ({error.strerror or error}); "
+                         "refusing to mount where other local users could read it") from None
+    if applied != acl:
+        raise ValueError("The POSIX ACL on the mount directory was not applied as requested; refusing to mount")
 
 
-def open_mount_parent(uid, gid, parent=MOUNT_PARENT):
+def open_mount_parent(uid, parent=MOUNT_PARENT):
     """Open parent/<uid>, creating the last two levels; every component must be root-owned.
-    parent is root:root 0755; parent/<uid> is root 0750 with an ACL for the caller only.
-    Returns the descriptor and whether the ACL could be set."""
+    parent is root:root 0755; parent/<uid> is root 0700 with an ACL for the caller only (restrict_to_caller).
+    Returns the descriptor."""
     parts = Path(parent).parts
     if not Path(parent).is_absolute() or len(parts) < 2 or ".." in parts:
         raise ValueError(f"Invalid mount parent: {parent}")
@@ -160,16 +173,16 @@ def open_mount_parent(uid, gid, parent=MOUNT_PARENT):
         if not root_owned(os.fstat(descriptor)):
             raise ValueError("/ must be root-owned")
         names = list(parts[1:]) + [str(uid)]
-        managed = {len(names) - 2: (0o755, 0), len(names) - 1: (0o750, 0)}
+        managed = {len(names) - 2: (0o755, 0), len(names) - 1: (0o700, 0)}
         for index, name in enumerate(names):
             child = open_child(descriptor, name, *managed.get(index, (None, 0)))
             os.close(descriptor)
             descriptor = child
-        private = restrict_to_caller(descriptor, uid, gid)
+        restrict_to_caller(descriptor, uid)
     except BaseException:
         os.close(descriptor)
         raise
-    return descriptor, private
+    return descriptor
 
 
 def mount_directory(parent_fd, name):
@@ -206,10 +219,8 @@ def release(target, run_command):
 
 
 def mount_batch(options, uid, gid, run_command=run, emit_event=emit, check_device=None, parent=MOUNT_PARENT):
-    parent_fd, private = open_mount_parent(uid, gid, parent)
+    parent_fd = open_mount_parent(uid, parent)
     try:
-        if not private:
-            emit_event("warning", message="POSIX ACLs are unavailable under the mount parent, so members of your primary group can reach these mounts")
         return mount_volumes(Path(parent) / str(uid), parent_fd, options, uid, gid, run_command, emit_event, check_device)
     finally:
         os.close(parent_fd)

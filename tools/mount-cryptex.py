@@ -24,7 +24,6 @@ import pwd
 import re
 import shutil
 import stat
-import struct
 import subprocess
 import sys
 import time
@@ -61,7 +60,6 @@ UUID = re.compile(r"[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")
 DYLD_WAIT_SECONDS = 30
 TRUSTED_DIRECTORIES = ("/usr/local/bin", "/usr/bin")
 RUNTIME_PARENT = "/run/darling-launcher"
-ACL_NAME = "system.posix_acl_access"
 UMOUNT = "/usr/bin/umount"
 
 
@@ -218,14 +216,7 @@ def preboot_path(uid, parent=RUNTIME_PARENT):
 
 
 def caller_acl(uid):
-    """system.posix_acl_access value: root rwx, only <uid> --x, nobody else (Linux POSIX ACL xattr version 2)."""
-    undefined = 0xFFFFFFFF
-    entries = ((0x01, 7, undefined),  # user::rwx
-               (0x02, 1, uid),        # user:<uid>:--x
-               (0x04, 0, undefined),  # group::---
-               (0x10, 1, undefined),  # mask::--x
-               (0x20, 0, undefined))  # other::---
-    return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries)
+    return base.caller_acl(uid)
 
 
 def _set_acl(path, name, value):
@@ -237,17 +228,8 @@ def _get_acl(path, name):
 
 
 def restrict_to_caller(directory, uid, setxattr=_set_acl, getxattr=_get_acl):
-    """Make <directory> root:root 0700 plus an ACL entry that lets only the caller traverse it; fail closed."""
-    os.chmod(directory, 0o700)  # before the ACL: chmod would reset the ACL mask
-    acl = caller_acl(uid)
-    try:
-        setxattr(str(directory), ACL_NAME, acl)
-        applied = getxattr(str(directory), ACL_NAME)
-    except OSError as error:
-        raise ValueError(f"Cannot restrict {directory} to your account with a POSIX ACL ({error.strerror or error}); "
-                         "refusing to mount Preboot where other local users could read it") from None
-    if applied != acl:
-        raise ValueError(f"The POSIX ACL on {directory} was not applied as requested; refusing to mount Preboot")
+    """The per-user directory policy is mount-macos.py's restrict_to_caller, shared so both scripts apply one rule."""
+    base.restrict_to_caller(str(directory), uid, setxattr, getxattr)
 
 
 def prepare_preboot_directory(uid, parent=RUNTIME_PARENT, lstat=os.lstat, setxattr=_set_acl, getxattr=_get_acl):

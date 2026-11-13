@@ -216,10 +216,11 @@ block devices, obtains APFS volume indices from filesystem metadata, mounts unde
 nothing but root can re-point a mount point), and verifies device, target and
 read-only flags afterwards; if that fails, only the helper's own mount point is
 unmounted (lazily when busy). `/run/darling-launcher/<uid>` is root-owned, mode
-0750, with a POSIX ACL that lets only your uid in, so other users cannot reach the
-mounted contents. Where `/run` has no ACL support it falls back to
-`root:<your primary group>` and the helper warns that members of a shared primary
-group can reach the mounts.
+0700, with a POSIX ACL that lets only your uid traverse it, so other users cannot
+reach the mounted contents. This is one policy for the batch helper and the
+cryptex script (`restrict_to_caller` in `tools/mount-macos.py`): where `/run` has no
+ACL support both refuse to mount, because the mounts carry your primary group, which
+may be shared, and Preboot is mounted with `allow_other`.
 APFS FUSE runs with `default_permissions`, so the kernel enforces the `uid=`/`gid=`
 ownership. Errors name the failing step, not file paths or tool output.
 Progress and discovered application sources are emitted as JSON lines. Individual

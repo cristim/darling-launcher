@@ -142,7 +142,7 @@ class MountScriptTest(unittest.TestCase):
             self.assertEqual(fixture.mounts(), [])
             (fixture.root / "run").chmod(0o777)
             with as_root(), self.assertRaises(ValueError):
-                mount.open_mount_parent(UID, GID, fixture.parent)
+                mount.open_mount_parent(UID, fixture.parent)
             self.assertFalse(Path(fixture.parent).exists())
 
     def test_symlink_in_the_mount_parent_is_refused(self):
@@ -151,7 +151,7 @@ class MountScriptTest(unittest.TestCase):
             (root / "real").mkdir()
             (root / "run").symlink_to(root / "real", target_is_directory=True)
             with as_root(), self.assertRaises(ValueError):
-                mount.open_mount_parent(UID, GID, str(root / "run/darling-launcher"))
+                mount.open_mount_parent(UID, str(root / "run/darling-launcher"))
             self.assertEqual(list((root / "real").iterdir()), [])
 
     def test_mount_directory_swapped_before_mounting_is_not_mounted(self):
@@ -346,7 +346,7 @@ class MountScriptTest(unittest.TestCase):
             parent, per_user = Path(fixture.parent), Path(fixture.parent) / str(UID)
             volume = per_user / "synthetic-volume-0"
             modes = {path: stat.S_IMODE(os.stat(path).st_mode) for path in (parent, per_user, volume)}
-            self.assertEqual(modes, {parent: 0o755, per_user: 0o750, volume: 0o700})
+            self.assertEqual(modes, {parent: 0o755, per_user: 0o710, volume: 0o700})  # the ACL mask (--x) shows in the group bits
             owners = {inode: (uid, gid) for inode, uid, gid in CHOWNS}
             self.assertEqual(owners, {os.stat(parent).st_ino: (0, 0), os.stat(per_user).st_ino: (0, 0), os.stat(volume).st_ino: (0, 0)})
 
@@ -355,23 +355,24 @@ class MountScriptTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory)
             try:
-                os.setxattr(directory, "system.posix_acl_access", mount.caller_only_acl(UID))
+                os.setxattr(directory, "system.posix_acl_access", mount.caller_acl(UID))
             except OSError:
                 self.skipTest("no POSIX ACL support for the test directory")
             fixture.batch()
             value = os.getxattr(Path(fixture.parent) / str(UID), "system.posix_acl_access")
             entries = {(tag, perm, ident) for tag, perm, ident in struct.iter_unpack("<HHI", value[4:])}
-            self.assertEqual(entries, {(0x01, 7, 0xFFFFFFFF), (0x02, 5, UID), (0x04, 0, 0xFFFFFFFF), (0x10, 5, 0xFFFFFFFF), (0x20, 0, 0xFFFFFFFF)})
+            self.assertEqual(entries, {(0x01, 7, 0xFFFFFFFF), (0x02, 1, UID), (0x04, 0, 0xFFFFFFFF), (0x10, 1, 0xFFFFFFFF), (0x20, 0, 0xFFFFFFFF)})
             self.assertFalse(any(e["event"] == "warning" for e in fixture.events))
 
-    def test_without_acl_support_the_primary_group_is_used_and_reported(self):
+    def test_without_acl_support_nothing_is_mounted(self):
+        # No group fallback: the mounts carry a possibly shared primary group and Preboot uses allow_other.
         with tempfile.TemporaryDirectory() as directory:
             fixture = Fixture(directory)
             with patch.object(mount.os, "setxattr", side_effect=OSError(errno.EOPNOTSUPP, "Operation not supported")):
-                self.assertEqual(len(fixture.batch()), 1)
-            per_user = Path(fixture.parent) / str(UID)
-            self.assertIn((os.stat(per_user).st_ino, 0, GID), CHOWNS)
-            self.assertTrue(any(e["event"] == "warning" and "primary group" in e["message"] for e in fixture.events))
+                with self.assertRaisesRegex(ValueError, "POSIX ACL"):
+                    fixture.batch()
+            self.assertEqual(fixture.mounts(), [])
+            self.assertNotIn(GID, [group for _, _, group in CHOWNS if group != 0])
 
     def test_privileged_branch_sets_a_private_umask(self):
         with patch.object(mount.os, "geteuid", return_value=0), patch.dict(os.environ, {"PKEXEC_UID": str(UID or 1000)}), \
