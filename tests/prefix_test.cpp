@@ -865,11 +865,11 @@ private slots:
         QFile changed(script); QVERIFY(changed.open(QIODevice::WriteOnly | QIODevice::Truncate));
         changed.write("import pathlib; pathlib.Path(" + QByteArray("'") + QFile::encodeName(temporary.path() + "/ran") + "').write_text('x')\n" + body); changed.close();
         PrefixBuilder builder; QSignalSpy completed(&builder, &PrefixBuilder::completed), phases(&builder, &PrefixBuilder::phaseChanged);
-        builder.start({QStandardPaths::findExecutable("python3"), script, source, temporary.path() + "/new", false, 1, {}, pinned});
+        builder.start({QStandardPaths::findExecutable("python3"), script, source, temporary.path() + "/new", 1, {}, pinned});
         QTRY_COMPARE_WITH_TIMEOUT(completed.size(), 1, 5000); QVERIFY(!completed.first()[0].toBool());
         QVERIFY2(completed.first()[1].toString().contains("changed after it was selected"), qPrintable(completed.first()[1].toString()));
         QCOMPARE(phases.size(), 0); QVERIFY(!QFileInfo::exists(temporary.path() + "/ran"));
-        PrefixBuildRequest unpinned{QStandardPaths::findExecutable("python3"), script, source, temporary.path() + "/new", false, 1, {}}; QString error;
+        PrefixBuildRequest unpinned{QStandardPaths::findExecutable("python3"), script, source, temporary.path() + "/new", 1, {}}; QString error;
         QVERIFY(!LauncherPrefix::validateRequest(unpinned, &error));
     }
     void stopOnIntegrationFailure() {
