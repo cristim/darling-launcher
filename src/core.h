@@ -34,6 +34,8 @@ bool looksLikeMacVolume(const QString &root);
 bool validateLocations(const QString &volume, const QString &prefix, QString *error);
 bool importApp(const QString &volume, const QString &prefix, const QString &relativeBundle, AppEntry *result, QString *error);
 bool importLibrary(const QString &volume, const QString &prefix, const QString &expectedIn, QString *error);
+// Copies <volume>/usr/share/langid into the prefix. `copied` lists relative files written (empty when already present and identical).
+bool importLangidData(const QString &volume, const QString &prefix, QStringList *copied, QString *error);
 struct TrashReceipt { QString prefix, bundle, trashedPath; QJsonObject record; };
 bool trashApp(const QString &prefix, const QString &bundle, QString *error, TrashReceipt *receipt = nullptr);
 bool restoreApp(const TrashReceipt &receipt, QString *error);
