@@ -49,7 +49,7 @@ NAME_RE = re.compile(r"^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._ +-]{0,127}$")
 TAG_RE = re.compile(r"^v(\d{4})\.(\d\d)\.(\d\d)-([0-9a-f]{7})(?:-r(\d+))?$")
 DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9_/-]+$")
 MOUNT_PLAN_ARGUMENTS = {
-    "batch": {"mount_root"},
+    "batch": set(),
     "cryptex": {"mount_root", "device"},
     "partition": {"device", "filesystem", "backend", "volume_index", "directory"},
     "unmount": {"directory"},
@@ -427,7 +427,7 @@ def check_root_chain(path):
 
 
 # Where `cmake --install` puts mount-macos.py and mount-cryptex.py: <libexecdir>/darling-launcher for the /usr/local and /usr
-# prefixes. Mirrors CMakeLists.txt on branch feat/cryptex-mount-action; nothing is imported from there.
+# prefixes. Mirrors CMakeLists.txt; nothing is imported from it.
 INSTALLED_SCRIPT_DIRECTORIES = ("/usr/local/libexec/darling-launcher", "/usr/libexec/darling-launcher")
 
 
@@ -1019,9 +1019,17 @@ def build_tools(server):
     def import_langid_data(args):
         require_actions(args)
         prefix = resolve_prefix(config, args["prefix"])
-        volume = args["volume"]
-        if not volume.startswith("/") or not control_free(volume) or ".." in volume.split("/"):
-            raise ToolError("volume must be an absolute path of the mounted macOS volume, without '..'")
+        volume = None
+        # Only volumes the launcher mounted: under its mount root, or under /run/darling-launcher/<uid> where the pinned helper mounts.
+        for root in (config.mount_root, Path(f"/run/darling-launcher/{os.getuid()}")):
+            try:
+                volume = str(resolve_under(root, args["volume"], "volume", True))
+                break
+            except ToolError as error:
+                if "is outside the launcher mount root" not in str(error):
+                    raise
+        if volume is None:
+            raise ToolError(f"volume must be inside the launcher mount root {config.mount_root} or /run/darling-launcher/<uid>")
         # The copy and every check of it (source and destination confinement, symlinks, special files) are
         # LauncherCore::importLangidData, reached through the launcher's own CLI; nothing is re-implemented here.
         binary = find_tool("darling-launcher")
@@ -1035,9 +1043,9 @@ def build_tools(server):
         return {"prefix": str(prefix), "exit_code": code, "output": output, "truncated": truncated}, f"Language data for {prefix.name}: {output.strip()}."
 
     def mount_plan(args):
-        """Builds, and never runs, the commands for the user. The shapes mirror LauncherMount::makeCommand
-        (src/mount.cpp), tools/mount-macos.py and, for the cryptex kind, makeCryptexCommand and
-        tools/mount-cryptex.py as documented on branch feat/cryptex-mount-action; nothing is imported from there."""
+        """Builds, and never runs, the commands for the user. The shapes mirror tools/mount-macos.py (batch: no arguments),
+        tools/mount-cryptex.py (cryptex: --mount-root, --apfs-fuse, --device) and the per-partition mount of the launcher
+        helper; nothing is imported from them."""
         kind = args["kind"]
         extra = sorted(set(args) - {"kind"} - MOUNT_PLAN_ARGUMENTS[kind])
         if extra:
@@ -1051,7 +1059,6 @@ def build_tools(server):
                 warnings.append(f"{path} is not empty; the mount will be refused")
 
         if kind in ("batch", "cryptex"):
-            root = resolve_under(config.mount_root, args.get("mount_root", str(config.mount_root)), "mount_root", True)
             if "device" in args and (not DEVICE_RE.match(args["device"]) or ".." in args["device"]):
                 raise ToolError("device must be a detected device path under /dev")
             script_name = "mount-macos.py" if kind == "batch" else "mount-cryptex.py"
@@ -1061,27 +1068,25 @@ def build_tools(server):
             if script is None:
                 warnings.append(f"No command is offered for kind {kind!r}: {script_name} is not installed in {' or '.join(INSTALLED_SCRIPT_DIRECTORIES)}. "
                                 "The script runs as root through pkexec, so a copy in a checkout or home directory is never used. "
-                                "This launcher build has no install rule for it yet: the script plans become available once the launcher's install rule "
-                                "(the cryptex mount action, PR #24) is merged and `sudo cmake --install <build directory>` has been run. "
+                                "Run `sudo cmake --install <build directory>` from a launcher build to install it. "
                                 "The per-partition kinds 'partition' and 'unmount' need no script and work now.")
             else:
-                argv = [system_tool("python3"), "-I", script, "--mount-root", str(root)]
+                argv = [system_tool("python3"), "-I", script]
                 if kind == "cryptex":
-                    argv += ["--apfs-fuse", system_tool("apfs-fuse")]
-                else:
-                    # Explicit empty values keep the script from falling back to a PATH lookup; HFS-only machines still work.
-                    for flag, tool in (("--apfs-fuse", "apfs-fuse"), ("--apfsutil", "apfsutil")):
-                        found = trusted_file(TRUSTED_DIRECTORIES, tool, True)
-                        argv += [flag, found or ""]
-                        if found is None:
-                            warnings.append(f"{tool} was not found in {' or '.join(TRUSTED_DIRECTORIES)}; APFS partitions will report an error (HFS partitions are unaffected)")
-                if kind == "batch":
-                    description = "Mount every detected macOS partition read-only. The script asks for one pkexec authorization itself; run it in a desktop terminal."
-                else:
+                    root = resolve_under(config.mount_root, args.get("mount_root", str(config.mount_root)), "mount_root", True)
+                    argv += ["--mount-root", str(root), "--apfs-fuse", system_tool("apfs-fuse")]
                     if "device" in args:
                         argv += ["--device", args["device"]]
                     description = "Mount the Preboot volume (one pkexec request) and then the cryptex OS image read-only. Run it in a desktop terminal."
-                directory_warnings(root, False)
+                    directory_warnings(root, False)
+                else:
+                    # The helper takes no paths: it finds apfs-fuse and apfsutil in fixed root-owned locations and mounts under
+                    # /run/darling-launcher/<uid>. A missing tool only affects APFS partitions.
+                    for tool in ("apfs-fuse", "apfsutil"):
+                        if trusted_file(TRUSTED_DIRECTORIES, tool, True) is None:
+                            warnings.append(f"{tool} was not found in {' or '.join(TRUSTED_DIRECTORIES)}; APFS partitions will report an error (HFS partitions are unaffected)")
+                    description = ("Mount every detected macOS partition read-only under /run/darling-launcher/<your uid>. "
+                                   "The script asks for one pkexec authorization itself; run it in a desktop terminal.")
                 commands.append({"description": description, "run_as": "you (the script requests pkexec itself)", "argv": argv})
         elif kind == "partition":
             for name in ("device", "filesystem", "backend"):
@@ -1159,13 +1164,13 @@ def build_tools(server):
              "'partition' (one partition with pkexec mount or apfs-fuse), 'cryptex' (Preboot plus os.dmg) or 'unmount'. All mounts are read-only with nodev, nosuid and "
              "noexec. This server never calls sudo or pkexec. Helper programs (pkexec, mount, umount, python3, apfs-fuse, apfsutil) are only taken from root-owned "
              "files in /usr/local/bin or /usr/bin and cannot be chosen by the caller. The mount scripts of kinds 'batch' and 'cryptex' run as root through pkexec, so those kinds "
-             "return a command only when the script is installed root-owned in <libexecdir>/darling-launcher, which needs the launcher's install rule from PR #24 (until it is merged "
-             "and installed they return a warning and no command; kinds 'partition' and 'unmount' work now). Directories must be inside the launcher mount root; any other argument is rejected. "
+             "return a command only when the script is installed root-owned in <libexecdir>/darling-launcher, which `sudo cmake --install <build directory>` installs (until then "
+             "they return a warning and no command; kinds 'partition' and 'unmount' need no script). Directories must be inside the launcher mount root; any other argument is rejected. "
              "Fields are redacted like every result (home paths shown as ~); the 'shell' string of each command is the copy-paste form for the user's own terminal "
              "and refers to the home directory as \"$HOME\", so run it in the user's shell. A user-name component that had to be hidden appears as the quoted "
              "placeholder '<user>' and is listed in notes.",
              {"kind": {"type": "string", "enum": list(MOUNT_PLAN_ARGUMENTS)},
-              "mount_root": {"type": "string", "maxLength": 1024, "description": "kinds batch, cryptex: mount root, default the launcher mount root."},
+              "mount_root": {"type": "string", "maxLength": 1024, "description": "kind cryptex: mount root, default the launcher mount root."},
               "device": {"type": "string", "maxLength": 256, "description": "kinds partition, cryptex: block device such as /dev/nvme0n1p5."},
               "filesystem": {"type": "string", "enum": ["apfs", "hfs", "hfsplus"], "description": "kind partition."},
               "backend": {"type": "string", "enum": ["kernel", "apfs-fuse"], "description": "kind partition."},
@@ -1182,10 +1187,10 @@ def build_tools(server):
               "confirm": confirm_property, "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 60, "description": "How long to wait for an early exit, default 5."}},
              ["prefix", "app", "confirm"], launch_app, False, {"state": {"type": "string"}, "pid": {"type": "integer"}, "output": {"type": "string"}}),
         Tool("import_langid_data", "Import macOS language data",
-             disabled_note + "Copies /usr/share/langid (langid.inv and friends, needed by apps such as Calculator) from a mounted macOS volume into the prefix, like the launcher's "
+             disabled_note + "Copies /usr/share/langid (langid.inv and friends, needed by apps such as Calculator) from a macOS volume mounted under the launcher mount root or /run/darling-launcher/<uid> into the prefix, like the launcher's "
              "Import language data button, by running `darling-launcher langid-import` (the first `darling-launcher` on PATH). The volume must be the mount root that contains usr/share/langid, "
              "typically the mounted System volume; an existing identical copy is a no-op and a different one is left unchanged.",
-             {"prefix": prefix_property, "volume": {"type": "string", "minLength": 1, "maxLength": 1024, "description": "Absolute path of the mounted macOS volume that has usr/share/langid."},
+             {"prefix": prefix_property, "volume": {"type": "string", "minLength": 1, "maxLength": 1024, "description": "Absolute path of the mounted macOS volume (inside the launcher mount root or /run/darling-launcher/<uid>) that has usr/share/langid."},
               "confirm": confirm_property},
              ["prefix", "volume", "confirm"], import_langid_data, False, {"exit_code": {"type": "integer"}, "output": {"type": "string"}}),
         Tool("stop_prefix", "Stop prefix processes",

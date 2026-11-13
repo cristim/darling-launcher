@@ -931,7 +931,7 @@ class ActionToolsTest(unittest.TestCase):
         fx.settings(darling=fx.bin / "darling")
         fx.prefix("default", [("Calc", "Calculator")])
         for name, arguments in (("launch_app", {"prefix": "default", "app": "Calc", "confirm": True}), ("stop_prefix", {"prefix": "default", "confirm": True}),
-                                ("import_langid_data", {"prefix": "default", "volume": "/mnt/system", "confirm": True})):
+                                ("import_langid_data", {"prefix": "default", "volume": self.volume(), "confirm": True})):
             result = fx.call(name, arguments)
             self.assertTrue(result["isError"])
             self.assertIn("DARLING_LAUNCHER_MCP_ALLOW_ACTIONS=1", result["content"][0]["text"])
@@ -1218,27 +1218,37 @@ class ActionToolsTest(unittest.TestCase):
         self.fx.server.children[0].wait(timeout=10)
         self.assertTrue((self.fx.bin / "finished").exists())
 
+    def volume(self):
+        path = self.fx.data / "mounts/system"
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
     def test_import_langid_data_runs_the_launcher_cli_for_that_prefix(self):
         self.fx.executable("darling-launcher", FAKE_LAUNCHER)
-        data = self.ok("import_langid_data", {"prefix": "default", "volume": "/mnt/system", "confirm": True})
+        data = self.ok("import_langid_data", {"prefix": "default", "volume": self.volume(), "confirm": True})
         self.assertEqual(data["exit_code"], 0)
-        self.assertIn("argv: langid-import --volume /mnt/system --prefix ", data["output"])
+        self.assertIn("argv: langid-import --volume ~/.darling-launcher/mounts/system --prefix ", data["output"])
         self.assertIn("/prefixes/default", data["output"])
 
     def test_import_langid_data_refuses_before_running_anything(self):
         self.fx.executable("darling-launcher", FAKE_LAUNCHER)
-        self.refused("import_langid_data", {"prefix": "default", "volume": "/mnt/system"}, "missing required argument 'confirm'")
-        self.refused("import_langid_data", {"prefix": "default", "volume": "/mnt/system", "confirm": False}, "confirm must be true")
-        self.refused("import_langid_data", {"prefix": "../../etc", "volume": "/mnt/system", "confirm": True}, "prefix")
-        for volume in ("relative/dir", "/mnt/../etc"):
-            self.refused("import_langid_data", {"prefix": "default", "volume": volume, "confirm": True}, "volume must be an absolute path")
+        self.refused("import_langid_data", {"prefix": "default", "volume": self.volume()}, "missing required argument 'confirm'")
+        self.refused("import_langid_data", {"prefix": "default", "volume": self.volume(), "confirm": False}, "confirm must be true")
+        self.refused("import_langid_data", {"prefix": "../../etc", "volume": self.volume(), "confirm": True}, "prefix")
+        self.refused("import_langid_data", {"prefix": "default", "volume": "relative/dir", "confirm": True}, "volume must be an absolute path")
+        self.refused("import_langid_data", {"prefix": "default", "volume": "/mnt/../etc", "confirm": True}, "'..'")
+        for volume in ("/mnt/system", "/home", str(self.fx.root), str(self.fx.data / "mountsX")):
+            self.refused("import_langid_data", {"prefix": "default", "volume": volume, "confirm": True}, "volume must be inside the launcher mount root")
+        (self.fx.data / "mounts").mkdir(parents=True, exist_ok=True)
+        (self.fx.data / "mounts/link").symlink_to(self.fx.root)
+        self.refused("import_langid_data", {"prefix": "default", "volume": str(self.fx.data / "mounts/link"), "confirm": True}, "refusing symlink")
         self.refused("import_langid_data", {"prefix": "default", "volume": "/mnt/sys\ntem", "confirm": True}, "control characters")
 
     def test_import_langid_data_reports_a_refused_import_and_a_missing_launcher(self):
-        self.refused("import_langid_data", {"prefix": "default", "volume": "/mnt/system", "confirm": True}, "no darling-launcher executable")
+        self.refused("import_langid_data", {"prefix": "default", "volume": self.volume(), "confirm": True}, "no darling-launcher executable")
         self.fx.executable("darling-launcher", FAKE_LAUNCHER)
         self.fx.prefix("broken")
-        self.refused("import_langid_data", {"prefix": "broken", "volume": "/mnt/system", "confirm": True}, "failed (exit 1): argv: langid-import")
+        self.refused("import_langid_data", {"prefix": "broken", "volume": self.volume(), "confirm": True}, "failed (exit 1): argv: langid-import")
 
     def test_action_tools_declare_themselves_as_not_read_only(self):
         tools = self.fx.server.tools
@@ -1307,15 +1317,20 @@ class MountPlanTest(MountPlanBase):
         self.assertTrue(argv[0].endswith("/bin/python3"))
         self.assertEqual(argv[1], "-I")
         self.assertTrue(argv[2].endswith("/libexec/darling-launcher/mount-macos.py"))
-        self.assertEqual(argv[3:5], ["--mount-root", "~/.darling-launcher/mounts"])
-        self.assertEqual(argv[5], "--apfs-fuse")
-        self.assertTrue(argv[6].endswith("/bin/apfs-fuse"))
-        self.assertTrue(argv[7] == "--apfsutil" and argv[8].endswith("/bin/apfsutil"))
-        self.assertIn('--mount-root "$HOME"/.darling-launcher/mounts', command["shell"])
+        # tools/mount-macos.py takes only --device, --volume and --kernel: no mount root and no tool paths, which it
+        # finds itself in fixed root-owned locations. Any other option makes it exit 2.
+        self.assertEqual(len(argv), 3)
+        self.assertNotIn("--mount-root", command["shell"])
+        self.assertNotIn("--apfs-fuse", command["shell"])
+        self.assertIn("mount-macos.py", command["shell"])
+        self.assertIn("/run/darling-launcher/", command["description"])
         self.never_ran()
 
-    def test_batch_plan_accepts_a_subdirectory_and_quotes_it(self):
-        data = self.plan(kind="batch", mount_root=str(self.mounts / "my disks"))
+    def test_batch_plan_takes_no_mount_root(self):
+        self.refused("mount_plan", {"kind": "batch", "mount_root": str(self.mounts)}, "mount_root")
+
+    def test_cryptex_plan_accepts_a_subdirectory_and_quotes_it(self):
+        data = self.plan(kind="cryptex", mount_root=str(self.mounts / "my disks"))
         self.assertIn('"$HOME"\'/.darling-launcher/mounts/my disks\'', data["commands"][0]["shell"])
         self.assertTrue(any("does not exist" in w for w in data["warnings"]))
 
@@ -1371,7 +1386,7 @@ class MountPlanTest(MountPlanBase):
         (self.mounts / "link").symlink_to(outside)
         self.refused("mount_plan", {"kind": "unmount", "directory": str(self.mounts / "link")}, "refusing symlink")
         self.refused("mount_plan", {"kind": "unmount", "directory": str(self.mounts / "link/inner")}, "refusing symlink")
-        self.refused("mount_plan", {"kind": "batch", "mount_root": str(self.mounts / "link")}, "refusing symlink")
+        self.refused("mount_plan", {"kind": "cryptex", "mount_root": str(self.mounts / "link")}, "refusing symlink")
         self.refused("mount_plan", {"kind": "partition", "device": "/dev/sda1", "filesystem": "hfs", "backend": "kernel", "directory": str(self.mounts / "link/x")}, "refusing symlink")
 
     def test_mount_root_behind_a_symlink_is_accepted_by_either_spelling(self):
@@ -1417,14 +1432,12 @@ class MountPlanTest(MountPlanBase):
             self.assertEqual(data["commands"], [])
             self.assertEqual(len(data["warnings"]), 1)
             self.assertIn("cmake --install", data["warnings"][0])
-            self.assertIn("has no install rule", data["warnings"][0])
             self.assertIn("'partition' and 'unmount' need no script and work now", data["warnings"][0])
             self.assertIn(str(self.libexec).replace(str(self.fx.root), ""), data["warnings"][0])
             self.assertNotIn(str(checkout), json.dumps(data))
-        self.assertTrue(any("PR #24" in w for w in self.plan(kind="cryptex")["warnings"]))
         description = self.fx.server.tools["mount_plan"].description
-        self.assertIn("install rule from PR #24", description)
-        self.assertIn("'partition' and 'unmount' work now", description)
+        self.assertNotIn("PR #24", description)
+        self.assertIn("cmake --install", description)
         self.plan(kind="partition", device="/dev/sda2", filesystem="hfs", backend="kernel")["commands"][0]
         self.never_ran()
 
@@ -1470,20 +1483,16 @@ class MountPlanTest(MountPlanBase):
             self.refused("mount_plan", arguments, f"{tool} was not found in ")
             hidden.rename(self.fx.bin / tool)
 
-    def test_batch_plan_without_apfs_tools_passes_explicit_empty_values_and_warns(self):
+    def test_batch_plan_without_apfs_tools_warns_and_keeps_the_helper_command(self):
         for missing in (("apfs-fuse", "apfsutil"), ("apfs-fuse",), ("apfsutil",)):
             for tool in missing:
                 (self.fx.bin / tool).rename(self.fx.bin / f"{tool}.hidden")
             data = self.plan(kind="batch")
             argv = data["commands"][0]["argv"]
-            fuse, util = argv[argv.index("--apfs-fuse") + 1], argv[argv.index("--apfsutil") + 1]
-            self.assertEqual(fuse == "", "apfs-fuse" in missing)
-            self.assertEqual(util == "", "apfsutil" in missing)
+            self.assertEqual(len(argv), 3)  # the helper takes no tool paths, so nothing is passed for a missing tool
             self.assertEqual(len(data["warnings"]), len(missing))
             self.assertTrue(all("HFS partitions are unaffected" in w for w in data["warnings"]))
-            shell = data["commands"][0]["shell"]
-            self.assertEqual(shlex.split(shell.replace('"$HOME"', "x"))[argv.index("--apfs-fuse") + 1] == "", "apfs-fuse" in missing)
-            self.assertTrue(syntax_ok(shell))
+            self.assertTrue(syntax_ok(data["commands"][0]["shell"]))
             for tool in missing:
                 (self.fx.bin / f"{tool}.hidden").rename(self.fx.bin / tool)
         (self.fx.bin / "apfsutil").rename(self.fx.bin / "apfsutil.x")
@@ -1651,7 +1660,7 @@ class MountPlanShellTest(MountPlanBase):
                 raw = self.raw(kind="unmount", directory=str(directory))["commands"][0]
                 self.assertEqual(shell_words(raw["shell"], self.fx.home, cwd)[-1], str(directory), name)
                 self.assertEqual(os.listdir(cwd), [], name)
-            for arguments in ({"kind": "batch", "mount_root": str(self.directory("p q"))},
+            for arguments in ({"kind": "batch"},
                               {"kind": "cryptex", "mount_root": str(self.fx.data / "mounts/p q"), "device": "/dev/sda1"},
                               {"kind": "partition", "device": "/dev/sda1", "filesystem": "apfs", "backend": "kernel", "volume_index": 2, "directory": str(self.fx.data / "mounts/p q/d")}):
                 command = self.raw(**arguments)["commands"][0]
