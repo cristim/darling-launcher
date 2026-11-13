@@ -255,7 +255,8 @@ private slots:
         QFETCH(qint64, unpackedSize);
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         const QString root = temporary.path(), runtimes = root + "/runtimes", tag = "v2026.10.09-00000f3";
-        const QString archive = makeArchive(root, "good", runtimeMembers()), gh = writeScript(root + "/gh", "exit 0");
+        qputenv("GH_STUB_SHA7", tag.mid(12, 7).toUtf8());
+        const QString archive = makeArchive(root, "good", runtimeMembers()), gh = writeScript(root + "/gh", ghAttests);
         const QString realTar = QStandardPaths::findExecutable("tar"), pidPath = root + "/extract.pid", readyPath = root + "/ready";
         QVERIFY(!archive.isEmpty()); QVERIFY(!gh.isEmpty()); QVERIFY(!realTar.isEmpty()); QVERIFY(QDir().mkpath(root + "/bin"));
         QVERIFY(!writeScript(root + "/bin/tar", "case \"$*\" in\n*-xf*) echo $$ > '" + pidPath + "'\n"
