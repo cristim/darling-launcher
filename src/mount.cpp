@@ -118,7 +118,7 @@ QString passwdHome() {
 QString launcherPython() { return QStringLiteral(LAUNCHER_PYTHON); }
 
 QString noPythonMessage() {
-    return "No trusted Python 3.8+ was found when the launcher was configured, so the cryptex and Preboot actions are disabled; see the README (Mount the cryptex OS image).";
+    return "No trusted Python 3.8+ was found when the launcher was configured, so the cryptex and Preboot buttons are disabled and the mount buttons refuse to run; see the README (Mount the cryptex OS image).";
 }
 
 QString trustedInterpreter(const QString &configured, unsigned extraOwner, QString *error) {

@@ -264,9 +264,9 @@ picks when CMake configures it. There are three outcomes:
 2. *Explicit override.* `-DLAUNCHER_PYTHON=<path>` uses only that path under the same rule; if it fails, configuration
    stops with the reason (you asked for it).
 3. *None found.* Without an override, configuration succeeds with a CMake warning that lists every candidate and why
-   it was rejected, and bakes no interpreter. The launcher builds and runs, but the mount actions (batch and cryptex) are
-   disabled with the message "No trusted Python 3.8+ was found when the launcher was configured" and never reach
-   `pkexec`. Install a system Python (or pass `-DLAUNCHER_PYTHON`) and reconfigure. The script tests then run with
+   it was rejected, and bakes no interpreter. The launcher builds and runs, but the cryptex and Preboot buttons are
+   disabled and the other mount buttons (mount all, mount selected) refuse when clicked, with the message "No trusted Python 3.8+ was
+   found when the launcher was configured"; none of them reaches `pkexec`. Install a system Python (or pass `-DLAUNCHER_PYTHON`) and reconfigure. The script tests then run with
    the Python that `find_package` found, unprivileged.
 
 The dialog and the script re-check the interpreter at run time. Root runs the script, so the launcher only uses a copy that only root
