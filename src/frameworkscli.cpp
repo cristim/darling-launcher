@@ -16,7 +16,7 @@ int frameworksImportMain(const QStringList &args, QTextStream &out, QTextStream 
     if (volume.isEmpty() || prefix.isEmpty() || (dryRun && yes)) { err << usage << Qt::endl; return 2; }
     QStringList names;
     if (!only.isEmpty()) {
-        names = only.split(',');
+        for (const QString &name : only.split(',')) names << name.trimmed();
         if (names.contains("")) { err << usage << Qt::endl; return 2; }
         names.removeDuplicates();
     }

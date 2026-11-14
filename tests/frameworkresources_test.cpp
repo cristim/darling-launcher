@@ -285,7 +285,12 @@ private slots:
         QVERIFY(!buildPlan(s.volume, s.prefix, &plan, &error, {}, {"Priv", "Nope", "Fake.framework"}));
         QVERIFY2(error.contains("Nope") && error.contains("Fake.framework") && !error.contains("Priv,"), qPrintable(error));
         QVERIFY(!buildPlan(s.volume, s.prefix, &plan, &error, {}, {"fake"})); // exact, case-sensitive
+        QVERIFY2(error.contains("fake") && plan.frameworks == 0, qPrintable(error));
         QVERIFY(!buildPlan(s.volume, s.prefix, &plan, &error, {}, {"Inner"})); // nested frameworks are not top-level names
+        QVERIFY(put(s.volume + "/System/Library/Frameworks/Flat.framework", "a file, not a bundle"));
+        QVERIFY(link("Fake.framework", s.volume + "/System/Library/Frameworks/Alias.framework"));
+        QVERIFY(!buildPlan(s.volume, s.prefix, &plan, &error, {}, {"Flat"})); QVERIFY2(error.contains("Flat"), qPrintable(error));
+        QVERIFY(!buildPlan(s.volume, s.prefix, &plan, &error, {}, {"Alias"})); QVERIFY2(error.contains("Alias"), qPrintable(error));
         QVERIFY(QDir(s.prefix).isEmpty());
     }
     void cliOnly() {
@@ -300,6 +305,7 @@ private slots:
         QCOMPARE(run(base + QStringList{"--only", "Nope", "--dry-run"}, &err), 1); QVERIFY2(err.contains("Nope"), qPrintable(err));
         QCOMPARE(run(base + QStringList{"--only", "Priv,", "--dry-run"}, &err), 2);
         QCOMPARE(run(base + QStringList{"--only", "Priv", "--only", "Fake", "--dry-run"}, &err), 2);
+        QCOMPARE(run(base + QStringList{"--only", " Priv , Fake ", "--dry-run"}, &err), 0); // spaces around names are trimmed
         QCOMPARE(run(base + QStringList{"--only", "Priv", "--yes"}, &err), 0);
         QVERIFY(QFileInfo::exists(s.prefix + "/" + Priv + "/Resources/p.txt"));
         QVERIFY(!QFileInfo::exists(s.prefix + "/" + Fake));

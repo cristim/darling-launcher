@@ -95,10 +95,11 @@ public:
                 const QString name = child.fileName();
                 if (!name.endsWith(".framework")) continue;
                 const QString base = name.chopped(int(strlen(".framework")));
-                if (!only.isEmpty()) { if (!only.contains(base)) continue; unmatched.removeAll(base); }
+                if (!only.isEmpty() && !only.contains(base)) continue;
                 const QString rel = root + '/' + name;
                 if (child.isSymLink()) { if (!symlink(rel, root)) return false; continue; }
                 if (!child.isDir()) continue;
+                unmatched.removeAll(base); // only a real directory counts: a link or file under that name is reported as unknown
                 if (!framework(rel, 0)) return false;
             }
         }
