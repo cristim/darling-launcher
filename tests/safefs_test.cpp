@@ -228,6 +228,21 @@ private slots:
         QVERIFY(QFile::link(evil.path(), d.path() + "/l"));
         QVERIFY(!SafeFs::checkPrivateDir(d.path(), "l", &err));
     }
+    void ensureDirectoryAndSymlinkAtStayInsideTheRoot() {
+        QTemporaryDir d, evil; QString err;
+        QVERIFY2(SafeFs::ensureDirectory(d.path(), "a/b/c", 0755, &err), qPrintable(err));
+        QVERIFY(QFileInfo(d.path() + "/a/b/c").isDir());
+        QVERIFY2(SafeFs::ensureDirectory(d.path(), "a/b/c", 0755, &err), qPrintable(err)); // idempotent
+        QVERIFY2(SafeFs::symlinkAt(d.path(), "a/b/link", "../c", 0755, &err), qPrintable(err));
+        QCOMPARE(QFileInfo(d.path() + "/a/b/link").symLinkTarget(), d.path() + "/a/c");
+        QVERIFY2(SafeFs::symlinkAt(d.path(), "a/b/link", "../c", 0755, &err), qPrintable(err)); // same target
+        QVERIFY(!SafeFs::symlinkAt(d.path(), "a/b/link", "../other", 0755, &err));              // different target
+        QVERIFY(!SafeFs::symlinkAt(d.path(), "a/b/c", "x", 0755, &err));                        // a directory is in the way
+        QVERIFY(QFile::link(evil.path(), d.path() + "/escape"));
+        QVERIFY(!SafeFs::ensureDirectory(d.path(), "escape/made", 0755, &err));
+        QVERIFY(!SafeFs::symlinkAt(d.path(), "escape/l", "x", 0755, &err));
+        QVERIFY(QDir(evil.path()).isEmpty());
+    }
 };
 QTEST_APPLESS_MAIN(SafeFsTest)
 #include "safefs_test.moc"

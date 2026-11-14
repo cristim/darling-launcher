@@ -13,6 +13,10 @@ namespace MachO {
 constexpr quint32 kSubtypeArm64 = 0;
 constexpr quint32 kSubtypeArm64e = 2;
 
+// True when the first four bytes are a Mach-O or fat magic in either byte order (including FAT_MAGIC_64). Any file that
+// starts with one is treated as executable code, whatever its name; 0xcafebabe also matches Java classes on purpose.
+bool hasMachOMagic(const QByteArray &head);
+
 struct Dependency {
     QString installName;
     bool weak = false; // LC_LOAD_WEAK_DYLIB: the image still loads when this one is absent

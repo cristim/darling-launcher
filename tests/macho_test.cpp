@@ -195,6 +195,13 @@ private slots:
         QByteArray many; put32(many, 0xcafebabe, true); put32(many, 17, true); QVERIFY(!MachO::arm64Subtypes(many + QByteArray(400, 0), &subs, &err));
         QVERIFY(!MachO::arm64Subtypes("#!/bin/sh", &subs, &err)); QVERIFY(!MachO::arm64Subtypes("", &subs, &err));
     }
+    void magicBytesDecideWhetherAFileIsMachO() {
+        for (const char *magic : {"\xfe\xed\xfa\xce", "\xce\xfa\xed\xfe", "\xfe\xed\xfa\xcf", "\xcf\xfa\xed\xfe",
+                                  "\xca\xfe\xba\xbe", "\xbe\xba\xfe\xca", "\xca\xfe\xba\xbf", "\xbf\xba\xfe\xca"})
+            QVERIFY(MachO::hasMachOMagic(QByteArray(magic, 4) + "rest"));
+        QVERIFY(!MachO::hasMachOMagic("")); QVERIFY(!MachO::hasMachOMagic("\xfe\xed\xfa"));
+        QVERIFY(!MachO::hasMachOMagic("<?xml version")); QVERIFY(!MachO::hasMachOMagic("bplist00")); QVERIFY(!MachO::hasMachOMagic(QByteArray(8, 0)));
+    }
 };
 QTEST_APPLESS_MAIN(MachOTest)
 #include "macho_test.moc"
