@@ -76,6 +76,9 @@ add_test(NAME launcher-prefixstate-tests COMMAND launcher-prefixstate-tests -noc
 add_executable(launcher-safefs-tests tests/safefs_test.cpp)
 target_link_libraries(launcher-safefs-tests PRIVATE launcher_core Qt6::Test)
 add_test(NAME launcher-safefs-tests COMMAND launcher-safefs-tests -nocrashhandler)
+add_executable(launcher-frameworkresources-tests tests/frameworkresources_test.cpp)
+target_link_libraries(launcher-frameworkresources-tests PRIVATE launcher_core Qt6::Test)
+add_test(NAME launcher-frameworkresources-tests COMMAND launcher-frameworkresources-tests -nocrashhandler)
 add_library(fake_euid_shim SHARED tests/fake_euid_shim.cpp)
 add_test(NAME launcher-safefs-owner-tests COMMAND ${CMAKE_COMMAND} -E env DYLDCACHE_FAKE_EUID=1 LD_PRELOAD=$<TARGET_FILE:fake_euid_shim>
          $<TARGET_FILE:launcher-safefs-tests> openWriteResumeRefusesAFileOwnedByAnotherUser -nocrashhandler)
