@@ -252,6 +252,60 @@ private slots:
         QVERIFY2(applyPlan(s.volume, s.prefix, plan, &result, &error), qPrintable(error));
         QCOMPARE(slurp(info), QByteArray("appeared meanwhile")); QCOMPARE(result.appeared, 1);
     }
+    void onlyImportsTheNamedBundleAndItsNestedFrameworks() {
+        QTemporaryDir t; const auto s = layout(t);
+        buildVolume(s.volume, s.outside); QVERIFY(QDir().mkpath(s.prefix));
+        Plan plan; QString error;
+        QVERIFY2(buildPlan(s.volume, s.prefix, &plan, &error, {}, {"Priv"}), qPrintable(error));
+        QCOMPARE(plan.frameworks, 1);
+        for (const Entry &e : plan.entries) QVERIFY2(e.rel.startsWith(QString(Priv)), qPrintable(e.rel));
+        QVERIFY(std::any_of(plan.entries.begin(), plan.entries.end(), [](const Entry &e) { return e.rel == QString(Priv) + "/Resources/p.txt"; }));
+        Plan fake; // the other bundle brings Inner along, and the code rules still apply
+        QVERIFY2(buildPlan(s.volume, s.prefix, &fake, &error, {}, {"Fake"}), qPrintable(error));
+        QCOMPARE(fake.frameworks, 2);
+        bool inner = false;
+        for (const Entry &e : fake.entries) {
+            QVERIFY2(e.rel.startsWith(QString(Fake)), qPrintable(e.rel));
+            inner = inner || e.rel.endsWith("Inner.framework/Resources/inner.txt");
+        }
+        QVERIFY(inner); QVERIFY(fake.skippedMachO > 0);
+        Plan both; // several names, and the same name twice
+        QVERIFY2(buildPlan(s.volume, s.prefix, &both, &error, {}, {"Fake", "Priv", "Priv"}), qPrintable(error));
+        Plan all; QVERIFY2(buildPlan(s.volume, s.prefix, &all, &error), qPrintable(error));
+        QCOMPARE(both.entries.size(), all.entries.size());
+        Result result;
+        QVERIFY2(applyPlan(s.volume, s.prefix, plan, &result, &error), qPrintable(error));
+        QVERIFY(QFileInfo::exists(s.prefix + "/" + Priv + "/Resources/p.txt"));
+        QVERIFY(!QFileInfo::exists(s.prefix + "/" + Fake));
+    }
+    void onlyWithAnUnknownNameFailsAndListsIt() {
+        QTemporaryDir t; const auto s = layout(t);
+        buildVolume(s.volume, s.outside); QVERIFY(QDir().mkpath(s.prefix));
+        Plan plan; QString error;
+        QVERIFY(!buildPlan(s.volume, s.prefix, &plan, &error, {}, {"Priv", "Nope", "Fake.framework"}));
+        QVERIFY2(error.contains("Nope") && error.contains("Fake.framework") && !error.contains("Priv,"), qPrintable(error));
+        QVERIFY(!buildPlan(s.volume, s.prefix, &plan, &error, {}, {"fake"})); // exact, case-sensitive
+        QVERIFY(!buildPlan(s.volume, s.prefix, &plan, &error, {}, {"Inner"})); // nested frameworks are not top-level names
+        QVERIFY(QDir(s.prefix).isEmpty());
+    }
+    void cliOnly() {
+        QTemporaryDir t; const auto s = layout(t);
+        buildVolume(s.volume, s.outside); QVERIFY(QDir().mkpath(s.prefix));
+        auto run = [&](const QStringList &args, QString *errText) {
+            QString o, e; int code; { QTextStream out(&o), err(&e); code = frameworksImportMain(args, out, err); }
+            *errText = e.trimmed(); return code;
+        };
+        const QStringList base{"--volume", s.volume, "--prefix", s.prefix};
+        QString err;
+        QCOMPARE(run(base + QStringList{"--only", "Nope", "--dry-run"}, &err), 1); QVERIFY2(err.contains("Nope"), qPrintable(err));
+        QCOMPARE(run(base + QStringList{"--only", "Priv,", "--dry-run"}, &err), 2);
+        QCOMPARE(run(base + QStringList{"--only", "Priv", "--only", "Fake", "--dry-run"}, &err), 2);
+        QCOMPARE(run(base + QStringList{"--only", "Priv", "--yes"}, &err), 0);
+        QVERIFY(QFileInfo::exists(s.prefix + "/" + Priv + "/Resources/p.txt"));
+        QVERIFY(!QFileInfo::exists(s.prefix + "/" + Fake));
+        QCOMPARE(run(base + QStringList{"--only", "Priv,Nope", "--yes"}, &err), 1);
+        QVERIFY(!QFileInfo::exists(s.prefix + "/" + Fake));
+    }
     void cliDryRunNeedsYesToCopy() {
         QTemporaryDir t; const auto s = layout(t);
         buildVolume(s.volume, s.outside); QVERIFY(QDir().mkpath(s.prefix));

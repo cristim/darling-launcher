@@ -78,11 +78,12 @@ bool sameContent(int sourceFd, const QString &destination) {
 
 class Walker {
 public:
-    Walker(const QString &volume, const QString &prefix, Plan *plan, const Cancelled &cancelled, QString *error)
-        : volume(volume), prefix(prefix), plan(plan), cancelled(cancelled), error(error) {}
+    Walker(const QString &volume, const QString &prefix, Plan *plan, const Cancelled &cancelled, QString *error, const QStringList &only)
+        : volume(volume), prefix(prefix), plan(plan), cancelled(cancelled), error(error), only(only) {}
 
     bool run() {
         bool any = false;
+        unmatched = only;
         for (const char *rootName : kRoots) {
             const QString root = rootName;
             const QFileInfo source(volume + '/' + root);
@@ -93,6 +94,8 @@ public:
                 if (cancelled && cancelled()) return fail(error, "Cancelled");
                 const QString name = child.fileName();
                 if (!name.endsWith(".framework")) continue;
+                const QString base = name.chopped(int(strlen(".framework")));
+                if (!only.isEmpty()) { if (!only.contains(base)) continue; unmatched.removeAll(base); }
                 const QString rel = root + '/' + name;
                 if (child.isSymLink()) { if (!symlink(rel, root)) return false; continue; }
                 if (!child.isDir()) continue;
@@ -100,6 +103,7 @@ public:
             }
         }
         if (!any) return fail(error, "This macOS source has no System/Library/Frameworks or System/Library/PrivateFrameworks directory. Nothing to import.");
+        if (!unmatched.isEmpty()) return fail(error, "No framework bundle with this name on the volume: " + unmatched.join(", "));
         return true;
     }
 
@@ -108,6 +112,8 @@ private:
     Plan *plan;
     const Cancelled &cancelled;
     QString *error;
+    const QStringList only;
+    QStringList unmatched; // names from `only` not seen yet
 
     QList<QFileInfo> entries(const QString &rel) const {
         return QDir(volume + '/' + rel).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::Name);
@@ -234,10 +240,10 @@ private:
 
 }
 
-bool buildPlan(const QString &volume, const QString &prefix, Plan *plan, QString *error, const Cancelled &cancelled) {
+bool buildPlan(const QString &volume, const QString &prefix, Plan *plan, QString *error, const Cancelled &cancelled, const QStringList &only) {
     *plan = Plan();
     if (!LauncherCore::validateLocations(volume, prefix, error)) return false;
-    if (!Walker(volume, prefix, plan, cancelled, error).run()) return false;
+    if (!Walker(volume, prefix, plan, cancelled, error, only).run()) return false;
     plan->availableBytes = QStorageInfo(prefix).bytesAvailable();
     return true;
 }

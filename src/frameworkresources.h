@@ -41,7 +41,11 @@ struct Plan {
 using Cancelled = std::function<bool()>;
 
 // Reads the volume and the prefix and writes nothing: this is the dry run and the size estimate.
-bool buildPlan(const QString &volume, const QString &prefix, Plan *plan, QString *error, const Cancelled &cancelled = {});
+// `only` limits the walk to the named top-level framework bundles (base names without ".framework", exact match, in
+// Frameworks and PrivateFrameworks alike); bundles nested inside a named one come with it. A name that matches no bundle
+// fails the plan and is listed in the error. Every other rule applies unchanged.
+bool buildPlan(const QString &volume, const QString &prefix, Plan *plan, QString *error, const Cancelled &cancelled = {},
+               const QStringList &only = {});
 
 struct Result {
     int files = 0, directories = 0, symlinks = 0;
