@@ -2,6 +2,7 @@
 #include "window.h"
 #include "log.h"
 #include <cstring>
+#include <memory>
 #include "mountdialog.h"
 #include "appbrowser.h"
 #include "prefixdialog.h"
@@ -9,6 +10,7 @@
 #include "troubleshooting.h"
 #include "dyldcachedialog.h"
 #include "dyldcachestore.h"
+#include "frameworkresources.h"
 #include "launchenv.h"
 #include <QApplication>
 #include <QCloseEvent>
@@ -212,6 +214,8 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     troubleshoot = add("Troubleshoot failed app…", [this] { openTroubleshooting(); });
     auto *langidButton = add("Import language data", [this] { importLangid(); });
     langidButton->setToolTip("Copy macOS /usr/share/langid from the mounted source into the prefix (needed by apps such as Calculator)");
+    auto *frameworksButton = add("Import framework resources", [this] { importFrameworkResources(); });
+    frameworksButton->setToolTip("Copy the resource files (Info.plist, Resources) of macOS frameworks from the mounted source into the prefix; never executable code. Shows the total size first.");
     add("Install Brewfile", [this] {
         QString source = QFileDialog::getOpenFileName(this, "Select Brewfile"); if (source.isEmpty()) return;
         QString p = prefix->text();
@@ -571,6 +575,52 @@ void Window::importLangid() {
         QStringList copied; QString failure;
         LauncherCore::importLangidData(v, p, &copied, &failure);
         return qMakePair(copied, failure);
+    }));
+}
+void Window::importFrameworkResources() {
+    if (importRunning) { statusBar()->showMessage("An import is already in progress."); return; }
+    QString error;
+    if (!LauncherCore::validateLocations(volume->text(), prefix->text(), &error)) { QMessageBox::warning(this, "Locations", error); return; }
+    const QString v = volume->text(), p = prefix->text();
+    using Scan = QPair<FrameworkResources::Plan, QString>;
+    using Copy = QPair<FrameworkResources::Result, QString>;
+    auto *scan = new QFutureWatcher<Scan>(this);
+    importRunning = true; setBusy(true, "Measuring framework resources (nothing is copied yet)…");
+    connect(scan, &QFutureWatcher<Scan>::finished, this, [this, scan, v, p] {
+        const auto plan = std::make_shared<FrameworkResources::Plan>(scan->result().first);
+        const QString failure = scan->result().second; scan->deleteLater();
+        const auto stop = [this](const QString &message, bool warn) {
+            importRunning = false; setBusy(activeProcesses > 0, message);
+            if (warn) QMessageBox::warning(this, "Framework resources", message);
+        };
+        if (!failure.isEmpty()) { stop(failure, true); return; }
+        const QString summary = FrameworkResources::summarize(*plan);
+        LauncherLog::write("frameworks", "plan for " + v + " into " + p + "\n" + summary);
+        if (plan->entries.isEmpty()) { stop("Framework resources are already present; nothing to copy.", false); return; }
+        if (!plan->enoughSpace()) { stop("Not enough free space in the prefix.\n\n" + summary, true); return; }
+        const auto answer = QMessageBox::question(this, "Import framework resources",
+            "Copy framework resource files (about " + FrameworkResources::formatBytes(plan->bytes) + " on disk) from the macOS volume into the prefix?\n\n" + summary +
+            "\nExisting files in the prefix are never replaced. No executable code is copied.");
+        if (answer != QMessageBox::Yes) { stop("Framework resource import cancelled; nothing was copied.", false); return; }
+        auto *copy = new QFutureWatcher<Copy>(this);
+        setBusy(true, "Copying framework resources…");
+        connect(copy, &QFutureWatcher<Copy>::finished, this, [this, copy, plan, stop] {
+            const auto result = copy->result(); copy->deleteLater();
+            const QString message = !result.second.isEmpty() ? result.second
+                : QString("Copied %1 framework resource files (%2), %3 cloned.").arg(result.first.files).arg(FrameworkResources::formatBytes(result.first.bytes)).arg(result.first.reflinked);
+            LauncherLog::write("frameworks", message);
+            stop(message, !result.second.isEmpty());
+        });
+        copy->setFuture(QtConcurrent::run([v, p, plan] {
+            FrameworkResources::Result result; QString failure;
+            FrameworkResources::applyPlan(v, p, *plan, &result, &failure);
+            return qMakePair(result, failure);
+        }));
+    });
+    scan->setFuture(QtConcurrent::run([v, p] {
+        FrameworkResources::Plan plan; QString failure;
+        FrameworkResources::buildPlan(v, p, &plan, &failure);
+        return qMakePair(plan, failure);
     }));
 }
 void Window::importBundles(const QStringList &names) {
