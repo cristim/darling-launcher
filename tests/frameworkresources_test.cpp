@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Every file here is synthetic: Mach-O stubs are a real magic number followed by filler, never Apple bytes.
 #include "frameworkresources.h"
+#include "frameworkscli.h"
 #include "macho.h"
 #include <QCryptographicHash>
 #include <QDir>
@@ -250,6 +251,29 @@ private slots:
         QVERIFY(put(info, "appeared meanwhile"));
         QVERIFY2(applyPlan(s.volume, s.prefix, plan, &result, &error), qPrintable(error));
         QCOMPARE(slurp(info), QByteArray("appeared meanwhile")); QCOMPARE(result.appeared, 1);
+    }
+    void cliDryRunNeedsYesToCopy() {
+        QTemporaryDir t; const auto s = layout(t);
+        buildVolume(s.volume, s.outside); QVERIFY(QDir().mkpath(s.prefix));
+        auto run = [&](const QStringList &args, QString *outText, QString *errText) {
+            QString o, e; int code; { QTextStream out(&o), err(&e); code = frameworksImportMain(args, out, err); }
+            *outText = o; *errText = e.trimmed(); return code;
+        };
+        const QStringList base{"--volume", s.volume, "--prefix", s.prefix};
+        QString out, err;
+        QCOMPARE(run({"--volume", s.volume}, &out, &err), 2);
+        QCOMPARE(run(base + QStringList{"--dry-run", "--yes"}, &out, &err), 2);
+        QCOMPARE(run(base + QStringList{"--volume", s.volume}, &out, &err), 2);
+        QCOMPARE(run(base + QStringList{"--dry-run"}, &out, &err), 0);
+        QVERIFY2(out.contains("To copy:") && out.contains("Dry run: nothing was copied."), qPrintable(out));
+        QVERIFY(QDir(s.prefix).isEmpty());
+        QCOMPARE(run(base, &out, &err), 2); QVERIFY2(err.contains("--yes"), qPrintable(err));
+        QVERIFY(QDir(s.prefix).isEmpty());
+        QCOMPARE(run(base + QStringList{"--yes"}, &out, &err), 0); QVERIFY2(out.contains("Imported"), qPrintable(out));
+        QCOMPARE(slurp(s.prefix + "/" + Priv + "/Resources/p.txt"), QByteArray("private resource"));
+        QCOMPARE(run(base + QStringList{"--yes"}, &out, &err), 0); QVERIFY2(out.contains("Already present"), qPrintable(out));
+        QVERIFY(QDir().mkpath(s.prefix + "/inside"));
+        QCOMPARE(run({"--volume", s.prefix, "--prefix", s.prefix + "/inside", "--yes"}, &out, &err), 1); // nested locations
     }
 };
 QTEST_APPLESS_MAIN(FrameworkResourcesTest)
