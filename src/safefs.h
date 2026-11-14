@@ -38,6 +38,11 @@ int openRead(const QString &root, const QString &relPath, qint64 *size, QString 
 // its length, so a copy can continue; a new file has size 0. Returns the descriptor or -1.
 int openWrite(const QString &root, const QString &relPath, mode_t fileMode, mode_t dirMode, bool resume,
               qint64 *existingSize, QString *error);
+// Creates relPath and any missing parents (dirMode) without following a symlink; an existing real directory is success.
+bool ensureDirectory(const QString &root, const QString &relPath, mode_t dirMode, QString *error);
+// Creates the symlink relPath -> target (stored verbatim) after creating missing parents. An existing symlink with the same
+// target is success; anything else at relPath is refused.
+bool symlinkAt(const QString &root, const QString &relPath, const QString &target, mode_t dirMode, QString *error);
 // Succeeds only for a directory owned by this user with no group or other permission bits.
 bool checkPrivateDir(const QString &root, const QString &relPath, QString *error);
 // Unlinks a file (never a directory, never through a symlinked parent). Already absent is success.

@@ -107,6 +107,7 @@ private:
     void refresh();
     void importBundles(const QStringList &names);
     void importLangid();
+    void importFrameworkResources();
     void load();
     void persist();
     void launch(const QString &key, bool retry = false);

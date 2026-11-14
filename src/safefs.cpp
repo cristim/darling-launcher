@@ -187,6 +187,28 @@ int openWrite(const QString &root, const QString &relPath, mode_t fileMode, mode
     return file.release();
 }
 
+bool ensureDirectory(const QString &root, const QString &relPath, mode_t dirMode, QString *error) {
+    QStringList dirs; QString leaf;
+    if (!split(relPath + "/x", &dirs, &leaf, error)) return false;
+    Fd dir(openDirs(root, dirs, true, dirMode, nullptr, error));
+    return dir.fd >= 0;
+}
+
+bool symlinkAt(const QString &root, const QString &relPath, const QString &target, mode_t dirMode, QString *error) {
+    QStringList dirs; QString leaf;
+    if (!split(relPath, &dirs, &leaf, error)) return false;
+    Fd dir(openDirs(root, dirs, true, dirMode, nullptr, error));
+    if (dir.fd < 0) return false;
+    const QByteArray name = leaf.toUtf8(), link = target.toUtf8();
+    if (::symlinkat(link.constData(), dir.fd, name.constData()) == 0) return true;
+    const int err = errno;
+    char existing[4096];
+    const ssize_t len = err == EEXIST ? ::readlinkat(dir.fd, name.constData(), existing, sizeof(existing)) : -1;
+    if (len >= 0 && QByteArray(existing, int(len)) == link) return true;
+    errno = err;
+    return fail(error, sysError("Cannot create symlink " + relPath));
+}
+
 bool checkPrivateDir(const QString &root, const QString &relPath, QString *error) {
     QStringList dirs; QString leaf;
     if (!split(relPath + "/x", &dirs, &leaf, error)) return false;

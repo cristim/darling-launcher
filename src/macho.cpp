@@ -124,6 +124,14 @@ bool pickSlice(const QByteArray &image, quint32 preferred, bool allowFallback, S
 }
 
 namespace MachO {
+bool hasMachOMagic(const QByteArray &head) {
+    quint32 big;
+    if (!u32(head, 0, true, &big)) return false;
+    // MH_MAGIC/MH_MAGIC_64 and their byte-swapped forms, FAT_MAGIC/FAT_MAGIC_64 and theirs
+    static const quint32 kMagics[] = {0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe, 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca};
+    return std::find(std::begin(kMagics), std::end(kMagics), big) != std::end(kMagics);
+}
+
 bool arm64Subtypes(const QByteArray &head, QList<quint32> *subtypes, QString *error) {
     const QByteArrayView all(head);
     subtypes->clear();
