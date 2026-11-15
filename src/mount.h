@@ -11,6 +11,7 @@ struct MacPartition {
     QString label;
     bool mounted = false;
     QStringList mountPoints;
+    qint64 sizeBytes = -1; // lsblk SIZE with --bytes; -1 when not asked for or unknown
 };
 
 struct MountCommand { QString program; QStringList arguments; };

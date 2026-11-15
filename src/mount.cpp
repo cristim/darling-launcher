@@ -47,7 +47,9 @@ void collect(const QJsonArray &devices, QList<MacPartition> *result) {
             QStringList points;
             for (const auto &point : item.value("mountpoints").toArray())
                 if (!point.toString().isEmpty()) points << point.toString();
-            result->append({item.value("path").toString(), fs, item.value("label").toString(), !points.isEmpty(), points});
+            const QJsonValue size = item.value("size"); // a number with --bytes, a string in some lsblk versions
+            const qint64 bytes = size.isString() ? size.toString().toLongLong() : size.isDouble() ? qint64(size.toDouble()) : -1;
+            result->append({item.value("path").toString(), fs, item.value("label").toString(), !points.isEmpty(), points, bytes});
         }
         collect(item.value("children").toArray(), result);
     }

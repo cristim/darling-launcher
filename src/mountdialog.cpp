@@ -2,6 +2,7 @@
 #include "mountdialog.h"
 #include "core.h"
 #include "discovery.h"
+#include "mounthelpers.h"
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -29,22 +30,8 @@
 #include <unistd.h>
 
 namespace {
-// Test builds run user-owned fake helpers; production accepts only root-owned ones.
-unsigned helperOwner() {
-#ifdef LAUNCHER_TEST_USER_OWNED_HELPERS
-    return getuid();
-#else
-    return 0;
-#endif
-}
-// The one interpreter root runs: chosen at configure time (cmake/SelectPython.cmake); test builds point it at a fake.
-QString helperPython() {
-#ifdef LAUNCHER_TEST_USER_OWNED_HELPERS
-    return QStringLiteral(LAUNCHER_PYTHON);
-#else
-    return LauncherMount::launcherPython();
-#endif
-}
+using MountHelpers::helperOwner;
+using MountHelpers::helperPython;
 QString installHint() {
     return "Root runs the cryptex mount script, so it must be installed root-owned. Either run\n"
            "  sudo cmake --install <build directory>\n"
