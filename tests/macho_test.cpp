@@ -195,6 +195,38 @@ private slots:
         QByteArray many; put32(many, 0xcafebabe, true); put32(many, 17, true); QVERIFY(!MachO::arm64Subtypes(many + QByteArray(400, 0), &subs, &err));
         QVERIFY(!MachO::arm64Subtypes("#!/bin/sh", &subs, &err)); QVERIFY(!MachO::arm64Subtypes("", &subs, &err));
     }
+    void windowedReadMatchesTheWholeImageAndReadsOnlyTheHeaders() {
+        QByteArray code(300000, 'x'); // stand-in for code and data behind the load commands
+        const QByteArray slice0 = thin(0, {kA}), slice2 = thin(2, {kB, kC}) + code;
+        const QByteArray img = fat({{kArm64, 0, slice0}, {kArm64, 2, slice2, 4096 * 4}});
+        QList<QPair<quint64, quint64>> asked;
+        const MachO::ReadAt reader = [&](quint64 off, quint64 len, QByteArray *out) {
+            asked << qMakePair(off, len);
+            if (off + len > quint64(img.size())) return false;
+            *out = img.mid(qsizetype(off), qsizetype(len)); return true;
+        };
+        MachO::Dependencies windowed, whole;
+        QVERIFY(MachO::readDependenciesWindowed(reader, quint64(img.size()), kSubtypeArm64e, false, &windowed, nullptr));
+        QVERIFY(read(img, kSubtypeArm64e, false, &whole));
+        QCOMPARE(names(windowed), names(whole)); QCOMPARE(names(windowed), QStringList({kB, kC}));
+        quint64 total = 0;
+        for (const auto &r : asked) { total += r.second; QVERIFY2(r.second < 4096, "a window larger than the headers was requested"); }
+        QVERIFY2(total < 2048, qPrintable(QString::number(total)));
+        for (const auto &r : asked) QVERIFY(r.first + r.second <= 4096 * 4 + 2048); // nothing from the code area
+    }
+    void windowedReadRefusesWhatTheWholeReaderRefuses() {
+        const auto windowedFails = [](const QByteArray &img, quint32 pref, bool fallback) {
+            const MachO::ReadAt reader = [&](quint64 off, quint64 len, QByteArray *out) {
+                if (off + len > quint64(img.size())) return false; *out = img.mid(qsizetype(off), qsizetype(len)); return true; };
+            MachO::Dependencies d; QString err; return !MachO::readDependenciesWindowed(reader, quint64(img.size()), pref, fallback, &d, &err) && !err.isEmpty();
+        };
+        QVERIFY(windowedFails(fat({{kArm64, 0, thin(0, {kA})}}), kSubtypeArm64e, false));   // no slice of that subtype
+        QVERIFY(windowedFails(thin(2, {kA}).left(40), kSubtypeArm64e, false));              // load commands cut off
+        QVERIFY(windowedFails(QByteArray("not a mach-o"), kSubtypeArm64e, true));
+        QVERIFY(windowedFails(thinWith(2, {dylibCmd(kA)}, 0x01000007), kSubtypeArm64e, true)); // x86_64 only
+        QByteArray huge = thin(2, {kA}); huge[20] = char(0xff); huge[21] = char(0xff); huge[22] = char(0xff);
+        QVERIFY(windowedFails(huge, kSubtypeArm64e, true));                                  // sizeofcmds above the cap
+    }
     void magicBytesDecideWhetherAFileIsMachO() {
         for (const char *magic : {"\xfe\xed\xfa\xce", "\xce\xfa\xed\xfe", "\xfe\xed\xfa\xcf", "\xcf\xfa\xed\xfe",
                                   "\xca\xfe\xba\xbe", "\xbe\xba\xfe\xca", "\xca\xfe\xba\xbf", "\xbf\xba\xfe\xca"})

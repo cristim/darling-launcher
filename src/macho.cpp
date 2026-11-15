@@ -35,8 +35,6 @@ bool u32(QByteArrayView b, quint64 off, bool bigEndian, quint32 *v) {
 }
 bool isDylibCmd(quint32 cmd) { return std::find(std::begin(kDylibCmds), std::end(kDylibCmds), cmd) != std::end(kDylibCmds); }
 
-struct Slice { QByteArrayView bytes; quint32 subtype; };
-
 bool readThin(QByteArrayView s, QList<MachO::Dependency> *names, quint32 *subtype, QString *error) {
     quint32 magic, cpu, sub, ncmds, sizeofcmds;
     if (!u32(s, 0, false, &magic) || !u32(s, 4, false, &cpu) || !u32(s, 8, false, &sub) ||
@@ -71,30 +69,33 @@ bool readThin(QByteArrayView s, QList<MachO::Dependency> *names, quint32 *subtyp
     return true;
 }
 
-bool pickSlice(const QByteArray &image, quint32 preferred, bool allowFallback, Slice *out, bool *fallback, QString *error) {
-    const QByteArrayView all(image);
+struct SliceRef { quint64 offset, size; quint32 subtype; };
+
+// `table` holds at least the start of the file (the fat header and arch table, or the thin header); `fileSize` is the
+// length of the whole file. Nothing else of the file is needed to choose the slice.
+bool pickSlice(QByteArrayView table, quint64 fileSize, quint32 preferred, bool allowFallback, SliceRef *out, bool *fallback, QString *error) {
     quint32 magic;
-    if (!u32(all, 0, true, &magic)) return fail(error, "Mach-O file is too short");
+    if (!u32(table, 0, true, &magic)) return fail(error, "Mach-O file is too short");
     if (magic == kFatMagic64 || magic == kFatCigam64) return fail(error, "64-bit fat Mach-O (FAT_MAGIC_64) is not supported");
     if (magic != kFatMagic) {
         quint32 sub, cpu;
-        if (!u32(all, 4, false, &cpu) || !u32(all, 8, false, &sub)) return fail(error, "Mach-O header is truncated");
-        *out = {all, sub & kSubtypeMask};
+        if (!u32(table, 4, false, &cpu) || !u32(table, 8, false, &sub)) return fail(error, "Mach-O header is truncated");
+        *out = {0, fileSize, sub & kSubtypeMask};
         *fallback = (*out).subtype != preferred;
         if (cpu == kCpuArm64 && *fallback && !allowFallback) return fail(error, "Image has no slice for the requested arm64 subtype");
         return true;
     }
     quint32 n;
-    if (!u32(all, 4, true, &n)) return fail(error, "Fat header is truncated");
+    if (!u32(table, 4, true, &n)) return fail(error, "Fat header is truncated");
     if (n == 0 || n > kMaxFatArch) return fail(error, "Fat header has an invalid arch count");
     struct Arch { quint32 cpu, sub, offset, size; };
     QList<Arch> arches;
     for (quint32 i = 0; i < n; ++i) {
         Arch a;
         const quint64 p = 8 + 20ull * i;
-        if (!u32(all, p, true, &a.cpu) || !u32(all, p + 4, true, &a.sub) || !u32(all, p + 8, true, &a.offset) || !u32(all, p + 12, true, &a.size))
+        if (!u32(table, p, true, &a.cpu) || !u32(table, p + 4, true, &a.sub) || !u32(table, p + 8, true, &a.offset) || !u32(table, p + 12, true, &a.size))
             return fail(error, "Fat arch table is truncated");
-        if (quint64(a.offset) + a.size > quint64(all.size())) return fail(error, "Fat slice lies outside the file");
+        if (quint64(a.offset) + a.size > fileSize) return fail(error, "Fat slice lies outside the file");
         arches.append(a);
     }
     QList<Arch> byOffset = arches;
@@ -118,7 +119,7 @@ bool pickSlice(const QByteArray &image, quint32 preferred, bool allowFallback, S
         chosen = other;
     }
     if (!chosen) return fail(error, "Image has no slice for the requested arm64 subtype");
-    *out = {all.mid(chosen->offset, chosen->size), chosen->sub & kSubtypeMask};
+    *out = {chosen->offset, chosen->size, chosen->sub & kSubtypeMask};
     return true;
 }
 }
@@ -154,10 +155,32 @@ bool arm64Subtypes(const QByteArray &head, QList<quint32> *subtypes, QString *er
 }
 
 bool readDependencies(const QByteArray &image, quint32 preferredSubtype, bool allowFallback, Dependencies *out, QString *error) {
-    Slice slice; bool fallback = false;
-    if (!pickSlice(image, preferredSubtype, allowFallback, &slice, &fallback, error)) return false;
+    SliceRef slice; bool fallback = false;
+    if (!pickSlice(image, quint64(image.size()), preferredSubtype, allowFallback, &slice, &fallback, error)) return false;
     Dependencies deps; quint32 sub = 0;
-    if (!readThin(slice.bytes, &deps.dependencies, &sub, error)) return false;
+    if (!readThin(QByteArrayView(image).mid(qsizetype(slice.offset), qsizetype(slice.size)), &deps.dependencies, &sub, error)) return false;
+    if (sub != slice.subtype) return fail(error, "Fat arch subtype disagrees with the slice header");
+    deps.subtype = sub; deps.usedFallback = fallback;
+    *out = deps;
+    return true;
+}
+
+bool readDependenciesWindowed(const ReadAt &read, quint64 fileSize, quint32 preferredSubtype, bool allowFallback, Dependencies *out, QString *error) {
+    constexpr quint64 kTableWindow = 8 + 20ull * kMaxFatArch;
+    QByteArray table;
+    if (!read(0, qMin(fileSize, kTableWindow), &table)) return fail(error, "Cannot read the start of the image");
+    SliceRef slice; bool fallback = false;
+    if (!pickSlice(table, fileSize, preferredSubtype, allowFallback, &slice, &fallback, error)) return false;
+    QByteArray header;
+    if (slice.size < kHeaderSize || !read(slice.offset, kHeaderSize, &header)) return fail(error, "Mach-O header is truncated");
+    quint32 sizeofcmds;
+    if (!u32(header, 20, false, &sizeofcmds)) return fail(error, "Mach-O header is truncated");
+    if (sizeofcmds > kMaxSizeofcmds) return fail(error, "Mach-O load commands are too large");
+    if (kHeaderSize + sizeofcmds > slice.size) return fail(error, "Mach-O load commands run past the end of the file");
+    QByteArray window;
+    if (!read(slice.offset, kHeaderSize + sizeofcmds, &window)) return fail(error, "Cannot read the load commands");
+    Dependencies deps; quint32 sub = 0;
+    if (!readThin(window, &deps.dependencies, &sub, error)) return false;
     if (sub != slice.subtype) return fail(error, "Fat arch subtype disagrees with the slice header");
     deps.subtype = sub; deps.usedFallback = fallback;
     *out = deps;

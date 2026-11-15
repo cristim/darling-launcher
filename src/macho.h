@@ -32,6 +32,13 @@ struct Dependencies {
 bool readDependencies(const QByteArray &image, quint32 preferredSubtype, bool allowFallback,
                       Dependencies *out, QString *error);
 
+// The same result as readDependencies, for a file that is not read whole: `read` returns exactly `length` bytes at
+// `offset` or false. Only the fat header and arch table, the chosen slice's 32-byte header and its load commands
+// (sizeofcmds bytes) are requested, never the code or data behind them. `fileSize` bounds every offset.
+using ReadAt = std::function<bool(quint64 offset, quint64 length, QByteArray *out)>;
+bool readDependenciesWindowed(const ReadAt &read, quint64 fileSize, quint32 preferredSubtype, bool allowFallback,
+                              Dependencies *out, QString *error);
+
 // The masked cpusubtypes of the arm64 slices named by the first bytes of a thin or fat image (the arch table or the
 // header is enough). Empty for an image with no arm64 slice. Fails on anything that is not a Mach-O.
 bool arm64Subtypes(const QByteArray &head, QList<quint32> *subtypes, QString *error);
