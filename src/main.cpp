@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "window.h"
+#include "appneedscli.h"
+#include "automountstep.h"
 #include "dyldcachecli.h"
 #include "frameworkscli.h"
 #include "langidcli.h"
@@ -7,6 +9,7 @@
 #include "log.h"
 #include "stagesupervisor.h"
 #include <QApplication>
+#include <QCoreApplication>
 #include <QCommandLineParser>
 #include <QDir>
 #include <QTextStream>
@@ -28,6 +31,13 @@ int main(int argc, char **argv) {
         QStringList args; for (int i = 2; i < argc; ++i) args << QString::fromLocal8Bit(argv[i]);
         QTextStream out(stdout), err(stderr);
         return frameworksImportMain(args, out, err);
+    }
+    if (argc > 1 && QByteArray(argv[1]) == "app-import") {
+        QStringList args; for (int i = 2; i < argc; ++i) args << QString::fromLocal8Bit(argv[i]);
+        QCoreApplication core(argc, argv); // QProcess in the mount step
+        QTextStream out(stdout), err(stderr);
+        HelperMountStep step; AppImportEnv env; env.mountStep = &step;
+        return appImportMain(args, out, err, env);
     }
     if (argc > 1 && QByteArray(argv[1]) == "dyld-cache") {
         QStringList args; for (int i = 2; i < argc; ++i) args << QString::fromLocal8Bit(argv[i]);
