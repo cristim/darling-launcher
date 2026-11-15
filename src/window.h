@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "core.h"
+#include "mount.h"
 #include "sources.h"
 #include "troubleshooting.h"
 #include <functional>
@@ -27,6 +28,9 @@ class QDialog;
 class QSplitter;
 class PrefixDialog;
 class TroubleshootingDialog;
+namespace AutoMount { class Step; }
+namespace AppNeedsCache { struct Request; struct Preview; }
+struct AppNeedsAnalysis;
 
 class Window : public QMainWindow {
 public:
@@ -34,6 +38,10 @@ public:
     ~Window() override;
     void offerRuntimeSetup();
     std::function<void()> detectRuntime;
+    // The explained mount flow: the step runs the existing helpers; tests set a fake. Null: the real helpers.
+    AutoMount::Step *autoMountStep = nullptr;
+    std::function<QList<MacPartition>(QString *)> partitionProvider; // empty: lsblk
+    QString cacheStoreRoot;                                          // empty: the launcher setting
 protected:
     void closeEvent(QCloseEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -107,6 +115,13 @@ private:
     void refresh();
     void importBundles(const QStringList &names);
     void importLangid();
+    // windowneeds.cpp: after an app import, the framework resources and the dyld cache the app needs, each behind a preview
+    void offerAppNeeds(const QList<AppEntry> &imported, const QString &source, const QString &destination);
+    void showAppNeeds(const AppNeedsAnalysis &analysis, const QString &source, const QString &destination);
+    void offerCache(const AppNeedsCache::Request &request);
+    void showCache(const AppNeedsCache::Request &request, const AppNeedsCache::Preview &preview);
+    void runAutoMount(bool wantCache, std::function<void()> afterMounted = {});
+    void adoptMountedSource(const QString &path);
     void importFrameworkResources();
     void load();
     void persist();

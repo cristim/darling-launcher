@@ -199,10 +199,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     add("Mount macOS source…", [this] {
         if (!mountDialog) {
             mountDialog = new MountDialog(this, mountProvider);
-            connect(mountDialog, &MountDialog::sourceMounted, this, [this](const QString &path) {
-                volume->setText(path); updateSourceChoices(); refresh(); setBusy(false, "Selected mounted macOS source: " + path);
-                QSettings("cristim", "darling-launcher").setValue("volume", path);
-            });
+            connect(mountDialog, &MountDialog::sourceMounted, this, [this](const QString &path) { adoptMountedSource(path); });
         }
         mountDialog->show(); mountDialog->raise(); mountDialog->activateWindow();
     });
@@ -249,6 +246,10 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     auto *sourceFilter = new QComboBox; sourceFilter->setObjectName("sourceFilter"); sourceFilter->addItems({"Not yet imported", "All apps"});
     sourceEmpty = new QLabel("Select a mounted macOS source in Settings, then choose apps to import."); sourceEmpty->setObjectName("sourceEmptyState"); sourceEmpty->setWordWrap(true); sourceLayout->addWidget(sourceEmpty);
     auto *chooseSource = new QPushButton("Choose macOS source…"); chooseSource->setObjectName("emptyChooseSource"); sourceLayout->addWidget(chooseSource);
+    auto *mountVolumes = new QPushButton("Mount macOS volumes…"); mountVolumes->setObjectName("autoMountSource");
+    mountVolumes->setToolTip("Explains why administrator rights are needed, then mounts the macOS volumes read-only through the system's own authentication dialog");
+    sourceLayout->addWidget(mountVolumes);
+    connect(mountVolumes, &QPushButton::clicked, this, [this] { runAutoMount(false); });
     connect(chooseSource, &QPushButton::clicked, settingsButton, &QPushButton::click);
     auto viewButtons = [this](AppBrowser *browser, const QString &prefixName, const QString &settingKey) {
         auto icon = [this](bool grid) {
@@ -271,7 +272,7 @@ Window::Window(const QString &builderScript, bool mountAll, std::function<QList<
     available = new AppBrowser; available->setObjectName("availableApps");
     { auto *row = new QHBoxLayout; row->addWidget(sourceSearch, 1); row->addWidget(sourceFilter); row->addWidget(viewButtons(available, "", "gridView")); scanButton->setIcon(style()->standardIcon(QStyle::SP_BrowserReload)); row->addWidget(scanButton); scanButton->show(); sourceLayout->addLayout(row); }
     sourceLayout->addWidget(availableHeader); sourceLayout->addWidget(available);
-    connect(available, &AppBrowser::visibleAppsChanged, this, [this, chooseSource](int count) { sourceEmpty->setVisible(count == 0); chooseSource->setVisible(count == 0 && volume->text().isEmpty()); sourceEmpty->setText(count > 0 ? QString() : available->count() > 0 ? "No apps to show. Everything may already be imported; choose All apps to see the full list." : volume->text().isEmpty() ? "No macOS source selected. Choose an existing readable mount in Settings, or explicitly mount a volume." : "No apps found on this source. Check the selected volume in Settings."); });
+    connect(available, &AppBrowser::visibleAppsChanged, this, [this, chooseSource, mountVolumes](int count) { sourceEmpty->setVisible(count == 0); chooseSource->setVisible(count == 0 && volume->text().isEmpty()); mountVolumes->setVisible(count == 0 && volume->text().isEmpty()); sourceEmpty->setText(count > 0 ? QString() : available->count() > 0 ? "No apps to show. Everything may already be imported; choose All apps to see the full list." : volume->text().isEmpty() ? "No macOS source selected. Choose an existing readable mount in Settings, or explicitly mount a volume." : "No apps found on this source. Check the selected volume in Settings."); });
     connect(sourceSearch, &QLineEdit::textChanged, available, &AppBrowser::setSearch);
     connect(sourceFilter, &QComboBox::currentIndexChanged, this, [this](int index) { available->setFilter(index == 0 ? AppBrowser::Filter::NotImported : AppBrowser::Filter::All); });
     available->setFilter(AppBrowser::Filter::NotImported);
@@ -639,7 +640,7 @@ void Window::importBundles(const QStringList &names) {
     for (const auto &name : names) available->setActivity(name, AppBrowser::State::Queued);
     available->setActivity(names.first(), AppBrowser::State::Importing);
     const QString v = volume->text(), p = prefix->text();
-    connect(watcher, &QFutureWatcher<QPair<QList<AppEntry>, QString>>::finished, this, [this, watcher, p, names] {
+    connect(watcher, &QFutureWatcher<QPair<QList<AppEntry>, QString>>::finished, this, [this, watcher, v, p, names] {
         for (const auto &name : names) available->setActivity(name, AppBrowser::State::Ready);
         auto result = watcher->result(); watcher->deleteLater(); importRunning = false;
         for (const auto &entry : result.first) {
@@ -649,6 +650,7 @@ void Window::importBundles(const QStringList &names) {
         if (prefix->text() == p) load();
         setBusy(activeProcesses > 0, result.second.isEmpty() ? "Import complete" : result.second);
         if (!result.second.isEmpty()) QMessageBox::warning(this, "Import", result.second);
+        if (result.second.isEmpty() && !result.first.isEmpty()) offerAppNeeds(result.first, v, p);
     });
     connect(watcher, &QFutureWatcherBase::progressValueChanged, this, [this, v, names](int completed) {
         if (volume->text() != v) return;
