@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<!-- Optional. The mount helpers start pkexec with the trusted Python interpreter; this action gives that prompt the text below.
+     polkit matches on the interpreter path, so once installed the text is shown for EVERY pkexec run of that interpreter on this
+     computer, not only the launcher's. Installed only with -DLAUNCHER_INSTALL_POLKIT_ACTION=ON. -->
+<policyconfig>
+  <action id="org.darlinglauncher.mount">
+    <description>Mount your macOS volumes read-only</description>
+    <message>Darling Launcher needs administrator rights to mount your macOS volumes read-only so that it can import the apps and frameworks you selected.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@LAUNCHER_PYTHON_EXECUTABLE@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>
