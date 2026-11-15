@@ -27,7 +27,7 @@ struct World {
     QString app() const { return dir.path() + "/system"; }
     QString cache() const { return dir.path() + "/cryptex"; }
     void mountApp() { touchDir(app() + "/System/Applications"); touchDir(app() + "/System/Library"); mounts << SourceMount{app(), "dev", "apfs", true}; }
-    void mountCache() { touchDir(cache() + "/System/Library/dyld"); mounts << SourceMount{cache(), "dmg", "fuse", true}; }
+    void mountCache() { touchDir(cache() + "/System/Library/dyld"); mounts << SourceMount{cache(), "/dev/loop-cryptex", "fuse", true}; } // a device name that makes it a source candidate, so only the apps check keeps it from counting as the app volume
     Hooks hooks(bool consent, int *consentCalls = nullptr, QStringList *shown = nullptr, int *sleeps = nullptr) {
         Hooks h;
         h.mounts = [this] { return mounts; };
