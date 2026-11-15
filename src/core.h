@@ -36,6 +36,10 @@ bool importApp(const QString &volume, const QString &prefix, const QString &rela
 bool importLibrary(const QString &volume, const QString &prefix, const QString &expectedIn, QString *error);
 // Copies <volume>/usr/share/langid into the prefix. `copied` lists relative files written (empty when already present and identical).
 bool importLangidData(const QString &volume, const QString &prefix, QStringList *copied, QString *error);
+// A string value of a bundle's Info.plist (libplist); empty when the file or key is missing.
+QString infoPlistString(const QString &plistPath, const QString &key);
+// Appends the catalog record Window writes after a successful importApp (shared with the headless import).
+bool catalogImportedApp(const QString &prefix, const AppEntry &entry, QString *error);
 struct TrashReceipt { QString prefix, bundle, trashedPath; QJsonObject record; };
 bool trashApp(const QString &prefix, const QString &bundle, QString *error, TrashReceipt *receipt = nullptr);
 bool restoreApp(const TrashReceipt &receipt, QString *error);

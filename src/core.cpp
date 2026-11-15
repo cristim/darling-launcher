@@ -214,6 +214,15 @@ bool importApp(const QString &volume, const QString &prefix, const QString &rela
     return true;
 }
 
+QString infoPlistString(const QString &plistPath, const QString &key) { return plistString(plistPath, key.toUtf8().constData()); }
+
+bool catalogImportedApp(const QString &prefix, const AppEntry &entry, QString *error) {
+    auto catalog = loadCatalog(prefix); auto array = catalog.value("apps").toArray();
+    array.append(QJsonObject{{"name", entry.name}, {"bundle", entry.relativeBundle}, {"executable", entry.executable}, {"source", entry.sourceRelative}, {"chain", QJsonArray{}}});
+    catalog.insert("apps", array);
+    return saveCatalog(prefix, catalog, error);
+}
+
 bool trashApp(const QString &prefix, const QString &bundle, QString *error, TrashReceipt *receipt) {
     const QString root = QFileInfo(prefix).canonicalFilePath();
     if (root.isEmpty() || root == "/" || !confinedRelative(bundle) || !bundle.startsWith("Applications/") || !bundle.endsWith(".app")) return fail(error, "Select a catalogued imported app in a private prefix");

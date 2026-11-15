@@ -642,11 +642,10 @@ void Window::importBundles(const QStringList &names) {
     connect(watcher, &QFutureWatcher<QPair<QList<AppEntry>, QString>>::finished, this, [this, watcher, p, names] {
         for (const auto &name : names) available->setActivity(name, AppBrowser::State::Ready);
         auto result = watcher->result(); watcher->deleteLater(); importRunning = false;
-        auto catalog = LauncherCore::loadCatalog(p); auto array = catalog.value("apps").toArray();
-        for (const auto &entry : result.first)
-            array.append(QJsonObject{{"name", entry.name}, {"bundle", entry.relativeBundle}, {"executable", entry.executable}, {"source", entry.sourceRelative}, {"chain", QJsonArray{}}});
-        catalog.insert("apps", array); QString error;
-        if (!LauncherCore::saveCatalog(p, catalog, &error)) result.second += "\n" + error;
+        for (const auto &entry : result.first) {
+            QString error;
+            if (!LauncherCore::catalogImportedApp(p, entry, &error)) { result.second += "\n" + error; break; }
+        }
         if (prefix->text() == p) load();
         setBusy(activeProcesses > 0, result.second.isEmpty() ? "Import complete" : result.second);
         if (!result.second.isEmpty()) QMessageBox::warning(this, "Import", result.second);
