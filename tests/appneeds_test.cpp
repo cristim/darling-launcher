@@ -182,6 +182,43 @@ private slots:
         QVERIFY(!QFileInfo(s.prefix + "/System/Library/PrivateFrameworks/FakeUI.framework/Versions/A/Resources/escape").isSymLink());
         QVERIFY(!QFileInfo::exists(s.prefix + "/System/Library/PrivateFrameworks/FakeUI.framework/Versions/A/Resources/escape"));
     }
+    void anUnreadableEmbeddedImageIsReportedNotFatal() {
+        Sandbox s;
+        s.app({"@rpath/Emb.framework/Versions/Current/Emb", "@rpath/Script.framework/Script", fw("Direct")});
+        QVERIFY(put(s.volume + "/" + kApp + "/Contents/Frameworks/Emb.framework/Versions/A/Emb", thin(2, {fw("ViaEmb")})));
+        QVERIFY(QFile::link("A", s.volume + "/" + kApp + "/Contents/Frameworks/Emb.framework/Versions/Current"));       // behind a link: the safe reader refuses it
+        QVERIFY(put(s.volume + "/" + kApp + "/Contents/Frameworks/Script.framework/Script", "#!/bin/sh\n"));              // not a Mach-O
+        Names names; QString error;
+        QVERIFY2(linkedNames(s.volume, kApp, &names, &error), qPrintable(error));
+        QCOMPARE(names.linked.size(), 1); QCOMPARE(names.linked[0].installName, fw("Direct"));
+        QCOMPARE(names.unresolvedRelative.size(), 2); QVERIFY(names.unresolvedRelative[0].contains("not readable"));
+    }
+    void aTraversingRpathTailAndALinkedInfoPlistAreRefused() {
+        Sandbox s; s.app({"@rpath/../../outside.dylib"});
+        QVERIFY(put(s.dir.path() + "/outside.dylib", thin(2, {fw("Escaped")})));
+        QVERIFY(put(s.volume + "/outside.dylib", thin(2, {fw("Escaped")})));
+        Names names; QString error;
+        QVERIFY(linkedNames(s.volume, kApp, &names, &error)); QVERIFY(names.linked.isEmpty()); QCOMPARE(names.unresolvedRelative, QStringList{"@rpath/../../outside.dylib"});
+        Sandbox t; t.app({fw("X")});
+        const QString plist = t.volume + "/" + kApp + "/Contents/Info.plist";
+        QVERIFY(QFile::rename(plist, t.dir.path() + "/real.plist")); QVERIFY(QFile::link(t.dir.path() + "/real.plist", plist));
+        QVERIFY(!linkedNames(t.volume, kApp, &names, &error)); QVERIFY2(error.contains("Info.plist"), qPrintable(error));
+    }
+    void aShortAppNameDoesNotPullInUnrelatedFrameworks() {
+        Sandbox s;
+        s.framework("CoreThing", true, {{"a.dat", "a"}});
+        QVERIFY(put(s.volume + "/System/Applications/Cor.app/Contents/Info.plist", "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>Cor</string></dict></plist>"));
+        QVERIFY(put(s.volume + "/System/Applications/Cor.app/Contents/MacOS/Cor", thin(2, {fw("CoreThing")})));
+        Plan plan; QString error; QVERIFY2(buildPlan(s.volume, s.prefix, "System/Applications/Cor.app", {}, &plan, &error), qPrintable(error));
+        QCOMPARE(find(plan, "CoreThing")->status, Status::Optional);
+    }
+    void aFailedLogWriteAfterTheCopyIsReported() {
+        Sandbox s; scene(s);
+        Plan plan; QString error; QVERIFY(buildPlan(s.volume, s.prefix, kApp, {}, &plan, &error));
+        QVERIFY(put(s.prefix + "/.darling-launcher/app-imports.md", QByteArray(1200000, 'x'))); // above the log's read cap
+        Applied applied; QVERIFY(!applyResources(s.volume, s.prefix, plan, true, {}, &applied, &error));
+        QVERIFY2(error.contains("copied, but the provenance log"), qPrintable(error));
+    }
     void logFieldsCannotBreakTheTable() {
         Sandbox s; QVERIFY(QDir().mkpath(s.prefix + "/.darling-launcher")); QString error;
         QVERIFY(appendLog(s.prefix, "Bad|App\nName", "step", "a|b", "1", "x\ny", &error));

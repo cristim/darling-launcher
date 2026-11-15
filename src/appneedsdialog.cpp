@@ -18,7 +18,7 @@ using FrameworkResources::formatBytes;
 AppNeedsDialog::AppNeedsDialog(const AppNeeds::Plan &plan, QWidget *parent) : QDialog(parent), current(plan) {
     setObjectName("appNeedsDialog"); setWindowTitle("Framework resources for " + plan.appName); resize(640, 460);
     auto *layout = new QVBoxLayout(this);
-    auto *intro = new QLabel("<b>" + plan.appName + "</b> links these macOS frameworks whose resource files (nibs, strings, data models, "
+    auto *intro = new QLabel("<b>" + plan.appName.toHtmlEscaped() + "</b> links these macOS frameworks whose resource files (nibs, strings, data models, "
                              "Info.plist) are not in the prefix. Only resource files are copied, never executable code. Nothing is copied until you choose Import.");
     intro->setWordWrap(true); layout->addWidget(intro);
     table = new QTableWidget(0, 4); table->setObjectName("needsTable");
@@ -51,6 +51,7 @@ AppNeedsDialog::AppNeedsDialog(const AppNeeds::Plan &plan, QWidget *parent) : QD
     importButton = buttons->addButton("Import selected resources", QDialogButtonBox::AcceptRole); importButton->setObjectName("needsImport");
     auto *skip = buttons->addButton("Skip", QDialogButtonBox::RejectRole); skip->setObjectName("needsSkip");
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    importButton->setAutoDefault(false); skip->setDefault(true); // a stray Enter must not start a copy
     layout->addWidget(buttons);
     connect(table, &QTableWidget::itemChanged, this, [this] { update(); });
     update();

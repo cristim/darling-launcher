@@ -45,7 +45,10 @@ NameReader windowedReader() {
 
 bool linkedNames(const QString &volume, const QString &appBundleRel, Names *out, QString *error, const NameReader &read) {
     if (!LauncherCore::confinedRelative(appBundleRel) || !appBundleRel.endsWith(".app")) return fail(error, "Not an app bundle path below the volume: " + appBundleRel);
-    const QString executable = LauncherCore::infoPlistString(volume + '/' + appBundleRel + "/Contents/Info.plist", "CFBundleExecutable");
+    const QString plist = volume + '/' + appBundleRel + "/Contents/Info.plist";
+    if (!isRegularFile(plist) || !LauncherCore::within(QFileInfo(plist).canonicalFilePath(), QFileInfo(volume).canonicalFilePath()))
+        return fail(error, "The app's Info.plist is missing, a link, or outside the volume");
+    const QString executable = LauncherCore::infoPlistString(plist, "CFBundleExecutable");
     if (executable.isEmpty() || !LauncherCore::confinedRelative(executable) || executable.contains('/')) return fail(error, "The app has no valid CFBundleExecutable");
     Names names;
     names.appName = QFileInfo(appBundleRel).completeBaseName();
@@ -57,7 +60,11 @@ bool linkedNames(const QString &volume, const QString &appBundleRel, Names *out,
     for (int i = 0; i < queue.size(); ++i) {
         if (i >= kMaxImages) return fail(error, "The app embeds more than " + QString::number(kMaxImages) + " libraries; refusing to follow them");
         QList<MachO::Dependency> deps; QString why;
-        if (!read(volume, queue[i].rel, &deps, &why)) return fail(error, queue[i].rel + ": " + why);
+        if (!read(volume, queue[i].rel, &deps, &why)) {
+            if (i == 0) return fail(error, queue[i].rel + ": " + why);
+            names.unresolvedRelative << queue[i].via + " (not readable: " + why + ")"; // an embedded image that is no Mach-O or sits behind a link
+            continue;
+        }
         if (i > 0) names.embeddedRead << queue[i].rel;
         for (const MachO::Dependency &dep : deps) {
             const QString &name = dep.installName;
@@ -92,7 +99,7 @@ namespace {
 // The app's own family: a framework named after the app (Notes -> NotesShared, NotesUI, ...).
 bool inFamily(const QString &framework, const Names &names) {
     for (const QString &base : {names.appName, names.executable})
-        if (!base.isEmpty() && framework.size() > base.size() && framework.startsWith(base)) return true;
+        if (base.size() >= 4 && framework.size() > base.size() && framework.startsWith(base)) return true; // a short name would match unrelated frameworks
     return false;
 }
 }
@@ -192,8 +199,11 @@ bool applyResources(const QString &volume, const QString &prefix, const Plan &pl
     if (fw.entries.isEmpty()) return true;
     if (!FrameworkResources::applyPlan(volume, prefix, fw, &applied->result, error, progress, cancelled)) return false;
     const FrameworkResources::Result &r = applied->result;
-    return appendLog(prefix, plan.appName, "framework resources", names.join(", "),
+    QString logError;
+    if (!appendLog(prefix, plan.appName, "framework resources", names.join(", "),
                      QString("%1 files, %2 bytes, %3 directories, %4 symlinks").arg(r.files).arg(r.bytes).arg(r.directories).arg(r.symlinks),
-                     QString("%1 cloned, %2 appeared meanwhile").arg(r.reflinked).arg(r.appeared), error);
+                     QString("%1 cloned, %2 appeared meanwhile").arg(r.reflinked).arg(r.appeared), &logError))
+        return fail(error, "The resources were copied, but the provenance log could not be updated: " + logError);
+    return true;
 }
 }

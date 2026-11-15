@@ -53,7 +53,11 @@ void Window::offerAppNeeds(const QList<AppEntry> &imported, const QString &sourc
 }
 
 void Window::showAppNeeds(const AppNeedsAnalysis &analysis, const QString &source, const QString &destination) {
-    if (!analysis.error.isEmpty()) { LauncherLog::write("appneeds", analysis.appName + ": could not work out its frameworks: " + analysis.error); return; }
+    if (!analysis.error.isEmpty()) {
+        LauncherLog::write("appneeds", analysis.appName + ": could not work out its frameworks: " + analysis.error);
+        statusBar()->showMessage("Could not work out the frameworks " + analysis.appName + " needs: " + analysis.error);
+        return;
+    }
     const AppNeedsCache::Request request = analysis.request;
     const bool offerCacheToo = analysis.cache.cacheApp && !analysis.cache.alreadyPresent();
     if (analysis.plan.selectedCount() + analysis.plan.byStatus(AppNeeds::Status::Optional).size() == 0) {

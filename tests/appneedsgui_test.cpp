@@ -41,6 +41,12 @@ class AppNeedsGuiTest : public QObject {
     Q_OBJECT
     static QPushButton *button(QWidget *w, const char *name) { auto *b = w->findChild<QPushButton *>(name); return b; }
 private slots:
+    void aCraftedAppNameIsNotRichTextAndImportIsNotTheDefaultButton() {
+        AppNeeds::Plan p = samplePlan(); p.appName = "<img src=x>Evil";
+        AppNeedsDialog dialog(p);
+        QVERIFY(dialog.findChildren<QLabel *>().first()->text().contains("&lt;img src=x&gt;Evil"));
+        QVERIFY(!button(&dialog, "needsImport")->isDefault()); QVERIFY(button(&dialog, "needsSkip")->isDefault());
+    }
     void theFrameworkDialogDefaultsAndTotals() {
         AppNeedsDialog dialog(samplePlan());
         auto *table = dialog.findChild<QTableWidget *>("needsTable"); QVERIFY(table);
