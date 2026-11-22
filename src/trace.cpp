@@ -4,18 +4,16 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
-#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QMap>
-#include <QRegularExpression>
-#include <algorithm>
+#include <QStringList>
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 namespace {
+const QStringList KnownKinds{"missing", "truncated", "scan_skipped"};
 bool fail(QString *error, const QString &message) { if (error) *error = message; return false; }
 // Opens without following a final symlink and checks the opened descriptor, so later openat() calls cannot be redirected.
 int openDirectory(const QString &path, bool requirePrivate, QString *error) {
@@ -30,7 +28,7 @@ int openDirectory(const QString &path, bool requirePrivate, QString *error) {
 }
 // Creates a new 0600 file inside the verified directory; fails if the name exists, even as a symlink.
 bool createPrivateFile(const QString &prefix, const QString &name, QString *path, int *fdOut, QString *error) {
-    int parent = openDirectory(prefix + "/.darling-launcher", false, error);
+    int parent = openDirectory(prefix + "/" + TraceVars::DataDirName, false, error);
     if (parent < 0) return false;
     ::close(parent);
     const int dir = openDirectory(LauncherTrace::traceDirectory(prefix), true, error);
@@ -54,7 +52,7 @@ bool LauncherTrace::elevated(const QString &darling, uid_t euid) {
     struct stat info;
     return euid == 0 || ::stat(QFile::encodeName(darling).constData(), &info) != 0 || (info.st_mode & (S_ISUID | S_ISGID));
 }
-QString LauncherTrace::traceDirectory(const QString &prefix) { return prefix + "/.darling-launcher/" + TraceVars::TraceDirName; }
+QString LauncherTrace::traceDirectory(const QString &prefix) { return prefix + "/" + TraceVars::DataDirName + "/" + TraceVars::TraceDirName; }
 
 bool LauncherTrace::ensurePrivateDirectory(const QString &path, QString *error, bool requirePrivate) {
     const int fd = openDirectory(path, requirePrivate, error);
@@ -62,21 +60,12 @@ bool LauncherTrace::ensurePrivateDirectory(const QString &path, QString *error, 
     return fd >= 0;
 }
 
-bool LauncherTrace::prepareLog(const QString &prefix, const QString &app, QString *logPath, QString *error) {
-    QString safe = app; safe.replace(QRegularExpression("[^A-Za-z0-9._-]"), "_"); if (safe.isEmpty() || safe.startsWith('.')) safe.prepend('_');
-    int fd = -1;
-    if (!createPrivateFile(prefix, utcName(safe.left(64), ".jsonl"), logPath, &fd, error)) return false;
-    ::close(fd);
-    return true;
-}
-
-bool LauncherTrace::applyTrace(QProcessEnvironment &env, const QString &prefix, const QString &app, bool enabled, const QString &darling, QString *logPath, QString *error) {
+bool LauncherTrace::applyTrace(QProcessEnvironment &env, const QString &prefix, bool enabled, const QString &darling, QString *error) {
     for (const auto &name : env.keys()) if (name.startsWith(TraceVars::Mode)) env.remove(name);
     if (!enabled || elevated(darling)) return true;
-    QString path;
-    if (!prepareLog(prefix, app, &path, error)) return false;
-    env.insert(TraceVars::Mode, TraceVars::ModeLog); env.insert(TraceVars::Log, path);
-    if (logPath) *logPath = path;
+    if (!ensurePrivateDirectory(prefix + "/" + TraceVars::DataDirName, error, false)) return false;
+    if (!ensurePrivateDirectory(traceDirectory(prefix), error, true)) return false;
+    env.insert(TraceVars::Mode, TraceVars::ModeLog); env.insert(TraceVars::Log, TraceVars::TraceDirGuestPath);
     return true;
 }
 
@@ -89,29 +78,31 @@ LauncherTrace::Summary LauncherTrace::parse(const QString &path, qint64 maxBytes
     QByteArray data = file.read(maxBytes);
     summary.truncated = !file.atEnd();
     if (summary.truncated) { const int cut = data.lastIndexOf('\n'); data.truncate(cut < 0 ? 0 : cut); }
-    QMap<QPair<QString, QString>, Row> rows;
     for (const QByteArray &line : data.split('\n')) {
         if (line.trimmed().isEmpty()) continue;
         if (line.size() > MaxLine) { ++summary.skipped; continue; }
-        QJsonParseError parseError; const auto object = QJsonDocument::fromJson(line, &parseError).object();
-        const QString symbol = clean(object.value("symbol").toString()), image = clean(object.value("image").toString());
-        if (parseError.error != QJsonParseError::NoError || symbol.isEmpty()) { ++summary.skipped; continue; }
-        const QPair<QString, QString> key{image, symbol};
-        if (!rows.contains(key) && rows.size() >= MaxRows) { ++summary.skipped; summary.truncated = true; continue; }
-        auto &row = rows[key];
-        if (row.symbol.isEmpty()) { row.image = image; row.symbol = symbol; row.order = rows.size() - 1; }
-        const double count = object.value("count").toDouble(1);
-        const qint64 add = count >= 1 && count <= MaxLineCount ? static_cast<qint64>(count) : 1;
-        row.count = qMin<qint64>(MaxCount, row.count + add);
+        QJsonParseError parseError; const QJsonObject object = QJsonDocument::fromJson(line, &parseError).object();
+        const QString kind = object.value("kind").toString();
+        const QJsonValue version = object.value("v");
+        bool validFields = true;
+        for (const char *field : {"sym", "lib", "from", "arch", "reason"})
+            if (object.contains(field) && !object.value(field).isString()) validFields = false;
+        if (parseError.error != QJsonParseError::NoError || !version.isDouble() || version.toDouble() != 1 || !KnownKinds.contains(kind) || !validFields) { ++summary.skipped; continue; }
+        Row row; row.kind = kind;
+        if (kind == QStringLiteral("missing")) { row.symbol = clean(object.value("sym").toString()); if (row.symbol.isEmpty()) { ++summary.skipped; continue; } }
+        row.library = clean(object.value("lib").toString()); row.from = clean(object.value("from").toString()); row.reason = clean(object.value("reason").toString());
+        if (summary.rows.size() >= MaxRows) { ++summary.skipped; summary.truncated = true; continue; }
+        summary.rows.append(row);
     }
-    summary.rows = rows.values();
-    std::sort(summary.rows.begin(), summary.rows.end(), [](const Row &x, const Row &y) { return x.order < y.order; });
     return summary;
 }
 
 QString LauncherTrace::exportSummary(const Summary &summary) {
-    QString text = "image\tsymbol\tcount\n";
-    for (const auto &row : summary.rows) text += clean(row.image) + '\t' + clean(row.symbol) + '\t' + QString::number(row.count) + '\n';
+    QString text = "symbol\tlibrary\treferencing_image\tkind\n";
+    for (const auto &row : summary.rows) {
+        const QString kind = row.reason.isEmpty() ? clean(row.kind) : clean(row.kind) + " (" + clean(row.reason) + ")";
+        text += clean(row.symbol) + '\t' + clean(row.library) + '\t' + clean(row.from) + '\t' + kind + '\n';
+    }
     return text;
 }
 

@@ -1,5 +1,33 @@
 # Launcher missing-symbol trace option (local branch only, not pushed)
 
+## Takeover verification, 2026-10-14
+
+The pending OpenCode changes now use the producer's v1 names-only records
+(`sym`, `lib`, `from`, `arch`) and display `missing`, `truncated` and `scan_skipped`.
+The launcher passes the guest directory `/.darling-launcher/trace`, backed by
+`<prefix>/.darling-launcher/trace`, instead of precreating a log file. The producer
+creates the JSONL files. The historical evidence below describes the earlier tree.
+
+- `flock -w 60 /tmp/agent-locks/darling-heavy-build.lock cmake --build build --target launcher-trace-tests launcher-gui-tests -j1`: passed.
+- `QT_QPA_PLATFORM=offscreen build/launcher-trace-tests -silent`: 16 passed.
+- `QT_QPA_PLATFORM=offscreen build/launcher-gui-tests traceOptionPersistsAndOnlyTracedLaunchGetsVariables -silent`: 3 passed.
+- `git diff --check`: passed.
+- The new malformed-version/type test failed before the parser fix: an absent
+  version produced one row instead of zero. The parser now requires numeric v1
+  and string types for optional name, architecture and reason fields when present.
+  Absent optional fields and unknown extra fields remain supported.
+- The focused GUI test failed twice before its synchronization fix: the fake
+  launcher wrote its mode marker before creating its log. It now waits for the
+  traced process to exit before enumerating the output directory.
+
+Not verified: a real runtime launch, the full GUI suite, and independent review
+of this pending diff. `fix.diff` still describes the earlier committed tree.
+The directory helper checks only the final component with `O_NOFOLLOW` and
+reopens the full trace path after closing its parent descriptor. It does not
+establish that all ancestors are symlink-free or prevent a parent swap between
+those opens. The existing elevated-launch policy also differs from the later
+security re-ruling that withdrew R1; it was preserved as requested.
+
 Branch feat/missing-symbol-trace-option from origin/main; 3 commits (git log). Patch: fix.diff (git diff origin/main). Names provisional in src/tracevars.h. C++/Qt only, no helpers.
 
 ## Behaviour (v1, names-only log mode)

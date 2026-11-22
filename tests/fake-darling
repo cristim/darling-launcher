@@ -1,7 +1,8 @@
 #!/bin/sh
-# Fake Darling host launcher for tests: no runtime support exists yet, so this stands in for the consumer of the trace variables.
+# Fake Darling host launcher for tests: no runtime support exists yet, so this stands in for the guest dyld that consumes the trace variables.
+# DARLING_MISSING_SYMBOLS_LOG is an absolute guest directory; the guest root is $DPREFIX here, as it is for the real launcher.
 printf '%s' "${DARLING_MISSING_SYMBOLS-unset}" > "$DPREFIX/fake-mode.txt"
 if [ -n "${DARLING_MISSING_SYMBOLS-}" ]; then
-  printf '%s\n' '{"image":"/System/Library/Frameworks/Fixture.framework/Fixture","symbol":"_FixtureMissing","count":2,"regs":["0x1","ff"],"future":{"x":1}}' >> "$DARLING_MISSING_SYMBOLS_LOG"
+  printf '%s\n' '{"v":1,"kind":"missing","sym":"_FixtureMissing","lib":"/usr/lib/libFixture.dylib","from":"/Applications/Fixture.app/Contents/MacOS/Fixture","arch":"arm64"}' >> "$DPREFIX${DARLING_MISSING_SYMBOLS_LOG}/Fixture-$$-$(date +%s%N).jsonl"
 fi
 exit 0

@@ -93,8 +93,11 @@ private slots:
         QVERIFY(!QFileInfo::exists(prefix + "/.darling-launcher/trace"));
         saved.trace = true; LauncherTroubleshooting::saveRecoveryChoices(saved);
         QFile::remove(prefix + "/fake-mode.txt"); launchSelected(window); QTRY_COMPARE_WITH_TIMEOUT(modeSeen(), QString("log"), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(apps->status("Applications/Fixture.app").contains("Exited"), 5000);
         const auto logs = QDir(prefix + "/.darling-launcher/trace").entryList({"Fixture-*.jsonl"}); QCOMPARE(logs.size(), 1);
         QTRY_VERIFY_WITH_TIMEOUT(QFileInfo(prefix + "/.darling-launcher/trace/" + logs.first()).size() > 0, 5000);
+        QFile traceLog(prefix + "/.darling-launcher/trace/" + logs.first()); QVERIFY(traceLog.open(QIODevice::ReadOnly));
+        const QByteArray traceRecord = traceLog.readAll(); QVERIFY(traceRecord.contains("\"kind\":\"missing\"")); QVERIFY(traceRecord.contains("_FixtureMissing"));
         QVERIFY(!qEnvironmentVariableIsSet("DARLING_MISSING_SYMBOLS"));
         const QString suid = temporary.path() + "/suid-darling"; QVERIFY(QFile::copy(fake, suid)); QVERIFY(::chmod(QFile::encodeName(suid).constData(), 04755) == 0);
         LaunchChoicesDialog plain("Fixture", false); plain.setDarling(fake); QVERIFY(plain.findChild<QCheckBox *>("launchTraceOption")->isEnabled()); QVERIFY(!plain.findChild<QLabel *>("launchTraceNotice")->isVisibleTo(&plain));

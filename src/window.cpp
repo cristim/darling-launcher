@@ -665,7 +665,7 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     env.insert("DPREFIX", p);
     if (!key.isEmpty() && args.value(0) == "exec") {
         const auto chosen = launchChoices.value(key); QString traceError;
-        if (!LauncherTrace::applyTrace(env, p, label, chosen.trace, darling->text(), nullptr, &traceError)) { delete process; invalid(traceError); return; }
+        if (!LauncherTrace::applyTrace(env, p, chosen.trace, darling->text(), &traceError)) { delete process; invalid(traceError); return; }
     }
     process->setProcessEnvironment(env); process->setProcessChannelMode(QProcess::MergedChannels);
     ++activeProcesses;

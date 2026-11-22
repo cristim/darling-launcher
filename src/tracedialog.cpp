@@ -22,15 +22,16 @@ void showTraceLog(QWidget *parent, const QString &prefix) {
     auto *files = new QComboBox; files->setObjectName("traceFiles");
     for (const auto &info : QDir(directory).entryInfoList({"*.jsonl"}, QDir::Files | QDir::NoSymLinks, QDir::Time)) files->addItem(info.fileName(), info.absoluteFilePath());
     auto *note = new QLabel; note->setObjectName("traceNote"); note->setWordWrap(true);
-    auto *table = new QTableWidget(0, 4); table->setObjectName("traceTable"); table->setHorizontalHeaderLabels({"Framework / image", "Symbol", "Count", "First call #"}); table->setEditTriggers(QAbstractItemView::NoEditTriggers); table->horizontalHeader()->setStretchLastSection(true);
+    auto *table = new QTableWidget(0, 4); table->setObjectName("traceTable"); table->setHorizontalHeaderLabels({"Symbol", "Library", "Referencing image", "Kind"}); table->setEditTriggers(QAbstractItemView::NoEditTriggers); table->horizontalHeader()->setStretchLastSection(true);
     auto summary = std::make_shared<LauncherTrace::Summary>();
     auto load = [=] {
         *summary = LauncherTrace::parse(files->currentData().toString());
         table->setRowCount(summary->rows.size());
         for (int i = 0; i < summary->rows.size(); ++i) {
             const auto &row = summary->rows.at(i);
-            table->setItem(i, 0, new QTableWidgetItem(row.image)); table->setItem(i, 1, new QTableWidgetItem(row.symbol));
-            table->setItem(i, 2, new QTableWidgetItem(QString::number(row.count))); table->setItem(i, 3, new QTableWidgetItem(QString::number(row.order + 1)));
+            const QString kind = row.reason.isEmpty() ? row.kind : row.kind + " (" + row.reason + ")";
+            table->setItem(i, 0, new QTableWidgetItem(row.symbol)); table->setItem(i, 1, new QTableWidgetItem(row.library));
+            table->setItem(i, 2, new QTableWidgetItem(row.from)); table->setItem(i, 3, new QTableWidgetItem(kind));
         }
         QStringList parts; if (summary->unreadable) parts << "Cannot read this file"; if (files->count() == 0) parts << "No trace logs in " + directory;
         if (summary->skipped > 0) parts << QString::number(summary->skipped) + " lines skipped";
@@ -42,7 +43,7 @@ void showTraceLog(QWidget *parent, const QString &prefix) {
     QObject::connect(open, &QPushButton::clicked, dialog, [directory] { QDesktopServices::openUrl(QUrl::fromLocalFile(directory)); });
     QObject::connect(save, &QPushButton::clicked, dialog, [=] {
         QString path, error;
-        note->setText(LauncherTrace::writeSummary(prefix, *summary, &path, &error) ? "Summary (names and counts only) saved to " + path : error);
+        note->setText(LauncherTrace::writeSummary(prefix, *summary, &path, &error) ? "Summary (names only) saved to " + path : error);
     });
     QObject::connect(files, &QComboBox::currentIndexChanged, dialog, load);
     layout->addWidget(files); layout->addWidget(note); layout->addWidget(table); layout->addLayout(buttons);
