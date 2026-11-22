@@ -8,6 +8,17 @@ Licensed under the GNU General Public License, version 3 or any later version (`
 
 Requires CMake, a C++17 compiler, Qt 6 Core/Widgets/Concurrent/Network/Test, Qt image format plugins (ICNS), and `libplist-2.0`.
 
+The executable also accepts `--help` and `--headless` without loading a
+Qt display plugin or creating launcher settings or logs. With no command it opens
+the GUI when an advertised XCB or Wayland display accepts a connection; otherwise
+it prints safe help. A display can disappear between that check and GUI startup.
+`DARLING_LAUNCHER_HEADLESS=1` forces CLI help on a desktop, while `0` keeps automatic
+selection. Other values are rejected. `--mount-all` remains a GUI option and never
+mounts anything implicitly in headless mode.
+
+Help is text; unsupported commands and invalid options return JSON with exit code
+2. Diagnostics use stderr. Application commands are not available yet.
+
 ```sh
 cmake -S . -B build -G Ninja
 cmake --build build
