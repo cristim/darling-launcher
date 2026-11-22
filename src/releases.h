@@ -43,7 +43,7 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 // Returns an empty string on success, otherwise the reason.
 // unpackedSize is manifest.json's unpacked_size: the listed regular-file bytes may not exceed it, and extraction is
 // stopped once the files written exceed it by more than extractionSlack.
-QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize, Cancelled cancelled = {});
+QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize, Cancelled cancelled = {}, bool *digestMismatch = nullptr);
 // CI computes unpacked_size as the sum of regular-file sizes, so a correct archive never needs this; it only
 // absorbs rounding in a future packer.
 constexpr qint64 extractionSlack = 1 << 20;

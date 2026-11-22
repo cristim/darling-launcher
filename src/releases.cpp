@@ -288,7 +288,8 @@ static void removeStaleArchiveCopies(const QString &runtimesRoot) {
         QDir(path).removeRecursively();
     }
 }
-QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize, Cancelled cancelled) {
+QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo, qint64 unpackedSize, Cancelled cancelled, bool *digestMismatch) {
+    if (digestMismatch) *digestMismatch = false;
     if (cancelled && cancelled()) return "Cancelled";
     if (!validTag(tag)) return "not a release tag: " + tag;
     if (unpackedSize <= 0) return "release has no unpacked size";
@@ -309,7 +310,7 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
     QString error;
     const QString actual = copyAndHash(archive, copy, &error, cancelled);
     if (!error.isEmpty()) return error;
-    if (actual.compare(sha256, Qt::CaseInsensitive) != 0) return "SHA-256 mismatch for " + archive + ": expected " + sha256 + ", got " + actual;
+    if (actual.compare(sha256, Qt::CaseInsensitive) != 0) { if (digestMismatch) *digestMismatch = true; return "SHA-256 mismatch for " + archive + ": expected " + sha256 + ", got " + actual; }
     error = verifyAttestation(gh, copy, repo, cancelled);
     if (!error.isEmpty()) return error;
     const QString target = runtimesRoot + "/" + tag;

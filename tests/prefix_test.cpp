@@ -206,6 +206,15 @@ private slots:
         clock.restart(); QVERIFY(installArchive(archive, sha256File(archive), runtimes, tag, gh, repository, roomyUnpackedSize).contains("retry the installation")); QVERIFY(clock.elapsed() < 1000);
         QVERIFY(QFileInfo::exists(heldCopy + "/keep")); QVERIFY(!QFileInfo::exists(runtimes + '/' + tag)); QVERIFY(!QFileInfo::exists(runtimes + '/' + tag + ".partial"));
     }
+    void digestMismatchOutcomeIsExplicit() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path();
+        const QString archive = makeArchive(root, "good", runtimeMembers()), gh = writeScript(root + "/gh", "exit 1"); QVERIFY(!archive.isEmpty()); QVERIFY(!gh.isEmpty());
+        bool mismatch = false;
+        QVERIFY(!installArchive(archive, QString(64, '0'), root + "/runtimes", "v2026.10.09-00000f3", gh, repository, roomyUnpackedSize, {}, &mismatch).isEmpty()); QVERIFY(mismatch);
+        QVERIFY(installArchive(archive, sha256File(archive), root + "/runtimes", "v2026.10.09-00000f3", gh, repository, roomyUnpackedSize, {}, &mismatch).contains("attestation verification failed")); QVERIFY(!mismatch);
+        mismatch = true; QCOMPARE(installArchive(archive, sha256File(archive), root + "/runtimes", "v2026.10.09-00000f3", gh, repository, roomyUnpackedSize, [] { return true; }, &mismatch), QString("Cancelled")); QVERIFY(!mismatch);
+    }
     // Security S5: CI packs only usr/local/**, so anything else in an archive is refused before extraction.
     void membersOutsideUsrLocalAreRefused() {
         using namespace LauncherReleases;

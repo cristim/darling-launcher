@@ -10,6 +10,7 @@
 #include <QProcess>
 #include <QSet>
 #include <QPointer>
+#include <QUrl>
 
 class QComboBox;
 class QCloseEvent;
@@ -27,10 +28,11 @@ class QDialog;
 class QSplitter;
 class PrefixDialog;
 class TroubleshootingDialog;
+class RuntimeDownload;
 
 class Window : public QMainWindow {
 public:
-    explicit Window(const QString &builderScript = {}, bool mountAll = false, std::function<QList<SourceMount>()> mountProvider = LauncherSources::mounts);
+    explicit Window(const QString &builderScript = {}, bool mountAll = false, std::function<QList<SourceMount>()> mountProvider = LauncherSources::mounts, QUrl runtimeApi = QUrl("https://api.github.com"), int initializationTimeoutMs = 60000, int shutdownGraceMs = 5000);
     ~Window() override;
     void offerRuntimeSetup();
     std::function<void()> detectRuntime;
@@ -44,6 +46,15 @@ private:
     QString sourceSignature;
     bool sourceChoicesInitialized = false;
     QString prefixBuilderScript;
+    QUrl runtimeApi;
+    QPointer<QDialog> runtimeDialog;
+    QPointer<RuntimeDownload> runtimeDownload;
+    bool runtimeInitializing = false;
+    bool destroyingRuntime = false;
+    int initializationTimeoutMs, shutdownGraceMs;
+    std::function<void()> cancelRuntimeInitialization;
+    std::function<void()> waitRuntimeInitialization;
+    void openRuntimeDownload();
     void runPrefixMaintenance(bool repair);
     void openRuntimeBuilder(bool fresh = false, bool automatic = false);
     void offerExistingDarling();

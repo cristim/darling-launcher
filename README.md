@@ -27,10 +27,27 @@ The source browser reads bundle display names, `CFBundleIconFile` resources and 
 
 The launcher includes a versioned GPL snapshot of `all-vibedarling-pr-prefix.py`.
 No Darling installation or external builder path is required. On startup without a
-usable runtime, **Set up Darling** offers to build and install a private runtime or
-select an existing one. Everything the launcher creates lives in `~/.darling-launcher`
+usable runtime, setup checks stable VibeDarling runtime releases. GitHub CLI verifies
+the manifest, checksums, and archive against the hosted master release workflow.
+Downloads check architecture, glibc, wrapped host libraries, disk space, size and
+SHA-256 before installation. A successful private prefix initialization selects its
+non-setuid launcher and install root together. Cancel stops download/validation;
+cancelling prefix initialization requests prefix-scoped shutdown and waits for both
+owned host wrappers before allowing another setup. A timeout kills only those host
+wrappers; the retained prefix may still need manual guest shutdown. Failed attempts
+remain private for inspection. If no compatible release exists, **Build from source…**
+opens the existing build workflow explicitly. **I already have Darling…** selects an
+existing checkout. Everything the launcher creates lives in `~/.darling-launcher`
 (sources, workspaces, runtime images, prefixes, mount points and AI workspaces); this
 location is fixed and not configurable.
+
+Interrupted archives remain in a private directory for their signed release,
+architecture, URL, checksum and size. Retrying, including after restarting the
+launcher, resumes matching bytes with a validated HTTP range response. A server
+that ignores ranges starts a fresh file and retains the previous partial. Full
+checksum and attestation verification still run before installation. Checksum
+mismatches retain the archive separately so the next explicit retry starts fresh;
+attestation failures retain the complete cached archive for re-verification.
 
 Setup clones VibeDarling into `<data>/sources/vibedarling`, builds in a fresh
 `<data>/workspaces/...` and automatically selects the resulting runtime/prefix.

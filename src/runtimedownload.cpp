@@ -19,6 +19,13 @@
 #include <QtConcurrent>
 #include <gnu/libc-version.h>
 #include <limits>
+#include <QCryptographicHash>
+#include <QUuid>
+#include <sys/stat.h>
+#include <sys/file.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cerrno>
 
 namespace {
 constexpr qint64 metadataLimit = 8 * 1024 * 1024;
@@ -39,6 +46,33 @@ bool allowed(const QUrl &url) {
     if (!url.isValid() || !url.userInfo().isEmpty() || url.hasFragment()) return false;
     return url.scheme() == "https" && (url.port(-1) == -1 || url.port() == 443)
         && QStringList{"api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"}.contains(url.host());
+}
+QString privateDirectory(const QString &path) {
+    if (::mkdir(QFile::encodeName(path).constData(), 0700) != 0 && errno != EEXIST) return "Cannot create a private archive cache directory.";
+    struct stat info;
+    if (lstat(QFile::encodeName(path).constData(), &info) != 0 || !S_ISDIR(info.st_mode) || info.st_uid != getuid() || (info.st_mode & 07777) != 0700) return "Archive cache directory must be a real user-owned directory with mode 0700.";
+    return {};
+}
+QString openPartial(QFile &file, const QString &path, bool exclusive = false) {
+    const int fd = ::open(QFile::encodeName(path).constData(), O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | (exclusive ? O_EXCL : 0), 0600);
+    if (fd < 0) return "Cannot open the retained archive partial without following links.";
+    struct stat info;
+    if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) || info.st_uid != getuid() || info.st_nlink != 1 || (info.st_mode & 07777) != 0600) { ::close(fd); return "Archive partial must be a private user-owned regular file."; }
+    if (!file.open(fd, QIODevice::ReadWrite, QFileDevice::AutoCloseHandle)) { ::close(fd); return "Cannot open the retained archive partial."; }
+    if (!file.seek(info.st_size)) return "Cannot seek to the retained archive partial.";
+    return {};
+}
+QString retainPartial(QFile &file, const QString &path) {
+    file.close();
+    const QString retained = QFileInfo(path).absolutePath() + "/retained-" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".part";
+    return QFile::rename(path, retained) ? QString() : "Cannot preserve the rejected archive partial.";
+}
+QString diskSpaceError(const QString &root, qint64 size, qint64 unpacked, qint64 offset) {
+    const auto maximum = std::numeric_limits<qint64>::max();
+    if (unpacked > maximum - LauncherReleases::extractionSlack || size > maximum - unpacked - LauncherReleases::extractionSlack || size - offset > maximum - unpacked - LauncherReleases::extractionSlack - size) return "Runtime disk requirement is out of range.";
+    const qint64 required = size - offset + size + unpacked + LauncherReleases::extractionSlack;
+    QStorageInfo storage(root); storage.refresh();
+    return !storage.isValid() || !storage.isReady() || required > storage.bytesAvailable() ? "Not enough free space for the remaining archive, private verification copy and extracted runtime." : QString();
 }
 }
 
@@ -62,16 +96,18 @@ void RuntimeDownload::start(const QString &root) {
         const QString gh = QStandardPaths::findExecutable("gh");
         if (gh.isEmpty()) return fail("GitHub CLI (gh) is required to verify runtime attestations. Install it or build from source.");
         if (!QDir().mkpath(root + "/downloads")) return fail("Cannot create the private download directory.");
+        struct stat downloads;
+        if (lstat(QFile::encodeName(root + "/downloads").constData(), &downloads) != 0 || !S_ISDIR(downloads.st_mode) || downloads.st_uid != getuid() || (downloads.st_mode & (S_IWGRP | S_IWOTH))) return fail("Downloads must be a real user-owned directory without shared write access.");
         QTemporaryDir attempt(root + "/downloads/attempt-XXXXXX");
         if (!attempt.isValid()) return fail("Cannot create a private download attempt.");
         attempt.setAutoRemove(false);
         QNetworkAccessManager network;
-        auto fetch = [&](QUrl url, qint64 limit, const QString &phase, const QString &file, QByteArray *bytes) -> QString {
+        auto fetch = [&](QUrl url, qint64 limit, const QString &phase, const QString &file, QByteArray *bytes, QFile *partial = nullptr, qint64 unpacked = 0) -> QString {
             for (int hop = 0; hop < 6; ++hop) {
                 if (stop()) return "Cancelled";
                 if (!allowed(url)) return "Rejected download URL: " + url.toDisplayString(QUrl::RemoveUserInfo);
                 QFile destination(file);
-                if (!file.isEmpty() && !destination.open(QIODevice::WriteOnly | QIODevice::NewOnly)) return "Cannot create " + file;
+                if (!partial && !file.isEmpty() && !destination.open(QIODevice::WriteOnly | QIODevice::NewOnly)) return "Cannot create " + file;
                 if (bytes) bytes->clear();
                 QUrl transport = url;
                 if (api.scheme() == "http" && api.host() == "127.0.0.1" && api.userInfo().isEmpty() && api.path().isEmpty() && !api.hasQuery() && !api.hasFragment()) {
@@ -81,48 +117,67 @@ void RuntimeDownload::start(const QString &root) {
                 request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
                 request.setRawHeader("User-Agent", "Darling-Launcher");
                 request.setRawHeader("Accept-Encoding", "identity");
+                qint64 offset = partial ? partial->size() : 0;
+                if (offset > 0) request.setRawHeader("Range", "bytes=" + QByteArray::number(offset) + '-');
                 auto *reply = network.get(request);
                 reply->setReadBufferSize(1024 * 1024);
                 QEventLoop loop; QTimer poll, deadline; poll.setInterval(100); deadline.setSingleShot(true);
-                QString error; qint64 count = 0; bool redirected = false; QUrl next;
+                QString error; qint64 count = 0; bool redirected = false, accepted = false, invalidPartial = false; QUrl next;
                 auto headers = [&] {
                     const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-                    if (status < 300 || status >= 400) return;
-                    next = url.resolved(reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl());
-                    if (reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl().isEmpty() || !allowed(next)) error = "Rejected download redirect.";
-                    else redirected = true;
-                    reply->abort();
+                    if (status == 0 || accepted || !error.isEmpty()) return;
+                    if (status >= 300 && status < 400) {
+                        next = url.resolved(reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl());
+                        if (reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl().isEmpty() || !allowed(next)) error = "Rejected download redirect.";
+                        else redirected = true;
+                        reply->abort(); return;
+                    }
+                    const QByteArray encoding = reply->rawHeader("Content-Encoding");
+                    if (!encoding.isEmpty() && encoding != "identity") error = "Rejected nonidentity download encoding.";
+                    else if (partial && offset > 0 && status == 200) {
+                        error = diskSpaceError(root, limit, unpacked, 0);
+                        if (error.isEmpty()) error = retainPartial(*partial, file);
+                        if (error.isEmpty()) error = openPartial(*partial, file, true);
+                        if (error.isEmpty()) offset = 0;
+                    } else if (partial && offset > 0) {
+                        int ranges = 0; for (const auto &header : reply->rawHeaderPairs()) if (header.first.toLower() == "content-range") ++ranges;
+                        const QByteArray expected = "bytes " + QByteArray::number(offset) + '-' + QByteArray::number(limit - 1) + '/' + QByteArray::number(limit);
+                        if (status != 206 || ranges != 1 || reply->rawHeader("Content-Range") != expected) error = "Rejected archive partial response: Content-Range does not match the retained bytes.";
+                    } else if (status != 200) error = "Invalid download response for " + phase;
+                    if (error.isEmpty() && partial && reply->hasRawHeader("Content-Length") && reply->header(QNetworkRequest::ContentLengthHeader).toLongLong() != limit - offset) { error = "Rejected archive partial response: Content-Length does not match the remaining signed size."; invalidPartial = true; }
+                    if (!error.isEmpty()) { invalidPartial = invalidPartial || (partial && (status == 206 || !encoding.isEmpty())); reply->abort(); return; }
+                    accepted = true;
                 };
                 auto drain = [&] {
                     if (!reply->isOpen()) return;
-                    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-                    if (status >= 300 && status < 400) { headers(); return; }
-                    if (status != 200 || (!reply->rawHeader("Content-Encoding").isEmpty() && reply->rawHeader("Content-Encoding") != "identity")) {
-                        error = "Invalid download response for " + phase; reply->abort(); return;
-                    }
+                    headers(); if (!accepted || !error.isEmpty()) return;
                     const auto chunk = reply->readAll(); count += chunk.size();
-                    if (count > limit) { error = "Download exceeds the size limit for " + phase; reply->abort(); return; }
+                    if (count > limit - offset) { error = "Download exceeds the size limit for " + phase; invalidPartial = partial; reply->abort(); return; }
                     if (bytes) bytes->append(chunk);
-                    if (destination.isOpen() && destination.write(chunk) != chunk.size()) { error = "Cannot write download: " + destination.errorString(); reply->abort(); }
-                    report(phase, count, reply->header(QNetworkRequest::ContentLengthHeader).toLongLong());
+                    QFile *output = partial ? partial : &destination;
+                    if (output->isOpen() && output->write(chunk) != chunk.size()) { error = "Cannot write download: " + output->errorString(); reply->abort(); }
+                    report(phase, offset + count, partial ? limit : reply->header(QNetworkRequest::ContentLengthHeader).toLongLong());
                 };
                 connect(reply, &QNetworkReply::metaDataChanged, &loop, headers);
                 connect(reply, &QIODevice::readyRead, &loop, drain);
                 connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
                 connect(&poll, &QTimer::timeout, &loop, [&] { if (stop()) reply->abort(); });
                 connect(&deadline, &QTimer::timeout, &loop, [&] { error = "Download timed out: " + phase; reply->abort(); });
-                poll.start(); deadline.start(file.isEmpty() ? 30000 : 30 * 60 * 1000);
+                poll.start(); deadline.start(file.isEmpty() && !partial ? 30000 : 30 * 60 * 1000);
                 loop.exec(); drain(); destination.close();
                 const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 const auto networkError = reply->error(); const auto message = reply->errorString(); delete reply;
+                if (invalidPartial) { const QString retained = retainPartial(*partial, file); if (!retained.isEmpty()) return retained; }
                 if (stop()) return "Cancelled";
                 if (!error.isEmpty()) return error;
                 if (redirected) {
                     // Each hop uses a new attempt file so redirects cannot overwrite prior bytes.
-                    if (!file.isEmpty() && !QFile::remove(file)) return "Cannot discard the redirect response.";
+                    if (!partial && !file.isEmpty() && !QFile::remove(file)) return "Cannot discard the redirect response.";
                     url = next; continue;
                 }
-                if (networkError != QNetworkReply::NoError || status != 200) return "Download failed (HTTP " + QString::number(status) + "): " + message;
+                if (networkError != QNetworkReply::NoError || !accepted) return "Download failed (HTTP " + QString::number(status) + "): " + message;
+                if (partial && offset + count != limit) return "Downloaded archive partial is truncated.";
+                if (partial && !partial->flush()) return "Cannot flush the retained archive partial.";
                 return {};
             }
             return "Too many download redirects.";
@@ -193,17 +248,25 @@ void RuntimeDownload::start(const QString &root) {
         if (libraries.exitStatus() != QProcess::NormalExit || libraries.exitCode() != 0) return fail("Host library inspection exited unsuccessfully.");
         const auto installed = QString::fromLocal8Bit(libraryBytes);
         for (const auto &name : requires.value("wrapped_sonames").toArray()) if (!name.isString() || !installed.contains('\n' + QString("\t") + name.toString() + ' ')) return fail("Missing host library: " + name.toString() + ". Build from source instead.");
-        QStorageInfo storage(root); storage.refresh();
-        const auto maximum = std::numeric_limits<qint64>::max();
-        if (artifact.unpackedSize > maximum - LauncherReleases::extractionSlack || artifact.size > (maximum - artifact.unpackedSize - LauncherReleases::extractionSlack) / 2)
-            return fail("Runtime disk requirement is out of range.");
-        const qint64 required = artifact.size * 2 + artifact.unpackedSize + LauncherReleases::extractionSlack;
-        if (!storage.isValid() || !storage.isReady() || required > storage.bytesAvailable()) return fail("Not enough free space for the archive, private verification copy and extracted runtime.");
-        const QString archive = attempt.path() + '/' + artifact.file;
-        error = fetch(QUrl(artifact.url), artifact.size, "Downloading runtime", archive, nullptr); if (!error.isEmpty()) return fail(error);
-        if (QFileInfo(archive).size() != artifact.size) return fail("Downloaded runtime size differs from manifest.json.");
+        const QJsonObject identity{{"tag", selected.tag}, {"arch", LauncherReleases::hostArchitecture()}, {"file", artifact.file}, {"url", artifact.url}, {"sha256", artifact.sha256}, {"size", artifact.size}};
+        const QString identityHash = QCryptographicHash::hash(QJsonDocument(identity).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex();
+        const QString tagDirectory = root + "/downloads/" + selected.tag, cache = tagDirectory + '/' + identityHash;
+        error = privateDirectory(tagDirectory); if (error.isEmpty()) error = privateDirectory(cache); if (!error.isEmpty()) return fail(error);
+        const int lockFd = ::open(QFile::encodeName(cache + "/archive.lock").constData(), O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600);
+        if (lockFd < 0) return fail("Cannot open the private archive download lock.");
+        const struct Lock { int fd; ~Lock() { ::close(fd); } } lock{lockFd}; struct stat lockInfo;
+        if (fstat(lockFd, &lockInfo) != 0 || !S_ISREG(lockInfo.st_mode) || lockInfo.st_uid != getuid() || lockInfo.st_nlink != 1 || (lockInfo.st_mode & 07777) != 0600) return fail("Archive download lock must be a private regular file.");
+        if (flock(lockFd, LOCK_EX | LOCK_NB) != 0) return fail("Another download of this signed runtime is already running. Retry after it finishes.");
+        const QString archivePath = cache + "/archive.part";
+        QFile archive; error = openPartial(archive, archivePath); if (!error.isEmpty()) return fail(error);
+        if (archive.size() > artifact.size) { error = retainPartial(archive, archivePath); return fail(error.isEmpty() ? "Retained archive partial exceeds its signed size; retry to download a fresh copy." : error); }
+        error = diskSpaceError(root, artifact.size, artifact.unpackedSize, archive.size()); if (!error.isEmpty()) return fail(error);
+        if (archive.size() < artifact.size) { error = fetch(QUrl(artifact.url), artifact.size, "Downloading runtime", archivePath, nullptr, &archive, artifact.unpackedSize); if (!error.isEmpty()) return fail(error); }
+        if (archive.size() != artifact.size) return fail("Downloaded runtime size differs from manifest.json.");
         report("Verifying and installing runtime");
-        error = LauncherReleases::installArchive(archive, artifact.sha256, root + "/runtimes", selected.tag, gh, repo, artifact.unpackedSize, stop);
+        bool digestMismatch = false;
+        error = LauncherReleases::installArchive(archivePath, artifact.sha256, root + "/runtimes", selected.tag, gh, repo, artifact.unpackedSize, stop, &digestMismatch);
+        if (digestMismatch) { const QString retained = retainPartial(archive, archivePath); if (!retained.isEmpty()) return fail(retained); }
         if (!error.isEmpty()) return fail(error);
         return {root + "/runtimes/" + selected.tag + "/usr/local", {}};
     }));
