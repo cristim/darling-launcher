@@ -53,6 +53,7 @@ class Fixture:
         self.findmnt_broken = False
         self.umount_failures = 0
         self.lsblk_path = "/dev/synthetic"
+        self.extra_devices = []
 
     def tools(self):
         return patch.dict(mount.APFS_TOOLS, {"apfsutil": (str(self.root / "util"),), "apfs-fuse": (str(self.root / "fuse"),)})
@@ -60,8 +61,9 @@ class Fixture:
     def run(self, arguments):
         self.calls.append(arguments)
         if arguments[0] == "/usr/bin/lsblk":
-            return json.dumps({"blockdevices": [{"path": self.lsblk_path, "fstype": self.fstype, "mountpoints": []},
-                                                {"path": "/dev/already", "fstype": "apfs", "mountpoints": ["/existing"]}]})
+            return json.dumps({"blockdevices": [{"path": self.lsblk_path, "type": "part", "fstype": self.fstype, "subsystems": "block:nvme:pci", "mountpoints": []},
+                                                {"path": "/dev/already", "type": "part", "fstype": "apfs", "subsystems": "block:nvme:pci", "mountpoints": ["/existing"]},
+                                                *self.extra_devices]})
         if arguments[0] == "/usr/bin/findmnt":
             if self.findmnt_broken and self.mounts():
                 raise RuntimeError("findmnt failed with exit status 1")
@@ -195,6 +197,28 @@ class MountScriptTest(unittest.TestCase):
             self.assertEqual(owned, [str(Path(fixture.parent) / str(UID) / "synthetic-volume-0")])
             with self.assertRaisesRegex(ValueError, "not a detected"):
                 fixture.batch(SimpleNamespace(device="/dev/sda1", volume=None, kernel=False))
+
+    def test_mount_all_skips_loop_and_unclassified_devices(self):
+        # Anything running as the user can attach its own image as a loop device; mount-all must
+        # leave it, and anything not clearly a partition on a hardware disk, to an explicit --device.
+        unselected = [{"path": "/dev/loop7", "type": "loop", "fstype": "apfs", "subsystems": "block", "mountpoints": []},
+                 {"path": "/dev/loop8", "type": "loop", "fstype": None, "subsystems": "block", "mountpoints": [],
+                  "children": [{"path": "/dev/loop8p1", "type": "part", "fstype": "hfsplus", "subsystems": "block", "mountpoints": []}]},
+                 {"path": "/dev/sdz", "type": "disk", "fstype": "apfs", "subsystems": "block:scsi:usb:pci", "mountpoints": []},
+                 {"path": "/dev/sdy1", "fstype": "apfs", "mountpoints": []}]
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.extra_devices = unselected
+            self.assertEqual(fixture.batch(), [str(Path(fixture.parent) / str(UID) / "synthetic-volume-0")])
+            touched = [c for c in fixture.calls if any(d["path"] in a for d in unselected for a in c[1:])]
+            self.assertEqual(touched, [])
+            skipped = {e["device"] for e in fixture.events if e["event"] == "skip" and "explicitly" in e["reason"]}
+            self.assertEqual(skipped, {"/dev/loop7", "/dev/loop8p1", "/dev/sdz", "/dev/sdy1"})
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(directory)
+            fixture.extra_devices = unselected
+            owned = fixture.batch(SimpleNamespace(device="/dev/loop7", volume=None, kernel=False))
+            self.assertEqual(owned, [str(Path(fixture.parent) / str(UID) / "loop7-volume-0")])
 
     def test_kernel_apfs_needs_an_explicit_index(self):
         with tempfile.TemporaryDirectory() as directory:

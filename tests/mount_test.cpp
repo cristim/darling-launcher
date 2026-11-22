@@ -18,6 +18,12 @@ private slots:
         QCOMPARE(partitions[1].label, "macOS"); QVERIFY(partitions[1].mounted); QCOMPARE(partitions[1].mountPoints, QStringList{"/mnt/mac"});
         QVERIFY(LauncherMount::parsePartitions("bad JSON", &error).isEmpty()); QVERIFY(!error.isEmpty());
     }
+    void virtualDevicesAreNotPhysical() {
+        QString error;
+        auto partitions = LauncherMount::parsePartitions(R"({"blockdevices":[{"path":"/dev/nvme0n1p1","type":"part","fstype":"apfs","subsystems":"block:nvme:platform"},{"path":"/dev/loop7","type":"loop","fstype":"hfsplus","subsystems":"block"},{"path":"/dev/loop8p1","type":"part","fstype":"apfs","subsystems":"block"}]})", &error);
+        QVERIFY(error.isEmpty()); QCOMPARE(partitions.size(), 3);
+        QVERIFY(partitions[0].physical); QVERIFY(!partitions[1].physical); QVERIFY(!partitions[2].physical);
+    }
     void onlyRootOwnedHelpersReachPkexec() {
         // A user-writable helper (build output, PATH entry) must never be run as root.
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); QString error;

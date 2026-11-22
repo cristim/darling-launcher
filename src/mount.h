@@ -11,6 +11,8 @@ struct MacPartition {
     QString label;
     bool mounted = false;
     QStringList mountPoints;
+    // False for loop, zram, nbd and other devices not on a hardware bus (the helper's mount-all skips these).
+    bool physical = false;
 };
 
 struct MountCommand { QString program; QStringList arguments; };
