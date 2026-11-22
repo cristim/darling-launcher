@@ -29,6 +29,7 @@
 #include <QProgressBar>
 #include <QPromise>
 #include <QProcessEnvironment>
+#include <QSysInfo>
 #include <QPushButton>
 #include <QSaveFile>
 #include <QSettings>
@@ -660,6 +661,11 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
     env.remove("DARLING_INSTALL_PREFIX");
     if (!runtimeRoot->text().isEmpty()) env.insert("DARLING_INSTALL_PREFIX", runtimeRoot->text());
     env.insert("DPREFIX", p);
+    if (entries.contains(key)) {
+        const AppEntry &app = entries[key]; QString note;
+        LauncherCore::applyPtrauthPolicy(&env, p + '/' + app.relativeBundle + "/Contents/MacOS/" + app.executable, QSysInfo::currentCpuArchitecture() == "arm64", &note);
+        if (!note.isEmpty()) LauncherLog::write("launch", label + ": " + note);
+    }
     process->setProcessEnvironment(env); process->setProcessChannelMode(QProcess::MergedChannels);
     ++activeProcesses;
     if (!key.isEmpty()) runningApps.insert(key);

@@ -2,6 +2,7 @@
 #include "core.h"
 #include "sources.h"
 #include <QProcess>
+#include <QtEndian>
 #include <functional>
 #include <QUuid>
 #include <QDir>
@@ -326,6 +327,52 @@ QString issueDraft(const AppEntry &app, const QJsonArray &chain, const QString &
 }
 }
 
+namespace LauncherCore {
+namespace {
+constexpr quint32 kMhMagic64 = 0xfeedfacf, kFatMagic = 0xcafebabe, kFatMagic64 = 0xcafebabf;
+constexpr quint32 kCpuTypeArm64 = 12 | 0x1000000, kCpuSubtypeMask = 0xff000000, kCpuSubtypeArm64e = 2;
+constexpr quint32 kMaxFatArchs = 32;
+bool isArm64e(quint32 cputype, quint32 subtype) { return cputype == kCpuTypeArm64 && (subtype & ~kCpuSubtypeMask) == kCpuSubtypeArm64e; }
+}
+Arm64e detectArm64e(const QString &path, QString *reason) {
+    auto unreadable = [reason](const QString &why) { if (reason) *reason = why; return Arm64e::Unreadable; };
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return unreadable("cannot open executable");
+    const QByteArray head = file.read(8);
+    if (head.size() < 8) return unreadable("file shorter than a Mach-O header");
+    const quint32 magic = qFromBigEndian<quint32>(head.constData());
+    if (magic == kFatMagic || magic == kFatMagic64) {
+        const quint32 count = qFromBigEndian<quint32>(head.constData() + 4);
+        if (count == 0 || count > kMaxFatArchs) return unreadable("implausible fat architecture count " + QString::number(count));
+        const int stride = magic == kFatMagic ? 20 : 32;
+        const QByteArray table = file.read(qint64(count) * stride);
+        if (table.size() < int(count) * stride) return unreadable("truncated fat header");
+        for (quint32 i = 0; i < count; ++i)
+            if (isArm64e(qFromBigEndian<quint32>(table.constData() + i * stride), qFromBigEndian<quint32>(table.constData() + i * stride + 4))) return Arm64e::Yes;
+        return Arm64e::No;
+    }
+    if (qFromLittleEndian<quint32>(head.constData()) == kMhMagic64) {
+        const QByteArray subtype = file.read(4);
+        if (subtype.size() < 4) return unreadable("truncated Mach-O header");
+        return isArm64e(qFromLittleEndian<quint32>(head.constData() + 4), qFromLittleEndian<quint32>(subtype.constData())) ? Arm64e::Yes : Arm64e::No;
+    }
+    return unreadable("not a 64-bit or fat Mach-O");
+}
+bool applyPtrauthPolicy(QProcessEnvironment *env, const QString &path, bool hostIsArm64, QString *note) {
+    auto say = [note](const QString &text) { if (note) *note = text; return false; };
+    if (!hostIsArm64) return say(QString());
+    if (env->contains("DARLING_DISABLE_PTRAUTH")) return say("DARLING_DISABLE_PTRAUTH already set in the environment; left unchanged");
+    QString why;
+    switch (detectArm64e(path, &why)) {
+    case Arm64e::No: return say(QString());
+    case Arm64e::Unreadable: return say("not setting DARLING_DISABLE_PTRAUTH: " + why);
+    case Arm64e::Yes: break;
+    }
+    env->insert("DARLING_DISABLE_PTRAUTH", "1");
+    if (note) *note = "arm64e executable: setting DARLING_DISABLE_PTRAUTH=1 for this launch (interim measure)";
+    return true;
+}
+}
 namespace LauncherCore {
 namespace {
 struct GuestRun { bool ok; QString output; };

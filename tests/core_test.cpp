@@ -4,11 +4,37 @@
 #include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
+#include <QProcessEnvironment>
 #include <QtTest>
 
 class CoreTest : public QObject {
     Q_OBJECT
 private slots:
+    void arm64eEnvironment() {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        auto be = [](QByteArray &b, quint32 v) { for (int s = 24; s >= 0; s -= 8) b.append(char(v >> s)); };
+        auto le = [](QByteArray &b, quint32 v) { for (int s = 0; s < 32; s += 8) b.append(char(v >> s)); };
+        auto thin = [&](quint32 type, quint32 sub) { QByteArray b; le(b, 0xfeedfacf); le(b, type); le(b, sub); le(b, 2); le(b, 0); le(b, 0); le(b, 0); le(b, 0); return b; };
+        auto fat = [&](QList<QPair<quint32, quint32>> slices) { QByteArray b; be(b, 0xcafebabe); be(b, slices.size()); for (auto s : slices) { be(b, s.first); be(b, s.second); be(b, 0x4000); be(b, 0x100); be(b, 14); } return b; };
+        const quint32 arm64 = 0x0100000c, x86 = 0x01000007;
+        auto write = [&](const QString &name, const QByteArray &bytes) { QFile f(dir.filePath(name)); f.open(QIODevice::WriteOnly); f.write(bytes); return f.fileName(); };
+        auto set = [&](const QString &path, bool arm64Host = true, QString *note = nullptr) { QProcessEnvironment env; bool changed = LauncherCore::applyPtrauthPolicy(&env, path, arm64Host, note); QCOMPARE(env.contains("DARLING_DISABLE_PTRAUTH"), changed); if (changed) QCOMPARE(env.value("DARLING_DISABLE_PTRAUTH"), "1"); return changed; };
+        QVERIFY(!set(write("thin-arm64", thin(arm64, 0))));
+        QVERIFY(!set(write("thin-x86", thin(x86, 3))));
+        QVERIFY(set(write("thin-arm64e", thin(arm64, 2))));
+        QVERIFY(set(write("thin-arm64e-caps", thin(arm64, 0x80000002))));
+        QVERIFY(set(write("fat-arm64e", fat({{x86, 3}, {arm64, 0}, {arm64, 0x80000002}}))));
+        QVERIFY(!set(write("fat-plain", fat({{x86, 3}, {arm64, 0}}))));
+        QVERIFY(!set(write("thin-arm64e-x86host", thin(arm64, 2)), false));
+        QString note;
+        QVERIFY(!set(write("truncated", thin(arm64, 2).left(10)), true, &note)); QVERIFY(note.contains("truncated"));
+        QVERIFY(!set(write("fat-truncated", fat({{arm64, 2}}).left(12)), true, &note)); QVERIFY(note.contains("truncated"));
+        QVERIFY(!set(write("bad-magic", QByteArray("#!/bin/sh\nexit 0\n")), true, &note)); QVERIFY(note.contains("not a"));
+        QVERIFY(!set(dir.filePath("missing"), true, &note)); QVERIFY(note.contains("cannot open"));
+        QProcessEnvironment preset; preset.insert("DARLING_DISABLE_PTRAUTH", "0");
+        QVERIFY(!LauncherCore::applyPtrauthPolicy(&preset, dir.filePath("thin-arm64e"), true, &note));
+        QCOMPARE(preset.value("DARLING_DISABLE_PTRAUTH"), "0");
+    }
     void trashAndRestore() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         const QString prefix = temporary.path() + "/prefix", bundle = "Applications/Test.app";

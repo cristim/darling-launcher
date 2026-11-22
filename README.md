@@ -229,3 +229,8 @@ exit status), `agent` (AI fix sessions) and `qt-*` (Qt warnings). The path is sh
 Settings. To have Claude investigate a failure, ask it to read this file, plus the build
 workspace named in the build status, and the loader output it records.
 Logs hold local paths and loader output but never Apple binaries or symbol dumps.
+
+## arm64e apps (interim)
+
+On an aarch64 host the launcher reads only the Mach-O header of an app's executable and, for an arm64e slice, sets `DARLING_DISABLE_PTRAUTH=1` for that launch (an existing value is kept; unreadable headers are logged and skipped).
+This is an interim measure until Darling's own libraries are built for arm64e (darling#17), at which point it should be removed.

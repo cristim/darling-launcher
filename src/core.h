@@ -2,6 +2,8 @@
 #pragma once
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QProcessEnvironment>
+#include <QProcessEnvironment>
 #include <QString>
 #include <QStringList>
 
@@ -27,6 +29,12 @@ struct MissingSymbol {
 };
 
 namespace LauncherCore {
+enum class Arm64e { No, Yes, Unreadable };
+Arm64e detectArm64e(const QString &executablePath, QString *reason);
+bool applyPtrauthPolicy(QProcessEnvironment *env, const QString &executablePath, bool hostIsArm64, QString *note);
+enum class Arm64e { No, Yes, Unreadable };
+Arm64e detectArm64e(const QString &executablePath, QString *reason);
+bool applyPtrauthPolicy(QProcessEnvironment *env, const QString &executablePath, bool hostIsArm64, QString *note);
 QStringList discoverApps(const QString &volume);
 AppPreview appPreview(const QString &volume, const QString &relativeBundle);
 QStringList mountedMacVolumes();

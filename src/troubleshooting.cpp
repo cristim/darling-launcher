@@ -18,6 +18,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QProcess>
+#include <QSysInfo>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSaveFile>
@@ -114,6 +115,7 @@ void FixVerifier::start() {
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     for (const auto &name : env.keys()) if (name.startsWith("DYLD_")) env.remove(name);
     env.insert("DPREFIX", prefix); env.insert("DARLING_INSTALL_PREFIX", runtimeRoot);
+    { QString note; LauncherCore::applyPtrauthPolicy(&env, prefix + '/' + bundle + "/Contents/MacOS/" + executable, QSysInfo::currentCpuArchitecture() == "arm64", &note); if (!note.isEmpty()) LauncherLog::write("launch", "verification: " + note); }
     process.setProcessEnvironment(env);
     connect(&process, &QProcess::readyReadStandardOutput, this, [this] { output += QString::fromLocal8Bit(process.readAllStandardOutput()); });
     connect(&process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) { if (error == QProcess::FailedToStart && running) finish(false, "Cannot start the patched launcher: " + process.errorString()); });
