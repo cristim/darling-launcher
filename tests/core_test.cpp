@@ -5,6 +5,9 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 class CoreTest : public QObject {
     Q_OBJECT
@@ -159,6 +162,95 @@ private slots:
         QCOMPARE(entry.executable, "Test");
         QCOMPARE(entry.sourceRelative, "System/Applications/Utilities/Test.app");
         QVERIFY(QFileInfo::exists(prefix + "/Applications/Test.app/Contents/MacOS/Test"));
+    }
+    void checkedAppDiscovery() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QString volume = temporary.path() + "/volume";
+        const QString apps = volume + "/System/Applications";
+        const QString outside = temporary.path() + "/outside";
+        QVERIFY(QDir().mkpath(volume + "/System/Library"));
+        QVERIFY(QDir().mkpath(apps + "/Utilities/Zeta.app"));
+        QVERIFY(QDir().mkpath(apps + "/Alpha.app"));
+        QVERIFY(QDir().mkpath(apps + "/Café.app"));
+        QVERIFY(QDir().mkpath(apps + "/.Hidden.app"));
+        QVERIFY(QDir().mkpath(apps + "/.HiddenParent/Invisible.app"));
+        QVERIFY(QDir().mkpath(outside + "/Escaped.app"));
+        QVERIFY(QFile::link(outside, apps + "/External"));
+        QStringList found; QString error;
+        QVERIFY2(LauncherCore::discoverAppsChecked(volume, &found, &error), qPrintable(error));
+        QCOMPARE(found, QStringList({"System/Applications/Alpha.app", "System/Applications/Café.app", "System/Applications/Utilities/Zeta.app"}));
+        QCOMPARE(LauncherCore::discoverApps(volume), found);
+
+        QVERIFY(QDir(apps).removeRecursively());
+        QVERIFY(QDir().mkpath(volume + "/Applications"));
+        found << "stale";
+        QVERIFY2(LauncherCore::discoverAppsChecked(volume, &found, &error), qPrintable(error));
+        QVERIFY(found.isEmpty());
+        QVERIFY(error.isEmpty());
+        QCOMPARE(LauncherCore::discoverApps(volume), found);
+
+        found << "stale";
+        QVERIFY(!LauncherCore::discoverAppsChecked(temporary.path() + "/missing", &found, &error));
+        QVERIFY(found.isEmpty());
+        QVERIFY(!error.isEmpty());
+
+        QVERIFY(QDir().mkpath(volume + "/Applications/Good.app"));
+        QVERIFY(QDir(apps).removeRecursively());
+        QVERIFY(QFile::link(outside, apps));
+        QVERIFY(!LauncherCore::discoverAppsChecked(volume, &found, &error));
+        QVERIFY(found.isEmpty());
+        QCOMPARE(LauncherCore::discoverApps(volume), QStringList{"Applications/Good.app"});
+    }
+    void checkedAppDiscoveryUnreadableNestedDirectory() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QString volume = temporary.path() + "/volume";
+        const QString nested = volume + "/Applications/Restricted";
+        QVERIFY(QDir().mkpath(volume + "/System/Library"));
+        QVERIFY(QDir().mkpath(volume + "/Applications/Alpha.app"));
+        QVERIFY(QDir().mkpath(nested + "/Hidden.app"));
+        QVERIFY(QDir().mkpath(volume + "/System/Applications"));
+        QStringList found{"stale"}; QString error;
+        QVERIFY(QFile::setPermissions(nested, QFileDevice::Permissions{}));
+        const auto restorePermissions = qScopeGuard([&] { QFile::setPermissions(nested, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner); });
+        if (::faccessat(AT_FDCWD, QFile::encodeName(nested).constData(), R_OK | X_OK, AT_EACCESS) == 0)
+            QSKIP("Effective user permissions still allow reading and traversing the nested directory");
+        const bool ok = LauncherCore::discoverAppsChecked(volume, &found, &error);
+        QVERIFY(!ok);
+        QVERIFY(found.isEmpty());
+        QVERIFY(!error.isEmpty());
+    }
+    void checkedAppDiscoveryUnreadableOptionalRootAncestor() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QString volume = temporary.path() + "/volume";
+        const QString system = volume + "/System";
+        QVERIFY(QDir().mkpath(volume + "/Applications/Alpha.app"));
+        QVERIFY(QDir().mkpath(system + "/Applications/Hidden.app"));
+        QVERIFY(QFile::setPermissions(system, QFileDevice::Permissions{}));
+        const auto restorePermissions = qScopeGuard([&] { QFile::setPermissions(system, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner); });
+        if (::faccessat(AT_FDCWD, QFile::encodeName(system).constData(), X_OK, AT_EACCESS) == 0)
+            QSKIP("Effective user permissions still allow access to the optional-root ancestor");
+        QStringList found{"stale"}; QString error;
+        QVERIFY(!LauncherCore::discoverAppsChecked(volume, &found, &error));
+        QVERIFY(found.isEmpty());
+        QVERIFY(!error.isEmpty());
+    }
+    void checkedAppDiscoveryUnrepresentableFilename() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QString volume = temporary.path() + "/volume";
+        const QString apps = volume + "/Applications";
+        QVERIFY(QDir().mkpath(apps + "/Alpha.app"));
+        QVERIFY(QDir().mkpath(volume + "/System/Applications"));
+        const QByteArray appsPath = QFile::encodeName(apps);
+        const int appsFd = ::open(appsPath.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        QVERIFY(appsFd >= 0);
+        const auto closeAppsFd = qScopeGuard([&] { ::close(appsFd); });
+        const QByteArray rawName("Invalid\xff.app", 12);
+        QVERIFY(::mkdirat(appsFd, rawName.constData(), 0700) == 0);
+        const auto removeFixtureName = qScopeGuard([&] { ::unlinkat(appsFd, rawName.constData(), AT_REMOVEDIR); });
+        QStringList found{"stale"}; QString error;
+        QVERIFY(!LauncherCore::discoverAppsChecked(volume, &found, &error));
+        QVERIFY(found.isEmpty());
+        QVERIFY(!error.isEmpty());
     }
 };
 QTEST_GUILESS_MAIN(CoreTest)
