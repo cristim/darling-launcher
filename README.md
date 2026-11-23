@@ -23,12 +23,43 @@ Choose a mounted macOS volume and a separate prefix. **Detect mounted macOS volu
 
 The source browser reads bundle display names, `CFBundleIconFile` resources and total file sizes in the background. List view uses 32-pixel icons and shows sizes in decimal units; grid view uses 64-pixel icons. Ctrl+A, Ctrl-click and Shift-click select sets. Drag a set into the imported-apps area or use **Import selected apps**. Missing or unreadable icon resources use a generic icon; no executable code is read to obtain icons.
 
+## Downloading a prebuilt runtime (default)
+
+The runtime setup dialog (**Build and deploy Darling…**, the Darling icon button, or the
+automatic first-run setup) offers **Download prebuilt runtime** first and
+**Build from source instead** second. The download takes the newest stable
+`vYYYY.MM.DD-<sha7>` release of `VibeDarling/darling` that has a `manifest.json`
+(changelog releases such as `v0.1.*`, prereleases and drafts are skipped), using the
+GitHub CLI (`gh`, signed in). It then:
+
+1. reads the manifest entry for this machine's `uname -m` (`aarch64` or `x86_64`) and checks its
+   `host_requires`: the minimum glibc and the host libraries (`ldconfig -p`) the runtime's native
+   wrappers link. A host that cannot run the runtime stops here, before the large download;
+2. downloads `darling-runtime-<tag>-linux-<arch>.tar.zst` into a temporary folder under
+   `~/.darling-launcher/runtimes/` and checks its SHA-256 against the manifest (which is
+   cross-checked against the GitHub asset digest when GitHub provides one);
+3. runs `gh attestation verify` pinned to the `release-binaries.yml` workflow of
+   `VibeDarling/darling`, the `refs/heads/master` ref and GitHub-hosted runners;
+4. vets the archive members (no absolute or `..` paths, no hard links or devices, nothing written
+   through a symlink), extracts to `<tag>.partial` and renames it to `~/.darling-launcher/runtimes/<tag>`;
+5. initializes the managed prefix `~/.darling-launcher/prefixes/default` with that runtime and runs
+   the same checks as **Verify prefix**. The runtime stays installed if a check fails, and the
+   failed checks are shown so a retry only repeats the prefix checks.
+
+On first start the launcher tries the download automatically and falls back to a source
+build whenever no runtime could be installed: no `gh`, no release yet, an unsupported host, a
+network error, or a failed digest or attestation check. The reason is written to
+`~/.darling-launcher/logs/launcher.log` (source `download`). A runtime that installed but failed
+its prefix checks is reported instead of rebuilding for hours.
+The artifact is the staged install image as a `.tar.zst`, not a `.deb`. To use your own
+build instead, choose **I already have Darling…** (it opens **Use existing Darling**).
+
 ## Building a prefix from VibeDarling branches and PRs
 
 The launcher includes a versioned GPL snapshot of `all-vibedarling-pr-prefix.py`.
 No Darling installation or external builder path is required. On startup without a
-usable runtime, **Set up Darling** offers to build and install a private runtime or
-select an existing one. Everything the launcher creates lives in `~/.darling-launcher`
+usable runtime, the launcher downloads a prebuilt runtime or, failing that, builds a private
+one, and **I already have Darling…** selects an existing one. Everything the launcher creates lives in `~/.darling-launcher`
 (sources, workspaces, runtime images, prefixes, mount points and AI workspaces); this
 location is fixed and not configurable.
 
@@ -37,7 +68,7 @@ Setup clones VibeDarling into `<data>/sources/vibedarling`, builds in a fresh
 No macOS volume is required for this build. Git, Python, CMake, Ninja and the
 Darling host build dependencies must be available; errors retain the workspace
 and appear in build progress. Compilation and private installation hold the shared
-heavy-build lock. The launcher cannot close during an active clone/build.
+heavy-build lock. (This is the fallback path; the prebuilt download above is the default.) The launcher cannot close during an active clone/build.
 
 Builds always use default branches only (prebuilt CI releases replace the old master-plus-open-PRs build). Choose a job count and optional CMake settings (one `-DNAME=VALUE` per line). The script resolves main/master where present and records exceptions for repositories with another default branch.
 
