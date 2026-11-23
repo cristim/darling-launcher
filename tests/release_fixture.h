@@ -11,7 +11,7 @@
 
 // A fake `gh` serving a CI-style runtime release (release list, manifest.json, archive, `attestation verify`) from
 // <root>/fake. The archive's launcher is a fake `darling` that passes LauncherCore::checkPrefix unless
-// <prefix>/../fail-init, fail-uname or fail-ls exists (each makes the matching step fail). Every gh call is appended to <root>/fake/calls.
+// <prefix dir>/fail-init, fail-uname or fail-ls exists (each makes the matching step fail). Every gh call is appended to <root>/fake/calls.
 struct FakeRelease {
     QString gh, fake, file, sha, tag = "v2026.10.09-3721b65", repo = "VibeDarling/darling", arch = LauncherReleases::hostArchitecture();
 
@@ -30,8 +30,8 @@ struct FakeRelease {
         fake = root + "/fake"; gh = root + "/gh"; file = "darling-runtime-" + tag + "-linux-" + arch + ".tar.zst";
         if (!QDir().mkpath(fake + "/assets") || !QDir().mkpath(root + "/image/usr/local/bin") || !QDir().mkpath(root + "/image/usr/local/libexec/darling/private/etc")) return false;
         if (!write(root + "/image/usr/local/bin/darling",
-                   "#!/bin/sh\ncase \"$1\" in\nshell) if [ -e \"$DPREFIX/../fail-init\" ]; then echo init-broken >&2; exit 1; fi; mkdir -p \"$DPREFIX/private/etc\"; exit 0;;\nexec) shift; cmd=$1; shift; case \"$cmd\" in /bin/echo) echo \"$@\";; "
-                   "/usr/bin/uname) if [ -e \"$DPREFIX/../fail-uname\" ]; then echo Linux; else echo Darwin; fi;; /bin/ls) if [ -e \"$DPREFIX/../fail-ls\" ]; then exit 1; fi; echo \"$1\";; esac;;\nesac\nexit 0\n", true)) return false;
+                   "#!/bin/sh\ncase \"$1\" in\nshell) if [ -e \"$(dirname \"$DPREFIX\")/fail-init\" ]; then echo init-broken >&2; exit 1; fi; mkdir -p \"$DPREFIX/private/etc\"; exit 0;;\nexec) shift; cmd=$1; shift; case \"$cmd\" in /bin/echo) echo \"$@\";; "
+                   "/usr/bin/uname) if [ -e \"$(dirname \"$DPREFIX\")/fail-uname\" ]; then echo Linux; else echo Darwin; fi;; /bin/ls) if [ -e \"$(dirname \"$DPREFIX\")/fail-ls\" ]; then exit 1; fi; echo \"$1\";; esac;;\nesac\nexit 0\n", true)) return false;
         QProcess tar; tar.start("tar", {"--zstd", "-cf", fake + "/assets/" + file, "-C", root + "/image", "usr"});
         if (!tar.waitForFinished(30000) || tar.exitCode() != 0) return false;
         QFile archive(fake + "/assets/" + file);

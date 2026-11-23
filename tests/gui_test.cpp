@@ -4,6 +4,7 @@
 #include "prefixdialog.h"
 #include "mountdialog.h"
 #include "troubleshooting.h"
+#include "release_fixture.h"
 #include <QCheckBox>
 #include <QCryptographicHash>
 #include <QSplitter>
@@ -584,6 +585,7 @@ private slots:
         QFile plist(app + "/Contents/Info.plist"); QVERIFY(plist.open(QIODevice::WriteOnly)); plist.write("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>"); plist.close();
         QFile executable(app + "/Contents/MacOS/Fixture"); QVERIFY(executable.open(QIODevice::WriteOnly)); executable.write("fixture"); executable.close();
         QFile git(temporary.path() + "/git"); QVERIFY(git.open(QIODevice::WriteOnly)); git.write("#!/bin/sh\nif [ \"$1\" = clone ]; then /usr/bin/sleep 0.5; /usr/bin/mkdir -p \"$5\"; exit 0; fi\nexit 1\n"); git.close(); QVERIFY(git.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        QVERIFY(FakeRelease::write(temporary.path() + "/gh", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + temporary.path().toUtf8() + "/gh-calls'\nexit 1\n", true));
         const auto path = qgetenv("PATH"); auto restore = qScopeGuard([=] { qputenv("PATH", path); }); qputenv("PATH", temporary.path().toUtf8() + ':' + path);
         Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py", false, [] { return QList<SourceMount>{}; }); window.show(); window.findChild<QLineEdit *>("darlingField")->clear(); window.findChild<QLineEdit *>("runtimeRootField")->clear(); window.findChild<QLineEdit *>("volumeField")->setText(volume);
         window.offerRuntimeSetup();
@@ -600,6 +602,53 @@ private slots:
         QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), workspace + "/build/src/startup/darling"); QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), workspace + "/image/usr/local");
         QVERIFY(!banner->isVisible()); QVERIFY(!builder->isVisible()); QVERIFY(!builder->isBusy());
         QTRY_VERIFY_WITH_TIMEOUT(apps->count() == 1 && (apps->item(0)->flags() & Qt::ItemIsEnabled), 8000); QVERIFY(QFileInfo(workspace + "/prefix").isDir());
+        QFile ghCalls(temporary.path() + "/gh-calls"); QVERIFY2(ghCalls.open(QIODevice::ReadOnly) && ghCalls.readAll().contains("releases?per_page=100"), "first run tries the prebuilt runtime before building");
+    }
+    void prebuiltRuntimeIsDownloadedFirst() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear();
+        qputenv("HOME", (temporary.path() + "/home").toUtf8()); const QString data = temporary.path() + "/home/.darling-launcher";
+        FakeRelease release; QVERIFY(release.create(temporary.path()));
+        const QByteArray originalPath = qgetenv("PATH"); auto restore = qScopeGuard([originalPath] { qputenv("PATH", originalPath); }); qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath);
+        Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py"); window.show();
+        window.findChild<QLineEdit *>("volumeField")->clear();
+        window.findChild<QPushButton *>("Create prefix")->click();
+        auto *dialog = window.findChild<PrefixDialog *>(); QVERIFY(dialog); QSignalSpy failed(dialog, &PrefixDialog::failed);
+        auto *download = dialog->findChild<QPushButton *>("downloadPrebuilt"), *build = dialog->findChild<QPushButton *>("buildPrefix"); QVERIFY(download && build);
+        QCOMPARE(download->text(), QString("Download prebuilt runtime (recommended)")); QVERIFY(build->text().contains("source"));
+        auto *status = dialog->findChild<QLabel *>("prefixBuilderStatus"); QVERIFY(status);
+        QVERIFY(release.publish(release.sha, false));
+        download->click(); QVERIFY(!download->isEnabled() && !build->isEnabled()); QVERIFY(dialog->isBusy());
+        QTRY_VERIFY_WITH_TIMEOUT(download->isEnabled(), 8000);
+        QVERIFY(!dialog->isBusy()); QVERIFY(build->isEnabled()); QCOMPARE(failed.count(), 1);
+        QVERIFY2(status->text().contains("No prebuilt runtime release") && status->text().contains("build from source"), qPrintable(status->text()));
+        QVERIFY(!QFileInfo::exists(data + "/sources/vibedarling")); QVERIFY(!QFileInfo::exists(data + "/runtimes/" + release.tag)); QVERIFY(!QFileInfo::exists(data + "/prefixes/default/private/etc")); QVERIFY(window.findChild<QLineEdit *>("darlingField")->text().isEmpty());
+        QVERIFY(release.publish(release.sha));
+        download->click();
+        QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLineEdit *>("darlingField")->text(), data + "/runtimes/" + release.tag + "/usr/local/bin/darling", 8000);
+        const QString runtime = data + "/runtimes/" + release.tag + "/usr/local";
+        QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), runtime + "/bin/darling"); QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), runtime);
+        QVERIFY(QFileInfo(data + "/prefixes/default/private/etc").isDir()); QVERIFY(!QFileInfo::exists(data + "/sources/vibedarling"));
+        QVERIFY(release.calls().contains("attestation verify")); QVERIFY(!dialog->isBusy()); QCOMPARE(failed.count(), 1);
+        QSettings settings("cristim", "darling-launcher"); QCOMPARE(settings.value("darling").toString(), runtime + "/bin/darling"); QCOMPARE(settings.value("runtimeRoot").toString(), runtime); QCOMPARE(settings.value("prefix").toString(), data + "/prefixes/default");
+    }
+    void automaticSetupKeepsAnInstalledRuntimeThatFailsItsChecks() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear();
+        qputenv("HOME", (temporary.path() + "/home").toUtf8()); const QString data = temporary.path() + "/home/.darling-launcher";
+        FakeRelease release; QVERIFY(release.create(temporary.path()));
+        QVERIFY(QDir().mkpath(data + "/prefixes")); QVERIFY(FakeRelease::write(data + "/prefixes/fail-init", "x"));
+        QVERIFY(FakeRelease::write(temporary.path() + "/git", "#!/bin/sh\necho \"$*\" >> '" + temporary.path().toUtf8() + "/git-calls'\nexit 1\n", true));
+        const QByteArray originalPath = qgetenv("PATH"); auto restore = qScopeGuard([originalPath] { qputenv("PATH", originalPath); }); qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath);
+        Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py", false, [] { return QList<SourceMount>{}; }); window.show();
+        window.findChild<QLineEdit *>("darlingField")->clear(); window.findChild<QLineEdit *>("runtimeRootField")->clear();
+        window.offerRuntimeSetup();
+        auto *dialog = window.findChild<PrefixDialog *>(); QVERIFY(dialog);
+        QTRY_VERIFY2_WITH_TIMEOUT(window.findChild<QLabel *>("setupStatus")->text().contains("Initialize the prefix: init-broken"), qPrintable(window.findChild<QLabel *>("setupStatus")->text()), 8000);
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 2000);
+        QVERIFY2(!QFileInfo::exists(temporary.path() + "/git-calls"), "a runtime that installed but failed its checks must not trigger a source build");
+        QVERIFY(QFileInfo(data + "/runtimes/" + release.tag + "/usr/local/bin/darling").isFile());
+        QVERIFY(window.findChild<QWidget *>("setupBanner")->isVisible()); QVERIFY(dialog->isVisible()); QVERIFY(dialog->findChild<QPushButton *>("downloadPrebuilt")->isEnabled() && dialog->findChild<QPushButton *>("buildPrefix")->isEnabled());
     }
     void existingCheckoutAndPrefixAreAdopted() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear();

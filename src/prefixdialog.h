@@ -11,6 +11,7 @@ public:
     void done(int result) override;
 private:
     bool automatic = false;
+    bool downloading = false;
 signals:
     void finished();
     void failed(const QString &message);

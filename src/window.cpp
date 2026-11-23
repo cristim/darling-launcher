@@ -377,7 +377,7 @@ void Window::offerRuntimeSetup() {
     if (prefixDialog && prefixDialog->isBusy()) { setupBanner->show(); return; }
     const QString source = QFileInfo(volume->text()).canonicalFilePath(), path = LauncherDiscovery::dataRoot();
     if (!source.isEmpty() && (path == source || path.startsWith(source + '/'))) { setupStatus->setText("The launcher folder " + path + " is inside the mounted macOS source; Darling was not set up."); setupBanner->show(); return; }
-    setupStatus->setText("Darling is still being prepared (clone, build and prefix setup) and this takes a while. Please wait: you can hide this window and a notification will bring it back when everything is ready. Apps you drop meanwhile stay grayed out and import automatically.");
+    setupStatus->setText("Darling is still being prepared (download, or clone and build, then prefix setup) and this can take a while. Please wait: you can hide this window and a notification will bring it back when everything is ready. Apps you drop meanwhile stay grayed out and import automatically.");
     setupBanner->show();
     LauncherLog::write("app", "no usable Darling runtime; starting automatic setup");
     openRuntimeBuilder(true, true);
