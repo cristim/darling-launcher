@@ -4,6 +4,7 @@
 #include "discovery.h"
 #include "core.h"
 #include "releases.h"
+#include "log.h"
 #include <QFutureWatcher>
 #include <QtConcurrent>
 #include <QProcess>
@@ -65,7 +66,7 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
             const auto setup = watcher->result(); watcher->deleteLater(); downloading = false;
             setBusy(false); progress->setRange(0, 1); progress->setValue(setup.error.isEmpty());
             if (setup.error.isEmpty()) { status->setText("Prebuilt runtime and prefix are ready"); reopen(true); emit prefixReady(setup.prefix, setup.launcher, setup.runtimeRoot); return; }
-            output->append(setup.error);
+            output->append(setup.error); LauncherLog::write("download", setup.error);
             // Only when nothing was installed (no gh, no release, unsupported host) is a source build a sensible fallback; a
             // runtime that installed but failed its prefix checks would very likely fail the same way after a long build.
             if (automatic && setup.launcher.isEmpty()) { output->append("\nNo usable prebuilt runtime; building from source instead.\n"); build->click(); return; }

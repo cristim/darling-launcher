@@ -5,6 +5,7 @@
 #include "mountdialog.h"
 #include "troubleshooting.h"
 #include "release_fixture.h"
+#include "log.h"
 #include <QCheckBox>
 #include <QCryptographicHash>
 #include <QSplitter>
@@ -621,6 +622,7 @@ private slots:
         download->click(); QVERIFY(!download->isEnabled() && !build->isEnabled()); QVERIFY(dialog->isBusy());
         QTRY_VERIFY_WITH_TIMEOUT(download->isEnabled(), 8000);
         QVERIFY(!dialog->isBusy()); QVERIFY(build->isEnabled()); QCOMPARE(failed.count(), 1);
+        { QFile log(LauncherLog::path()); QVERIFY(log.open(QIODevice::ReadOnly)); QVERIFY(QString::fromUtf8(log.readAll()).contains("[download] No prebuilt runtime release")); }
         QVERIFY2(status->text().contains("No prebuilt runtime release") && status->text().contains("build from source"), qPrintable(status->text()));
         QVERIFY(!QFileInfo::exists(data + "/sources/vibedarling")); QVERIFY(!QFileInfo::exists(data + "/runtimes/" + release.tag)); QVERIFY(!QFileInfo::exists(data + "/prefixes/default/private/etc")); QVERIFY(window.findChild<QLineEdit *>("darlingField")->text().isEmpty());
         QVERIFY(release.publish(release.sha));
