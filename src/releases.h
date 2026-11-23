@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
@@ -24,6 +25,15 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 // into <runtimesRoot>/<tag>. Absolute symlink targets are allowed because the runtime image uses them.
 // Returns an empty string on success, otherwise the reason.
 QString installArchive(const QString &archive, const QString &sha256, const QString &runtimesRoot, const QString &tag, const QString &gh, const QString &repo);
+// The newest (created_at) stable release in a releases listing whose tag passes validTag and that has a
+// manifest.json asset, as CI's lock_diff.py select_release picks it; {} if none. Other releases in the same
+// repo (v0.1.* changelogs) must not shadow the runtime release, which is why /releases/latest is not used.
+QJsonObject latestRuntimeRelease(const QJsonArray &releases);
+// Fetches repo's newest runtime release with `gh`, selects this architecture's artifact from its manifest.json,
+// downloads it into a temporary folder under runtimesRoot and runs installArchive. Blocking (up to
+// ~30 min); call it off the GUI thread. A runtime already installed for the latest tag is not downloaded again.
+// Returns an empty string on success (and sets *installedTag if given), otherwise the reason.
+QString installLatest(const QString &gh, const QString &repo, const QString &runtimesRoot, QString *installedTag = nullptr);
 // Takes `tar --zstd --quoting-style=escape -tv` lines; returns why the archive is unsafe, or "".
 QString vetMembers(const QStringList &verboseListing);
 }

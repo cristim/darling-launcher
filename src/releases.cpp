@@ -64,7 +64,9 @@ QString verifyAttestation(const QString &gh, const QString &archive, const QStri
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
+#include <QJsonDocument>
 #include <QSet>
+#include <QTemporaryDir>
 namespace LauncherReleases {
 static QString sha256Of(const QString &path, QString *error) {
     QFile file(path);
@@ -125,5 +127,67 @@ QString installArchive(const QString &archive, const QString &sha256, const QStr
         return "archive has no regular (non-symlink) usr/local/bin/darling, partial files left in " + staging;
     if (!QDir().rename(staging, target)) return "cannot move " + staging + " to " + target;
     return {};
+}
+static QString runGh(const QString &gh, const QStringList &args, QByteArray *out) {
+    QProcess process;
+    process.start(gh, args);
+    if (!process.waitForFinished(1800000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
+    {
+        const QString detail = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        return "gh " + args.mid(0, 2).join(' ') + " failed: " + (detail.isEmpty() ? process.errorString() : detail);
+    }
+    if (out) *out = process.readAllStandardOutput();
+    return {};
+}
+QJsonObject latestRuntimeRelease(const QJsonArray &releases) {
+    QJsonObject best;
+    for (const auto &value : releases) {
+        const QJsonObject release = value.toObject();
+        if (release.value("draft").toBool() || release.value("prerelease").toBool() || !validTag(release.value("tag_name").toString())) continue;
+        bool hasManifest = false;
+        for (const auto &asset : release.value("assets").toArray()) hasManifest = hasManifest || asset.toObject().value("name").toString() == "manifest.json";
+        if (hasManifest && (best.isEmpty() || release.value("created_at").toString() > best.value("created_at").toString())) best = release;
+    }
+    return best;
+}
+static QString readFile(const QString &path, QByteArray *data) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return "cannot read " + path + ": " + file.errorString();
+    *data = file.readAll();
+    return {};
+}
+QString installLatest(const QString &gh, const QString &repo, const QString &runtimesRoot, QString *installedTag) {
+    if (gh.isEmpty()) return "gh is required to download a prebuilt runtime; install GitHub CLI or build from source";
+    static const QRegularExpression repoName(R"(^[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*$)");
+    if (!repoName.match(repo).hasMatch()) return "not a GitHub repository name: " + repo;
+    QByteArray body;
+    QString error = runGh(gh, {"api", "repos/" + repo + "/releases?per_page=100"}, &body);
+    if (!error.isEmpty()) return error;
+    const auto releasesDoc = QJsonDocument::fromJson(body);
+    if (!releasesDoc.isArray()) return "GitHub returned no release list for " + repo;
+    const QJsonObject release = latestRuntimeRelease(releasesDoc.array());
+    if (release.isEmpty()) return "No prebuilt runtime release (stable, vYYYY.MM.DD-<sha7> with a manifest.json) has been published for " + repo + " yet.";
+    const QString tag = release.value("tag_name").toString();
+    const QFileInfo installedDir(runtimesRoot + "/" + tag);
+    if (installedDir.isSymLink() || (installedDir.exists() && !installedDir.isDir())) return installedDir.filePath() + " is not a runtime folder; remove it by hand";
+    if (installedDir.isDir()) { if (installedTag) *installedTag = tag; return {}; }
+    if (QFileInfo::exists(runtimesRoot + "/" + tag + ".partial")) return runtimesRoot + "/" + tag + ".partial is left over from an earlier attempt; remove it by hand";
+    if (!QDir().mkpath(runtimesRoot)) return "cannot create " + runtimesRoot;
+    QTemporaryDir download(runtimesRoot + "/.download-XXXXXX");
+    if (!download.isValid()) return "cannot create a download folder under " + runtimesRoot;
+    const auto fetch = [&](const QString &pattern) { return runGh(gh, {"release", "download", tag, "--repo", repo, "--pattern", pattern, "--dir", download.path()}, nullptr); };
+    error = fetch("manifest.json");
+    if (!error.isEmpty()) return error;
+    error = readFile(download.path() + "/manifest.json", &body);
+    if (!error.isEmpty()) return error;
+    const auto manifestDoc = QJsonDocument::fromJson(body);
+    if (!manifestDoc.isObject()) return "manifest.json of " + tag + " is not a JSON object";
+    const Selection chosen = select(release, manifestDoc.object(), hostArchitecture(), false);
+    if (!chosen.valid()) return chosen.error;
+    error = fetch(chosen.artifact.file);
+    if (!error.isEmpty()) return error;
+    error = installArchive(download.path() + "/" + chosen.artifact.file, chosen.artifact.sha256, runtimesRoot, tag, gh, repo);
+    if (error.isEmpty() && installedTag) *installedTag = tag;
+    return error;
 }
 }
