@@ -2,6 +2,8 @@
 #include "prefixbuilder.h"
 #include "discovery.h"
 #include "releases.h"
+#include "core.h"
+#include "release_fixture.h"
 #include "log.h"
 #include <QCryptographicHash>
 #include <QDir>
@@ -80,73 +82,64 @@ private slots:
     }
     void latestReleaseIsDownloadedAndInstalled() {
         using namespace LauncherReleases;
-        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), fake = root + "/fake", runtimes = root + "/runtimes";
-        const QString arch = hostArchitecture(), tag = "v2026.10.09-3721b65", repo = "VibeDarling/darling", file = "darling-runtime-" + tag + "-linux-" + arch + ".tar.zst";
-        QVERIFY(QDir().mkpath(fake + "/assets")); QVERIFY(QDir().mkpath(root + "/image/usr/local/bin"));
-        { QFile f(root + "/image/usr/local/bin/darling"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
-        QProcess tar; tar.start("tar", {"--zstd", "-cf", fake + "/assets/" + file, "-C", root + "/image", "usr"}); QVERIFY(tar.waitForFinished(30000) && tar.exitCode() == 0);
-        QFile archive(fake + "/assets/" + file); QVERIFY(archive.open(QIODevice::ReadOnly)); const QString sha = QCryptographicHash::hash(archive.readAll(), QCryptographicHash::Sha256).toHex();
-        auto write = [](const QString &path, const QByteArray &data, bool exec = false) { QFile f(path); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(data); f.close(); if (exec) f.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner); };
-        auto asset = [&](const QString &name, const QString &digest = {}) { QJsonObject a{{"name", name}, {"browser_download_url", "https://github.com/" + repo + "/releases/download/x/" + name}}; if (!digest.isEmpty()) a.insert("digest", digest); return a; };
-        auto publish = [&](const QString &releaseTag, const QString &manifestSha, bool runtime = true, const QJsonArray &sonames = {}, const QString &glibc = "2.0") {
-            const QString url = "https://github.com/" + repo + "/releases/download/" + releaseTag + "/" + file;
-            const QJsonObject entry{{"file", file}, {"url", url}, {"sha256", manifestSha}, {"size", 1}, {"unpacked_size", 2}, {"install_root", "usr/local"}, {"launcher", "usr/local/bin/darling"}, {"host_requires", QJsonObject{{"glibc", glibc}, {"wrapped_sonames", sonames}}}};
-            write(fake + "/assets/manifest.json", QJsonDocument(QJsonObject{{"schema", 1}, {"version", releaseTag}, {"artifacts", QJsonObject{{arch, entry}}}}).toJson());
-            QJsonArray releases{
-                QJsonObject{{"tag_name", "v0.1.20260921"}, {"created_at", "2026-10-12T00:00:00Z"}, {"assets", QJsonArray{}}},
-                QJsonObject{{"tag_name", "v2026.10.11-bbbbbbb"}, {"created_at", "2026-10-11T00:00:00Z"}, {"prerelease", true}, {"assets", QJsonArray{asset("manifest.json")}}},
-                QJsonObject{{"tag_name", "v2026.10.10-ccccccc"}, {"created_at", "2026-10-10T00:00:00Z"}, {"draft", true}, {"assets", QJsonArray{asset("manifest.json")}}}};
-            if (runtime) releases.append(QJsonObject{{"tag_name", releaseTag}, {"created_at", "2026-10-09T00:00:00Z"}, {"assets", QJsonArray{asset("manifest.json"), QJsonObject{{"name", file}, {"browser_download_url", url}, {"digest", "sha256:" + manifestSha}}}}});
-            write(fake + "/release.json", QJsonDocument(releases).toJson());
-        };
-        const QString gh = root + "/gh";
-        write(gh, ("#!/bin/sh\nF='" + fake + "'\necho \"$@\" >> \"$F/calls\"\ncase \"$1 $2\" in\n"
-            "\"api repos/" + repo + "/releases?per_page=100\") cat \"$F/release.json\";;\n"
-            "\"release download\") shift 2; while [ $# -gt 0 ]; do case $1 in --pattern) p=$2; shift;; --dir) d=$2; shift;; esac; shift; done; cp \"$F/assets/$p\" \"$d/$p\" || exit 1;;\n"
-            "\"attestation verify\") ;;\n*) echo \"unexpected: $*\" >&2; exit 2;;\nesac\n").toUtf8(), true);
-        auto calls = [&] { QFile f(fake + "/calls"); return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString(); };
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString root = temporary.path(), runtimes = root + "/runtimes";
+        FakeRelease release; QVERIFY(release.create(root));
+        const QString &gh = release.gh, &repo = release.repo, &tag = release.tag, &file = release.file, &sha = release.sha;
         auto leftovers = [&] { return QDir(runtimes).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden).filter(".download"); };
 
         QVERIFY(!installLatest({}, repo, runtimes).isEmpty());
         for (const char *bad : {"not a repo; rm -rf", "../..", "a/..", "a/b/c"}) QVERIFY2(installLatest(gh, bad, runtimes).contains("not a GitHub repository"), bad);
-        QVERIFY(!QFileInfo::exists(fake + "/calls"));
-        publish(tag, sha, false);
+        QVERIFY(release.calls().isEmpty());
+        QVERIFY(release.publish(sha, false));
         QVERIFY2(installLatest(gh, repo, runtimes).contains("No prebuilt runtime release"), "only changelog, prerelease and draft releases");
-        QVERIFY(!calls().contains("release download"));
-        publish(tag, QString(64, '0'));
+        QVERIFY(!release.calls().contains("release download"));
+        QVERIFY(release.publish(QString(64, '0')));
         QVERIFY(installLatest(gh, repo, runtimes).contains("SHA-256 mismatch"));
         QVERIFY(!QFileInfo::exists(runtimes + "/" + tag)); QVERIFY(leftovers().isEmpty());
-        publish(tag, sha);
-        QVERIFY(QFile::remove(fake + "/assets/manifest.json"));
+        QVERIFY(release.publish(sha)); QVERIFY(QFile::remove(release.fake + "/assets/manifest.json"));
         QVERIFY(installLatest(gh, repo, runtimes).contains("gh release download failed"));
         QVERIFY(leftovers().isEmpty());
-        publish(tag, sha, true, QJsonArray{"libdefinitely-missing.so.9"});
-        QVERIFY(QFile::remove(fake + "/calls"));
+        QVERIFY(release.publish(sha, true, QJsonArray{"libdefinitely-missing.so.9"})); release.clearCalls();
         QVERIFY(installLatest(gh, repo, runtimes).contains("libdefinitely-missing.so.9"));
-        QVERIFY2(!calls().contains("--pattern " + file), "a missing host library must stop before the archive download");
+        QVERIFY2(!release.calls().contains("--pattern " + file), "a missing host library must stop before the archive download");
         QVERIFY(leftovers().isEmpty());
-        publish(tag, sha, true, {}, "99.1");
-        QVERIFY(QFile::remove(fake + "/calls"));
+        QVERIFY(release.publish(sha, true, {}, "99.1")); release.clearCalls();
         QVERIFY(installLatest(gh, repo, runtimes).contains("needs 99.1"));
-        QVERIFY2(!calls().contains("--pattern " + file), "a too-old glibc must stop before the archive download");
-        publish(tag, sha);
-        QVERIFY(QDir().mkpath(runtimes + "/" + tag + ".partial")); QVERIFY(QFile::remove(fake + "/calls"));
+        QVERIFY2(!release.calls().contains("--pattern " + file), "a too-old glibc must stop before the archive download");
+        QVERIFY(release.publish(sha));
+        QVERIFY(QDir().mkpath(runtimes + "/" + tag + ".partial")); release.clearCalls();
         QString installed;
         QVERIFY(installLatest(gh, repo, runtimes, &installed).contains("left over")); QVERIFY(installed.isEmpty());
-        QVERIFY2(!calls().contains("release download"), "a leftover .partial must fail before any download");
+        QVERIFY2(!release.calls().contains("release download"), "a leftover .partial must fail before any download");
         QVERIFY(QDir(runtimes + "/" + tag + ".partial").removeRecursively());
         QCOMPARE(installLatest(gh, repo, runtimes, &installed), QString());
         QCOMPARE(installed, tag);
         QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/bin/darling").isFile()); QVERIFY(leftovers().isEmpty());
-        const QString log = calls();
+        const QString log = release.calls();
         QVERIFY(log.contains("release download " + tag + " --repo " + repo + " --pattern manifest.json --dir " + runtimes + "/.download-"));
         QVERIFY(log.contains("release download " + tag + " --repo " + repo + " --pattern " + file + " --dir " + runtimes + "/.download-"));
         QVERIFY(log.contains("attestation verify"));
-        QVERIFY(QFile::remove(fake + "/calls"));
-        installed.clear();
+        release.clearCalls(); installed.clear();
         QCOMPARE(installLatest(gh, repo, runtimes, &installed), QString()); QCOMPARE(installed, tag);
-        QVERIFY2(!calls().contains("release download"), "an installed tag must not be downloaded again");
-        const auto rel = [&](const QString &name, const QString &created, bool manifest, bool prerelease = false) { return QJsonObject{{"tag_name", name}, {"created_at", created}, {"prerelease", prerelease}, {"assets", manifest ? QJsonArray{asset("manifest.json")} : QJsonArray{}}}; };
+        QVERIFY2(!release.calls().contains("release download"), "an installed tag must not be downloaded again");
+        const auto setup = LauncherCore::setupPrebuilt(gh, repo, root);
+        QVERIFY2(setup.error.isEmpty(), qPrintable(setup.error));
+        QCOMPARE(setup.launcher, runtimes + "/" + tag + "/usr/local/bin/darling"); QCOMPARE(setup.runtimeRoot, runtimes + "/" + tag + "/usr/local");
+        QCOMPARE(setup.prefix, root + "/prefixes/default"); QVERIFY(QFileInfo(setup.prefix + "/private/etc").isDir());
+        QVERIFY(FakeRelease::write(root + "/prefixes/fail-uname", "x"));
+        const auto broken = LauncherCore::setupPrebuilt(gh, repo, root);
+        QVERIFY2(broken.error.contains("failed its checks") && broken.error.contains("System reports Darwin"), qPrintable(broken.error));
+        QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/bin/darling").isFile()); release.clearCalls();
+        QVERIFY(QFile::remove(root + "/prefixes/fail-uname")); QVERIFY(FakeRelease::write(root + "/prefixes/fail-ls", "x"));
+        QVERIFY(LauncherCore::setupPrebuilt(gh, repo, root).error.contains("Library present: /usr/lib/libSystem.B.dylib"));
+        QVERIFY(QFile::remove(root + "/prefixes/fail-ls")); QVERIFY(FakeRelease::write(root + "/prefixes/fail-init", "x"));
+        const auto noInit = LauncherCore::setupPrebuilt(gh, repo, root);
+        QVERIFY2(noInit.error.contains("Initialize the prefix: init-broken") && !noInit.error.contains("System reports Darwin"), qPrintable(noInit.error));
+        QVERIFY(QFile::remove(root + "/prefixes/fail-init"));
+        QVERIFY2(LauncherCore::setupPrebuilt(gh, repo, root).error.isEmpty(), "a retry after fixing the prefix succeeds");
+        QVERIFY2(!release.calls().contains("release download"), "retries reuse the installed runtime");
+        QVERIFY(LauncherCore::setupPrebuilt({}, repo, root + "/other").error.contains("gh is required"));
+        const auto rel = [&](const QString &name, const QString &created, bool manifest) { return QJsonObject{{"tag_name", name}, {"created_at", created}, {"assets", manifest ? QJsonArray{release.asset("manifest.json")} : QJsonArray{}}}; };
         QCOMPARE(latestRuntimeRelease(QJsonArray{rel("v2026.10.01-aaaaaaa", "2026-10-01T00:00:00Z", true), rel("v2026.10.05-bbbbbbb", "2026-10-05T00:00:00Z", true), rel("v2026.10.07-ccccccc", "2026-10-07T00:00:00Z", false)}).value("tag_name").toString(), QString("v2026.10.05-bbbbbbb"));
         QCOMPARE(latestRuntimeRelease(QJsonArray{rel("v2026.10.05-bbbbbbb", "2026-10-05T00:00:00Z", true), rel("v2026.10.01-aaaaaaa", "2026-10-01T00:00:00Z", true)}).value("tag_name").toString(), QString("v2026.10.05-bbbbbbb"));
         QVERIFY(latestRuntimeRelease(QJsonArray{}).isEmpty());

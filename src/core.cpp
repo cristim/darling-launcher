@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "core.h"
 #include "sources.h"
+#include "releases.h"
+#include "discovery.h"
 #include <QProcess>
 #include <functional>
 #include <QUuid>
@@ -359,5 +361,22 @@ QList<PrefixCheck> repairPrefix(const QString &launcher, const QString &runtimeR
     const auto init = runInPrefix(launcher, runtimeRoot, prefix, {"shell", "/usr/bin/true"});
     steps << PrefixCheck{"Re-initialize the prefix", init.ok, init.output.left(300)};
     return steps + checkPrefix(launcher, runtimeRoot, prefix);
+}
+QList<PrefixCheck> initializePrefix(const QString &launcher, const QString &runtimeRoot, const QString &prefix) {
+    const auto init = runInPrefix(launcher, runtimeRoot, prefix, {"shell", "/usr/bin/true"});
+    QList<PrefixCheck> checks{PrefixCheck{"Initialize the prefix", init.ok, init.output.left(300)}};
+    return init.ok ? checks + checkPrefix(launcher, runtimeRoot, prefix) : checks;
+}
+PrebuiltSetup setupPrebuilt(const QString &gh, const QString &repo, const QString &dataRoot) {
+    PrebuiltSetup result; QString tag;
+    result.error = LauncherReleases::installLatest(gh, repo, dataRoot + "/runtimes", &tag);
+    if (!result.error.isEmpty()) return result;
+    const QString root = dataRoot + "/runtimes/" + tag;
+    result.launcher = root + "/" + LauncherReleases::launcherPath; result.runtimeRoot = root + "/" + LauncherReleases::installRoot; result.prefix = LauncherDiscovery::managedPrefix(dataRoot);
+    QStringList failed;
+    for (const auto &check : initializePrefix(result.launcher, result.runtimeRoot, result.prefix))
+        if (!check.ok) failed << check.name + (check.detail.isEmpty() ? QString() : ": " + check.detail);
+    if (!failed.isEmpty()) result.error = "Runtime " + tag + " is installed but the prefix " + result.prefix + " failed its checks:\n" + failed.join('\n') + "\nThe runtime stays installed and a retry only repeats the prefix checks; if the runtime itself is broken, remove " + root + " and download again.";
+    return result;
 }
 }

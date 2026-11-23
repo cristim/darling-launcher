@@ -41,6 +41,12 @@ MissingSymbol diagnose(const QString &output);
 struct PrefixCheck { QString name; bool ok; QString detail; };
 QList<PrefixCheck> checkPrefix(const QString &launcher, const QString &runtimeRoot, const QString &prefix);
 QList<PrefixCheck> repairPrefix(const QString &launcher, const QString &runtimeRoot, const QString &prefix);
+// Initializes `prefix` with the launcher (a no-op on an existing one), then runs checkPrefix.
+QList<PrefixCheck> initializePrefix(const QString &launcher, const QString &runtimeRoot, const QString &prefix);
+// Downloads and installs the newest prebuilt runtime (LauncherReleases::installLatest) under <dataRoot>/runtimes, then
+// initializes and validates the managed prefix with it. `error` is empty on success. Blocking: call it off the GUI thread.
+struct PrebuiltSetup { QString error, launcher, runtimeRoot, prefix; };
+PrebuiltSetup setupPrebuilt(const QString &gh, const QString &repo, const QString &dataRoot);
 QString catalogPath(const QString &prefix);
 QJsonObject loadCatalog(const QString &prefix);
 bool saveCatalog(const QString &prefix, const QJsonObject &catalog, QString *error);

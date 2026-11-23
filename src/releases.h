@@ -8,6 +8,8 @@ namespace LauncherReleases {
 // The CI release contract: tag vYYYY.MM.DD-<sha7>[-rN], manifest.json with artifacts keyed by `uname -m`.
 struct Artifact { QString file, url, sha256, installRoot, launcher, glibc; QStringList wrappedSonames; qint64 size = 0, unpackedSize = 0; };
 struct Selection { QString tag; Artifact artifact; QString error; bool valid() const { return error.isEmpty(); } };
+// The repository whose CI publishes the runtimes this launcher installs.
+constexpr const char *repository = "VibeDarling/darling";
 constexpr const char *installRoot = "usr/local";
 constexpr const char *launcherPath = "usr/local/bin/darling";
 // Also guards runtime directory names: only tags pass.
