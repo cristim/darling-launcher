@@ -6,7 +6,7 @@
 #include <QStringList>
 namespace LauncherReleases {
 // The CI release contract: tag vYYYY.MM.DD-<sha7>[-rN], manifest.json with artifacts keyed by `uname -m`.
-struct Artifact { QString file, url, sha256, installRoot, launcher; qint64 size = 0, unpackedSize = 0; };
+struct Artifact { QString file, url, sha256, installRoot, launcher, glibc; QStringList wrappedSonames; qint64 size = 0, unpackedSize = 0; };
 struct Selection { QString tag; Artifact artifact; QString error; bool valid() const { return error.isEmpty(); } };
 constexpr const char *installRoot = "usr/local";
 constexpr const char *launcherPath = "usr/local/bin/darling";
@@ -18,6 +18,13 @@ QString hostArchitecture();
 // prereleases (unless allowPrerelease), unknown schemas, a missing architecture, a manifest that
 // disagrees with the release or the API digest, and install_root/launcher other than the fixed values are errors.
 Selection select(const QJsonObject &release, const QJsonObject &manifest, const QString &arch, bool allowPrerelease);
+// What the runtime needs from the host (manifest host_requires): a minimum glibc (empty = none) and the host
+// shared libraries its native wrappers link. Returns why this host cannot run it, or "".
+QString preflight(const Artifact &artifact, const QString &hostGlibc, const QStringList &hostSonames);
+// Sonames that `ldconfig -p` lines list for `arch` (`uname -m`); other architectures' entries are ignored.
+QStringList parseLdconfig(const QStringList &listing, const QString &arch);
+// Runs `ldconfig -p` for this host's sonames; sets *error if it cannot.
+QStringList hostSonames(const QString &arch, QString *error);
 // VibeDarling/darling releases are only built from this ref, on GitHub-hosted runners (CI refuses anything else). The pin is
 // fixed here, not read from manifest.json, so a tampered release cannot widen its own trust.
 constexpr const char *sourceRef = "refs/heads/master";

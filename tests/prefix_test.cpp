@@ -88,9 +88,9 @@ private slots:
         QFile archive(fake + "/assets/" + file); QVERIFY(archive.open(QIODevice::ReadOnly)); const QString sha = QCryptographicHash::hash(archive.readAll(), QCryptographicHash::Sha256).toHex();
         auto write = [](const QString &path, const QByteArray &data, bool exec = false) { QFile f(path); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(data); f.close(); if (exec) f.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner); };
         auto asset = [&](const QString &name, const QString &digest = {}) { QJsonObject a{{"name", name}, {"browser_download_url", "https://github.com/" + repo + "/releases/download/x/" + name}}; if (!digest.isEmpty()) a.insert("digest", digest); return a; };
-        auto publish = [&](const QString &releaseTag, const QString &manifestSha, bool runtime = true) {
+        auto publish = [&](const QString &releaseTag, const QString &manifestSha, bool runtime = true, const QJsonArray &sonames = {}, const QString &glibc = "2.0") {
             const QString url = "https://github.com/" + repo + "/releases/download/" + releaseTag + "/" + file;
-            const QJsonObject entry{{"file", file}, {"url", url}, {"sha256", manifestSha}, {"size", 1}, {"unpacked_size", 2}, {"install_root", "usr/local"}, {"launcher", "usr/local/bin/darling"}};
+            const QJsonObject entry{{"file", file}, {"url", url}, {"sha256", manifestSha}, {"size", 1}, {"unpacked_size", 2}, {"install_root", "usr/local"}, {"launcher", "usr/local/bin/darling"}, {"host_requires", QJsonObject{{"glibc", glibc}, {"wrapped_sonames", sonames}}}};
             write(fake + "/assets/manifest.json", QJsonDocument(QJsonObject{{"schema", 1}, {"version", releaseTag}, {"artifacts", QJsonObject{{arch, entry}}}}).toJson());
             QJsonArray releases{
                 QJsonObject{{"tag_name", "v0.1.20260921"}, {"created_at", "2026-10-12T00:00:00Z"}, {"assets", QJsonArray{}}},
@@ -120,6 +120,15 @@ private slots:
         QVERIFY(QFile::remove(fake + "/assets/manifest.json"));
         QVERIFY(installLatest(gh, repo, runtimes).contains("gh release download failed"));
         QVERIFY(leftovers().isEmpty());
+        publish(tag, sha, true, QJsonArray{"libdefinitely-missing.so.9"});
+        QVERIFY(QFile::remove(fake + "/calls"));
+        QVERIFY(installLatest(gh, repo, runtimes).contains("libdefinitely-missing.so.9"));
+        QVERIFY2(!calls().contains("--pattern " + file), "a missing host library must stop before the archive download");
+        QVERIFY(leftovers().isEmpty());
+        publish(tag, sha, true, {}, "99.1");
+        QVERIFY(QFile::remove(fake + "/calls"));
+        QVERIFY(installLatest(gh, repo, runtimes).contains("needs 99.1"));
+        QVERIFY2(!calls().contains("--pattern " + file), "a too-old glibc must stop before the archive download");
         publish(tag, sha);
         QVERIFY(QDir().mkpath(runtimes + "/" + tag + ".partial")); QVERIFY(QFile::remove(fake + "/calls"));
         QString installed;
@@ -144,13 +153,31 @@ private slots:
         QVERIFY(QDir(runtimes + "/" + tag).removeRecursively()); QVERIFY(QFile::link(root + "/image", runtimes + "/" + tag));
         QVERIFY(installLatest(gh, repo, runtimes).contains("not a runtime folder"));
     }
+    void hostPreflight() {
+        using namespace LauncherReleases;
+        Artifact artifact; artifact.glibc = "2.39"; artifact.wrappedSonames = {"libX11.so.6", "libz.so.1"};
+        const QStringList host{"libX11.so.6", "libz.so.1", "libc.so.6"};
+        QVERIFY(preflight(artifact, "2.39", host).isEmpty());
+        QVERIFY(preflight(artifact, "2.41", host).isEmpty());
+        QVERIFY(preflight(artifact, "2.4", host).contains("glibc 2.4")); // 2.4 is older than 2.39, not newer
+        QVERIFY(preflight(artifact, "2.38", host).contains("needs 2.39"));
+        QVERIFY(preflight(artifact, "2.39", {"libz.so.1"}).contains("libX11.so.6"));
+        QVERIFY(!preflight(artifact, "2.39", {"libz.so.1"}).contains("libz.so.1"));
+        artifact.glibc.clear(); QVERIFY(preflight(artifact, "1.0", host).isEmpty());
+        const QStringList listing{"3117 libs found in cache `/etc/ld.so.cache'", "\tlibX11.so.6 (libc6,AArch64) => /usr/lib/libX11.so.6", "\tlibX11.so.6 (libc6,x86-64) => /usr/lib/x86_64/libX11.so.6", "\tlibabi.so.1 (libc6,x86-64, OS ABI: Linux 3.2.0) => /usr/lib/libabi.so.1", "\tlibold.so.1 (libc6) => /usr/lib32/libold.so.1", "garbage"};
+        QCOMPARE(parseLdconfig(listing, "aarch64"), QStringList{"libX11.so.6"});
+        QCOMPARE(parseLdconfig(listing, "x86_64"), (QStringList{"libX11.so.6", "libabi.so.1"}));
+        QVERIFY(parseLdconfig(listing, "riscv64").isEmpty());
+        QString error; const QStringList real = hostSonames(hostArchitecture(), &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error)); QVERIFY(real.contains(QStringLiteral("libc.so.6")));
+    }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
         for (const char *good : {"v2026.10.09-3721b65", "v2026.10.09-3721b65-r2"}) QVERIFY2(validTag(good), good);
         for (const char *bad : {"2026-10-09-14-32-3721b65", "v2026.10.09-3721b6", "v2026.10.09-3721b65.partial", "v2026.10.09-XYZ1234", "latest", "../v2026.10.09-3721b65"}) QVERIFY2(!validTag(bad), bad);
         QVERIFY(!hostArchitecture().isEmpty());
         const QString tag = "v2026.10.09-3721b65", file = "darling-runtime-" + tag + "-linux-aarch64.tar.zst", url = "https://github.com/VibeDarling/darling/releases/download/" + tag + "/" + file;
-        const QJsonObject entry{{"file", file}, {"url", url}, {"sha256", QString(64, 'a')}, {"size", 1}, {"unpacked_size", 2}, {"install_root", "usr/local"}, {"launcher", "usr/local/bin/darling"}};
+        const QJsonObject entry{{"file", file}, {"url", url}, {"sha256", QString(64, 'a')}, {"size", 1}, {"unpacked_size", 2}, {"install_root", "usr/local"}, {"launcher", "usr/local/bin/darling"}, {"host_requires", QJsonObject{{"glibc", "2.39"}, {"wrapped_sonames", QJsonArray{"libX11.so.6", "libz.so.1"}}}}};
         const QJsonObject manifest{{"schema", 1}, {"version", tag}, {"artifacts", QJsonObject{{"aarch64", entry}}}};
         const QJsonObject release{{"tag_name", tag}, {"assets", QJsonArray{QJsonObject{{"name", file}, {"browser_download_url", url}, {"digest", "sha256:" + QString(64, 'a')}}}}};
         auto chosen = select(release, manifest, "aarch64", false); QVERIFY2(chosen.valid(), qPrintable(chosen.error));
@@ -166,6 +193,12 @@ private slots:
         QVERIFY(select(release, entryWith("install_root", "opt"), "aarch64", false).error.contains("install_root"));
         QVERIFY(select(release, entryWith("launcher", "usr/local/bin/other"), "aarch64", false).error.contains("install_root"));
         QVERIFY(select(release, entryWith("file", "other.tar.zst"), "aarch64", false).error.contains("file name"));
+        QCOMPARE(chosen.artifact.glibc, QString("2.39")); QCOMPARE(chosen.artifact.wrappedSonames, (QStringList{"libX11.so.6", "libz.so.1"}));
+        QVERIFY(select(release, entryWith("host_requires", QJsonValue::Null), "aarch64", false).error.contains("no host_requires"));
+        QVERIFY(select(release, entryWith("host_requires", QJsonObject{{"glibc", QJsonValue::Null}, {"wrapped_sonames", QJsonArray{}}}), "aarch64", false).valid());
+        QVERIFY(select(release, entryWith("host_requires", QJsonObject{{"glibc", "2.x"}, {"wrapped_sonames", QJsonArray{}}}), "aarch64", false).error.contains("not a version"));
+        QVERIFY(select(release, entryWith("host_requires", QJsonObject{{"glibc", "2.39"}}), "aarch64", false).error.contains("wrapped_sonames"));
+        QVERIFY(select(release, entryWith("host_requires", QJsonObject{{"glibc", "2.39"}, {"wrapped_sonames", QJsonArray{"../../etc/passwd"}}}), "aarch64", false).error.contains("invalid library name"));
         QVERIFY(select(release, entryWith("sha256", "bb"), "aarch64", false).error.contains("SHA-256"));
         QVERIFY(select(release, entryWith("sha256", QString(64, 'b')), "aarch64", false).error.contains("differs from the GitHub digest"));
         QVERIFY(select(release, entryWith("url", "https://evil.invalid/x"), "aarch64", false).error.contains("url differs"));

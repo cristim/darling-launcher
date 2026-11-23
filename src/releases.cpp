@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "releases.h"
+#include <QProcessEnvironment>
+#include <QStandardPaths>
+#include <QVersionNumber>
+#include <gnu/libc-version.h>
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <sys/utsname.h>
@@ -30,8 +34,22 @@ Selection select(const QJsonObject &release, const QJsonObject &manifest, const 
     const QJsonValue entry = manifest.value("artifacts").toObject().value(arch);
     if (!entry.isObject()) return fail("Release " + tag + " has no runtime for " + arch + ".");
     const QJsonObject object = entry.toObject();
-    Artifact artifact{object.value("file").toString(), object.value("url").toString(), object.value("sha256").toString().toLower(), object.value("install_root").toString(), object.value("launcher").toString(),
-                      object.value("size").toInteger(), object.value("unpacked_size").toInteger()};
+    Artifact artifact;
+    artifact.file = object.value("file").toString(); artifact.url = object.value("url").toString(); artifact.sha256 = object.value("sha256").toString().toLower();
+    artifact.installRoot = object.value("install_root").toString(); artifact.launcher = object.value("launcher").toString();
+    artifact.size = object.value("size").toInteger(); artifact.unpackedSize = object.value("unpacked_size").toInteger();
+    const QJsonValue requires = object.value("host_requires");
+    if (!requires.isObject()) return fail("manifest.json has no host_requires for " + artifact.file + ".");
+    const QJsonValue glibc = requires.toObject().value("glibc");
+    static const QRegularExpression version(R"(^\d+(\.\d+)*$)"), soname(R"(^lib[A-Za-z0-9_+-]+\.so(\.[0-9]+)+$)");
+    if (!glibc.isNull() && !(glibc.isString() && version.match(glibc.toString()).hasMatch())) return fail("manifest.json host_requires.glibc of " + artifact.file + " is not a version.");
+    artifact.glibc = glibc.toString();
+    const QJsonValue sonames = requires.toObject().value("wrapped_sonames");
+    if (!sonames.isArray()) return fail("manifest.json has no host_requires.wrapped_sonames for " + artifact.file + ".");
+    for (const auto &name : sonames.toArray()) {
+        if (!name.isString() || !soname.match(name.toString()).hasMatch()) return fail("manifest.json host_requires.wrapped_sonames of " + artifact.file + " has an invalid library name.");
+        artifact.wrappedSonames << name.toString();
+    }
     if (artifact.installRoot != installRoot || artifact.launcher != launcherPath) return fail("manifest.json install_root/launcher are not " + QString(installRoot) + " and " + launcherPath + ".");
     if (artifact.file != "darling-runtime-" + tag + "-linux-" + arch + ".tar.zst") return fail("manifest.json file name " + artifact.file + " does not match the release and architecture.");
     static const QRegularExpression hex("^[0-9a-f]{64}$");
@@ -48,6 +66,32 @@ Selection select(const QJsonObject &release, const QJsonObject &manifest, const 
     }
     if (!listed) return fail("Release " + tag + " does not list " + artifact.file + ".");
     Selection result; result.tag = tag; result.artifact = artifact; return result;
+}
+QString preflight(const Artifact &artifact, const QString &hostGlibc, const QStringList &hostSonames) {
+    if (!artifact.glibc.isEmpty() && QVersionNumber::fromString(hostGlibc) < QVersionNumber::fromString(artifact.glibc))
+        return "This computer has glibc " + hostGlibc + " but the runtime needs " + artifact.glibc + " or newer; update the system or build from source.";
+    QStringList missing;
+    for (const QString &name : artifact.wrappedSonames) if (!hostSonames.contains(name)) missing << name;
+    if (!missing.isEmpty()) return "The runtime needs these libraries, which this computer lacks: " + missing.join(", ") + ". Install the packages that provide them, or build from source.";
+    return {};
+}
+QStringList parseLdconfig(const QStringList &listing, const QString &arch) {
+    const QString tag = arch == "x86_64" ? "x86-64" : arch == "aarch64" ? "AArch64" : QString();
+    static const QRegularExpression row(R"(^\s+(\S+) \(([^)]*)\) => )");
+    QStringList names;
+    for (const QString &line : listing) {
+        const auto match = row.match(line);
+        if (match.hasMatch() && !tag.isEmpty() && match.captured(2).split(',').contains(tag)) names << match.captured(1);
+    }
+    return names;
+}
+QStringList hostSonames(const QString &arch, QString *error) {
+    const QString ldconfig = QStandardPaths::findExecutable("ldconfig", QStringList{"/sbin", "/usr/sbin"} + QProcessEnvironment::systemEnvironment().value("PATH").split(':'));
+    if (ldconfig.isEmpty()) { *error = "cannot check the host libraries: ldconfig was not found"; return {}; }
+    QProcess process;
+    process.start(ldconfig, {"-p"});
+    if (!process.waitForFinished(30000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) { *error = "cannot check the host libraries: ldconfig -p failed: " + QString::fromUtf8(process.readAllStandardError()).trimmed(); return {}; }
+    return parseLdconfig(QString::fromUtf8(process.readAllStandardOutput()).split('\n'), arch);
 }
 QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo) {
     if (gh.isEmpty()) return "gh is required to verify the build attestation; install GitHub CLI or build from source";
@@ -185,6 +229,13 @@ QString installLatest(const QString &gh, const QString &repo, const QString &run
     if (!manifestDoc.isObject()) return "manifest.json of " + tag + " is not a JSON object";
     const Selection chosen = select(release, manifestDoc.object(), hostArchitecture(), false);
     if (!chosen.valid()) return chosen.error;
+    QStringList libraries;
+    if (!chosen.artifact.wrappedSonames.isEmpty()) {
+        libraries = hostSonames(hostArchitecture(), &error);
+        if (!error.isEmpty()) return error;
+    }
+    error = preflight(chosen.artifact, QString::fromLatin1(gnu_get_libc_version()), libraries);
+    if (!error.isEmpty()) return error;
     error = fetch(chosen.artifact.file);
     if (!error.isEmpty()) return error;
     error = installArchive(download.path() + "/" + chosen.artifact.file, chosen.artifact.sha256, runtimesRoot, tag, gh, repo);
