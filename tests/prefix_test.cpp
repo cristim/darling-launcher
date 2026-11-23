@@ -74,7 +74,7 @@ private slots:
         for (const char *name : {"through", "escape"}) { const QString archive = root + "/" + name + ".tar.zst"; const QString error = installArchive(archive, digest(archive), runtimes, tag, ghOk, repo); QVERIFY2(!error.isEmpty() && (error.contains("symlink") || error.contains("escapes")), name); QVERIFY(!QFileInfo::exists(runtimes + "/" + tag)); }
         QCOMPARE(installArchive(good, digest(good), runtimes, tag, ghOk, repo), QString());
         QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/bin/darling").isFile());
-        QVERIFY(QFile(root + "/gh-args").open(QIODevice::ReadOnly)); { QFile args(root + "/gh-args"); args.open(QIODevice::ReadOnly); QVERIFY(args.readAll().contains("--signer-workflow VibeDarling/darling/.github/workflows/release-binaries.yml")); }
+        QVERIFY(QFile(root + "/gh-args").open(QIODevice::ReadOnly)); { QFile args(root + "/gh-args"); args.open(QIODevice::ReadOnly); const QByteArray text = args.readAll(); QVERIFY(text.contains("--signer-workflow VibeDarling/darling/.github/workflows/release-binaries.yml")); QVERIFY(text.contains("--source-ref refs/heads/master")); QVERIFY(text.contains("--deny-self-hosted-runners")); }
         QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/libz").isSymLink());
         QVERIFY(installArchive(good, digest(good), runtimes, tag, ghOk, repo).contains("already exists"));
     }

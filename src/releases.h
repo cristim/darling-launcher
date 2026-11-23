@@ -18,7 +18,11 @@ QString hostArchitecture();
 // prereleases (unless allowPrerelease), unknown schemas, a missing architecture, a manifest that
 // disagrees with the release or the API digest, and install_root/launcher other than the fixed values are errors.
 Selection select(const QJsonObject &release, const QJsonObject &manifest, const QString &arch, bool allowPrerelease);
-// Runs `gh attestation verify`, pinned to repo's release-binaries.yml workflow. Empty string = verified.
+// VibeDarling/darling releases are only built from this ref, on GitHub-hosted runners (CI refuses anything else). The pin is
+// fixed here, not read from manifest.json, so a tampered release cannot widen its own trust.
+constexpr const char *sourceRef = "refs/heads/master";
+// Runs `gh attestation verify`, pinned to repo's release-binaries.yml workflow, sourceRef and hosted runners
+// (without the last two, a branch with a modified workflow could mint a valid attestation). Empty string = verified.
 QString verifyAttestation(const QString &gh, const QString &archive, const QString &repo);
 // Verifies the digest and attestation, vets the member list (relative paths only, no device or
 // hard-link members, nothing written through a symlink, a regular usr/local/bin/darling), then extracts
