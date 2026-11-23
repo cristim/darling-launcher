@@ -146,6 +146,15 @@ private slots:
         QVERIFY(QFile::link(temporary.path(), prefix + "/hop")); QVERIFY(status(tools.deploy, {workspace + "/payload", "hop/escaped"}) != 0); QVERIFY(!QFileInfo::exists(temporary.path() + "/escaped"));
         for (const QString &bad : {"-c", "config", "push", "clone", "fetch", "worktree", "checkout"}) QVERIFY2(status(tools.git, {bad}) != 0, qPrintable(bad));
         QVERIFY(status(tools.git, {"commit", "-c", "core.hooksPath=/tmp"}) != 0); QVERIFY(status(tools.git, {"diff", "--no-index", "/dev/null", "/etc/passwd"}) != 0); QVERIFY(status(tools.git, {"log", "--output=/tmp/x"}) != 0);
+        const QString bin = temporary.path() + "/bin", calls = temporary.path() + "/cmake-calls"; QVERIFY(QDir().mkpath(bin));
+        auto script = [](const QString &path, const QByteArray &body) { QFile f(path); if (!f.open(QIODevice::WriteOnly)) return false; f.write(body); f.close(); return f.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner); };
+        QVERIFY(script(bin + "/flock", "#!/bin/sh\nshift 3\nexec \"$@\"\n")); QVERIFY(script(bin + "/cmake", ("#!/bin/sh\necho \"$*\" >> '" + calls + "'\n").toUtf8()));
+        const QByteArray originalPath = qgetenv("PATH"); auto restorePath = qScopeGuard([originalPath] { qputenv("PATH", originalPath); }); qputenv("PATH", (bin + ":" + originalPath).toUtf8());
+        QCOMPARE(status(tools.build, {"build", "libfoo"}), 0); QCOMPARE(status(tools.build, {"build"}), 0);
+        QFile built(calls); QVERIFY(built.open(QIODevice::ReadOnly)); const QStringList lines = QString::fromUtf8(built.readAll()).split('\n', Qt::SkipEmptyParts);
+        QCOMPARE(lines.size(), 2); QVERIFY2(lines.at(0).endsWith("--parallel 1 --target libfoo"), qPrintable(lines.at(0))); QVERIFY2(!lines.at(1).contains("--target"), qPrintable(lines.at(1)));
+        for (const QString &bad : {"-j8", "--target", "a;b", "a b", "$(x)", "a/b"}) QVERIFY2(status(tools.build, {"build", bad}) != 0, qPrintable(bad));
+        QVERIFY(status(tools.build, {"build", "a", "b"}) != 0); QCOMPARE(QString::fromUtf8((built.seek(0), built.readAll())).split('\n', Qt::SkipEmptyParts).size(), 2);
     }
     void worktreeTrustFollowsTheLauncherClone() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("HOME", temporary.path().toUtf8());
