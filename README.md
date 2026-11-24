@@ -17,18 +17,21 @@ ctest --test-dir build --output-on-failure
 
 The core tests use synthetic app bundles, libraries, and Brewfiles. Mount tests cover partition discovery, fixed read-only arguments, and fake pkexec success/cancellation/denial. Prefix-builder tests cover both input scopes, lock preservation and integration failure. The offscreen GUI tests decode a synthetic ICNS icon, exercise keyboard and mouse selection in list/grid views, drag an app into the import area before a fake Darling diagnosis/import/retry sequence, and verify that a built prefix selects its own runtime image.
 
-Choose a mounted macOS volume and a separate prefix. **Detect mounted macOS volumes** lists current mounts with a macOS directory layout. **Create prefix** opens the isolated VibeDarling build workflow described below. **Initialize selected prefix** initializes a directory with the already configured Darling runtime. **Scan volume** automatically lists `.app` bundles in subdirectories of `Applications` and `System/Applications`; select any set to copy into the prefix. Imports reject source escapes, unsafe symlinks, and existing targets. Bundle metadata is read with libplist; executable bytes are copied privately and never inspected.
+Choose a mounted macOS volume and a separate prefix. **Detect mounted macOS volumes** lists current mounts with a macOS directory layout. **Create prefix** opens the isolated darlinghq/darling build workflow described below. **Initialize selected prefix** initializes a directory with the already configured Darling runtime. **Scan volume** automatically lists `.app` bundles in subdirectories of `Applications` and `System/Applications`; select any set to copy into the prefix. Imports reject source escapes, unsafe symlinks, and existing targets. Bundle metadata is read with libplist; executable bytes are copied privately and never inspected.
 
 **Mount macOS source** lists detected APFS/HFS partitions using `lsblk`. Choose a partition, an existing empty directory, a kernel driver or APFS FUSE, and an explicit APFS volume index. It invokes the selected driver through `pkexec` with read-only, nodev, nosuid and noexec options. The kernel path requires an installed filesystem module; APFS FUSE requires `apfs-fuse`. Authorization cancellation and denial stop the action. The source field is updated only after verifying the mount and macOS layout. You can explicitly unmount a source mounted during this launcher session; it is not unmounted on exit. Encrypted APFS unlocking is outside this workflow. Driver option references: [APFS FUSE](https://github.com/sgan81/apfs-fuse) and [Linux APFS](https://github.com/eafer/linux-apfs-rw).
 
 The source browser reads bundle display names, `CFBundleIconFile` resources and total file sizes in the background. List view uses 32-pixel icons and shows sizes in decimal units; grid view uses 64-pixel icons. Ctrl+A, Ctrl-click and Shift-click select sets. Drag a set into the imported-apps area or use **Import selected apps**. Missing or unreadable icon resources use a generic icon; no executable code is read to obtain icons.
 
-## Downloading a prebuilt runtime (default)
+## Downloading a prebuilt runtime (when published)
 
 The runtime setup dialog (**Build and deploy Darling…**, the Darling icon button, or the
-automatic first-run setup) offers **Download prebuilt runtime** first and
-**Build from source instead** second. The download takes the newest stable
-`vYYYY.MM.DD-<sha7>` release of `VibeDarling/darling` that has a `manifest.json`
+automatic first-run setup) offers **Download prebuilt runtime** and **Build from source instead**.
+`darlinghq/darling` publishes no prebuilt runtime yet: its releases carry `darling-source.tar.xz` and
+amd64 `.deb` archives (`debs_<date>.zip`) only, and the `.deb`s cannot serve an aarch64 host. So the
+download reports that no runtime exists and the source build is the path that works today. The
+download takes the newest stable
+`vYYYY.MM.DD-<sha7>` release of `darlinghq/darling` that has a `manifest.json`
 (changelog releases such as `v0.1.*`, prereleases and drafts are skipped), using the
 GitHub CLI (`gh`, signed in). It then:
 
@@ -39,7 +42,7 @@ GitHub CLI (`gh`, signed in). It then:
    `~/.darling-launcher/runtimes/` and checks its SHA-256 against the manifest (which is
    cross-checked against the GitHub asset digest when GitHub provides one);
 3. runs `gh attestation verify` pinned to the `release-binaries.yml` workflow of
-   `VibeDarling/darling`, the `refs/heads/master` ref and GitHub-hosted runners;
+   `darlinghq/darling`, the `refs/heads/master` ref and GitHub-hosted runners;
 4. vets the archive members (no absolute or `..` paths, no hard links or devices, nothing written
    through a symlink), extracts to `<tag>.partial` and renames it to `~/.darling-launcher/runtimes/<tag>`;
 5. initializes the managed prefix `~/.darling-launcher/prefixes/default` with that runtime and runs
@@ -54,16 +57,17 @@ its prefix checks is reported instead of rebuilding for hours.
 The artifact is the staged install image as a `.tar.zst`, not a `.deb`. To use your own
 build instead, choose **I already have Darling…** (it opens **Use existing Darling**).
 
-## Building a prefix from VibeDarling branches and PRs
+## Building a prefix from darlinghq/darling branches and PRs
 
-The launcher includes a versioned GPL snapshot of `all-vibedarling-pr-prefix.py`.
+The launcher includes a versioned GPL snapshot of `all-vibedarling-pr-prefix.py`, repointed at
+`darlinghq/darling` (owner, origin and the nested lock key). See `tools/BUILDER-PROVENANCE.md`.
 No Darling installation or external builder path is required. On startup without a
 usable runtime, the launcher downloads a prebuilt runtime or, failing that, builds a private
 one, and **I already have Darling…** selects an existing one. Everything the launcher creates lives in `~/.darling-launcher`
 (sources, workspaces, runtime images, prefixes, mount points and AI workspaces); this
 location is fixed and not configurable.
 
-Setup clones VibeDarling into `<data>/sources/vibedarling`, builds in a fresh
+Setup clones darlinghq/darling into `<data>/sources/darlinghq`, builds in a fresh
 `<data>/workspaces/...` and automatically selects the resulting runtime/prefix.
 No macOS volume is required for this build. Git, Python, CMake, Ninja and the
 Darling host build dependencies must be available; errors retain the workspace
@@ -104,8 +108,8 @@ mount action.
 **Detect paths** also finds an installed `darling` executable and reads runtime
 paths from the selected prefix's launcher build provenance.
 
-**Create prefix** clones `https://github.com/VibeDarling/darling.git` into
-`~/.darling-launcher/sources/vibedarling` when it is missing, streams Git progress and
+**Create prefix** clones `https://github.com/darlinghq/darling.git` into
+`~/.darling-launcher/sources/darlinghq` when it is missing, streams Git progress and
 builds in a new `~/.darling-launcher/workspaces/` folder. Existing checkouts are not
 modified. Submodule integration remains the prefix builder's responsibility. The builder
 script is the bundled snapshot until it is merged upstream. Clone failures retain
@@ -161,7 +165,7 @@ user edits and require an explicit refresh before approving a stale draft.
 A stalled launch requires explicit prefix shutdown before importing. Copied-library
 outcomes and contribution explanations remain in the popup.
 
-Report prepares a completed editable issue draft targeting **VibeDarling/Darling**
+Report prepares a completed editable issue draft targeting **darlinghq/darling**
 for central triage. The target is fixed. The authenticated GitHub account
 is used only after **Approve completed issue and submit**. Saving or selecting a
 report option alone never submits it.
@@ -180,7 +184,7 @@ is authorized by starting an agent.
 If `gh auth status --hostname github.com` succeeds, **Review completed PR proposal…**
 can load a local `proposal.json` with string fields `source`, `repo`, `base`, `head`,
 `title`, and `body`. The source must be a clean independent clone inside the
-proposal's workspace; target `repo` is `VibeDarling/<repository>`, `head` is
+proposal's workspace; target `repo` is `darlinghq/<repository>`, `head` is
 `<fork-owner>:<branch>`, and `base` is explicit. The complete text patch and draft
 are displayed before an **Approve completed draft and submit PR** action. Binary
 patches are refused. The published fork head must match the reviewed local commit.
@@ -197,7 +201,7 @@ prefix. A verified installed launcher/runtime pair is populated automatically;
 paths remain editable, and a prefix's build provenance takes priority when
 recovering its runtime paths.
 
-**Build and deploy Darling…** defaults a bundled builder script, a clean VibeDarling
+**Build and deploy Darling…** defaults a bundled builder script, a clean darlinghq/darling
 main/master source clone (or a visible proposed clone path), and a fresh workspace.
 First-run setup proposes its own home-managed independent source clone.
 Building from a missing source path clones upstream first, then invokes the

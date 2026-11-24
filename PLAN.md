@@ -83,7 +83,7 @@ usable/mounted, offer the existing explicit mount chooser. Keep unknown discover
 results distinct from confirmed absence. Mounted sources override absent disk results.
 
 Central triage: always target completed issue drafts and approved issue submissions
-at VibeDarling/Darling; display the target read-only. Verify exact target/body with
+at darlinghq/darling; display the target read-only. Verify exact target/body with
 fake gh and retain separate approval of completed issue and PR drafts.
 
 Multi-library recovery: keep one accepted action set throughout automatic dependency
@@ -105,10 +105,9 @@ first-run clone/build, path adoption, embedded helper CLI/hash and real Wayland 
 
 Fixed data location: all launcher data lives in ~/.darling-launcher (not configurable).
 Create prefix has no script/source/workspace fields: source clone is
-<data>/sources/vibedarling (auto-cloned), workspace is generated per build, script is the
+<data>/sources/darlinghq (auto-cloned from darlinghq/darling), workspace is generated per build, script is the
 bundled snapshot. Removed the dataRoot setting, the --prefix-builder CLI option and the
-tool/source detection and browse buttons. Pending: builder script moves into VibeDarling
-upstream via a PR from its author; the launcher will fetch it from that PR until merged.
+tool/source detection and browse buttons. The bundled builder is repointed at darlinghq/darling (see "Upstream: darlinghq/darling" below).
 
 Settings simplification: Settings keeps only the mounted macOS volume (auto-detected,
 with a chooser for several mounted volumes), mount/detect buttons, recovery preferences
@@ -150,7 +149,7 @@ Runtime choice: the launcher uses only the runtime it built (under <data>/worksp
 the user adopts explicitly; an installed /usr or /opt darling is not adopted automatically.
 Agent access: the agent works in the imported prefix through launcher-written scripts in
 <data>/agent-tools/<id> (run-in-prefix.sh, build.sh, deploy.sh with backup/change log); its
-source is a git worktree on <data>/sources/vibedarling; Claude gets a narrow tool allowlist.
+source is a git worktree on <data>/sources/darlinghq; Claude gets a narrow tool allowlist.
 Verification records carry an HMAC with a launcher-private key. Tests use an isolated lock
 directory (DARLING_LAUNCHER_LOCK_DIR) so they never wait on other sessions' builds.
 
@@ -163,3 +162,26 @@ hooks and fsmonitor disabled); the cloned source is not writable by the agent, o
 in the workspace; the launcher runs its own git with config overrides and only on a worktree whose
 gitdir points into the launcher's clone; deploy.sh refuses launcher metadata and the failing app's
 executable. Build scripts still execute worktree code (cmake), which the user's consent covers.
+
+Upstream: darlinghq/darling (decision, checked Nov 2026). The launcher now targets the upstream project
+`darlinghq/darling` everywhere: the release repository constant, the source clone
+(`<data>/sources/darlinghq`, origin `https://github.com/darlinghq/darling.git`), the builder's owner and
+lock checks, and the issue and PR targets. Facts checked on its releases: `v0.1.20260608` (latest) and
+`v0.1.20260222` carry only `darling-source.tar.xz` and `debs_<date>.zip`, with GitHub digests. No `manifest.json`,
+no `tar.zst` runtime and no runtime-release workflow exist, and the debs are all `amd64` builds for Ubuntu noble,
+so they cannot serve an aarch64 host.
+
+Decision: the prebuilt download keeps its contract (manifest, digest, attestation) but reports "No prebuilt
+runtime release" for darlinghq until it publishes one, which falls back to the source build in automatic mode.
+Source build is the path that works. Reasons: the `.deb` path would unpack `ar`/`tar` members into a runtime layout and install
+unattested binaries, which cannot be run or checked on this aarch64 machine, and it cannot serve aarch64 at all;
+the source tarball is the only artifact that covers both architectures. The attestation signer
+is still derived from the repository constant, so it would point at `darlinghq/darling`'s workflow only when such a
+release exists; that workflow does not exist today, so the contract is inert, not verified.
+
+Consequences kept deliberately: the bundled builder keeps its file name `all-vibedarling-pr-prefix.py` (the
+name is a historical artifact, the code is repointed); the source clone directory is `sources/darlinghq`, so an
+existing VibeDarling clone under `sources/vibedarling` is left untouched and never pulled from; the nested lock
+key is `nested` (was `vibedarling`) to match the upstream. Open follow-up: the `.deb` path for amd64 hosts
+(needs a real x86_64 install test first), and the builder's PR integration still applies to darlinghq PRs (default
+branches only in the launcher).

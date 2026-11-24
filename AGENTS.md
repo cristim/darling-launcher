@@ -2,12 +2,12 @@
 
 Qt 6 host launcher for user-owned Darling prefixes. It never runs inside a prefix. README.md describes behavior; PLAN.md records design decisions.
 
-## Runtime: download first, build only what is needed
+## Runtime: download when published, otherwise build only what is needed
 
-- The launcher's runtime is a prebuilt CI release of `VibeDarling/darling` (`LauncherCore::setupPrebuilt` in `src/core.cpp`, `LauncherReleases::installLatest` in `src/releases.cpp`). It lands in `~/.darling-launcher/runtimes/<tag>`.
-- Building all of Darling from source is the fallback (`PrefixDialog`, the bundled builder script) and takes hours. Do not start it when a download would do.
+- The upstream is `darlinghq/darling` (`LauncherReleases::repository`, the source clone `<data>/sources/darlinghq`). It publishes no prebuilt runtime yet, so `LauncherCore::setupPrebuilt` (`src/core.cpp`, `LauncherReleases::installLatest` in `src/releases.cpp`) reports that and the source build is the working path. A runtime that does get published lands in `~/.darling-launcher/runtimes/<tag>`.
+- Building all of Darling from source (`PrefixDialog`, the bundled builder script) takes hours. Do not start it when a published download would do.
 - When fixing an app failure, build only the component that contains the failing code (`build.sh build <target>` in the agent workspace) and deploy just its built files into the prefix. The agent prompt in `src/troubleshooting.cpp` says the same.
-- The release contract (tag `vYYYY.MM.DD-<sha7>[-rN]`, `manifest.json` schema 1, asset `darling-runtime-<tag>-linux-<arch>.tar.zst`, attestation from `release-binaries.yml` on `refs/heads/master`) is defined by the CI in `VibeDarling/darling` (`scripts/ci/package_runtime.py`). Change the launcher and that CI together.
+- The release contract (tag `vYYYY.MM.DD-<sha7>[-rN]`, `manifest.json` schema 1, asset `darling-runtime-<tag>-linux-<arch>.tar.zst`, attestation from `release-binaries.yml` on `refs/heads/master`) is the contract a publisher CI must meet (the VibeDarling CI, `scripts/ci/package_runtime.py`, is the reference). `darlinghq/darling` does not meet it yet, so do not treat the contract as verified against darlinghq. Change the launcher and any publisher CI together.
 
 ## Tests
 

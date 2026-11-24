@@ -3,7 +3,7 @@
 Repo: /home/cristi/src/darling-launcher (cristim/darling-launcher), branch main.
 
 ## Task
-Qt host-side launcher: prefixes, stock-app import, launch, loader-only diagnosis, library import, VibeDarling issue and clean-room PR drafts (never submitted without explicit user approval). Moving to CI-built prebuilt runtimes.
+Qt host-side launcher: prefixes, stock-app import, launch, loader-only diagnosis, library import, darlinghq/darling issue and clean-room PR drafts (never submitted without explicit user approval). Moving to CI-built prebuilt runtimes.
 
 ## Done (all local, NOT pushed; origin/main is 3 behind)
 - 248cc0e discover prebuilt runtimes under ~/.darling-launcher/runtimes/<tag>
@@ -18,7 +18,7 @@ Qt host-side launcher: prefixes, stock-app import, launch, loader-only diagnosis
 
 ## Blockers
 - Push approval for 4 local commits.
-- Real source build blocked on mslc/darling-metal upstream (cristim/mslc#201, darling-metal#28, VibeDarling/darling src/external/metal bump; sync VibeDarling/mslc master).
+- Real source build blocked on mslc/darling-metal upstream (cristim/mslc#201, darling-metal#28, darlinghq/darling src/external/metal bump; sync the mslc fork master).
 - User decisions pending: pkexec helper lookup in discovery.cpp, shared /tmp lock path, optional bubblewrap sandbox for the agent.
 - Leftover dirs (user decides, nothing deleted): ~/.darling-launcher/workspaces/darling-workspace (4.9G superseded), darling-workspace-2 (mslc failure evidence).
 - SwiftUI slices: on HOLD, I hold no CLAIMS rows.
