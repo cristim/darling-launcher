@@ -592,7 +592,7 @@ private slots:
         window.offerRuntimeSetup();
         auto *banner = window.findChild<QWidget *>("setupBanner"); QVERIFY(banner && banner->isVisible()); QVERIFY(window.findChild<QLabel *>("setupStatus")->text().contains("hide this window"));
         auto *builder = window.findChild<PrefixDialog *>(); QVERIFY(builder); QVERIFY(builder->isBusy()); QVERIFY(!builder->isVisible());
-        QCOMPARE(builder->findChild<QLabel *>("prefixBuilderSource")->text(), data + "/sources/vibedarling");
+        QCOMPARE(builder->findChild<QLabel *>("prefixBuilderSource")->text(), data + "/sources/darlinghq");
         const QString workspace = builder->findChild<QLabel *>("prefixBuilderWorkspace")->text(); QVERIFY(workspace.startsWith(data + "/workspaces/"));
         auto *apps = window.findChild<ImportedBrowser *>("importedApps");
         QMimeData mime; mime.setUrls({QUrl::fromLocalFile(app)});
@@ -616,7 +616,7 @@ private slots:
         window.findChild<QPushButton *>("Create prefix")->click();
         auto *dialog = window.findChild<PrefixDialog *>(); QVERIFY(dialog); QSignalSpy failed(dialog, &PrefixDialog::failed);
         auto *download = dialog->findChild<QPushButton *>("downloadPrebuilt"), *build = dialog->findChild<QPushButton *>("buildPrefix"); QVERIFY(download && build);
-        QCOMPARE(download->text(), QString("Download prebuilt runtime (recommended)")); QVERIFY(build->text().contains("source"));
+        QCOMPARE(download->text(), QString("Download prebuilt runtime")); QVERIFY(build->text().contains("source"));
         auto *status = dialog->findChild<QLabel *>("prefixBuilderStatus"); QVERIFY(status);
         QVERIFY(release.publish(release.sha, false));
         download->click(); QVERIFY(!download->isEnabled() && !build->isEnabled()); QVERIFY(dialog->isBusy());
@@ -624,13 +624,13 @@ private slots:
         QVERIFY(!dialog->isBusy()); QVERIFY(build->isEnabled()); QCOMPARE(failed.count(), 1);
         { QFile log(LauncherLog::path()); QVERIFY(log.open(QIODevice::ReadOnly)); QVERIFY(QString::fromUtf8(log.readAll()).contains("[download] No prebuilt runtime release")); }
         QVERIFY2(status->text().contains("No prebuilt runtime release") && status->text().contains("build from source"), qPrintable(status->text()));
-        QVERIFY(!QFileInfo::exists(data + "/sources/vibedarling")); QVERIFY(!QFileInfo::exists(data + "/runtimes/" + release.tag)); QVERIFY(!QFileInfo::exists(data + "/prefixes/default/private/etc")); QVERIFY(window.findChild<QLineEdit *>("darlingField")->text().isEmpty());
+        QVERIFY(!QFileInfo::exists(data + "/sources/darlinghq")); QVERIFY(!QFileInfo::exists(data + "/runtimes/" + release.tag)); QVERIFY(!QFileInfo::exists(data + "/prefixes/default/private/etc")); QVERIFY(window.findChild<QLineEdit *>("darlingField")->text().isEmpty());
         QVERIFY(release.publish(release.sha));
         download->click();
         QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLineEdit *>("darlingField")->text(), data + "/runtimes/" + release.tag + "/usr/local/bin/darling", 8000);
         const QString runtime = data + "/runtimes/" + release.tag + "/usr/local";
         QCOMPARE(window.findChild<QLineEdit *>("darlingField")->text(), runtime + "/bin/darling"); QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), runtime);
-        QVERIFY(QFileInfo(data + "/prefixes/default/private/etc").isDir()); QVERIFY(!QFileInfo::exists(data + "/sources/vibedarling"));
+        QVERIFY(QFileInfo(data + "/prefixes/default/private/etc").isDir()); QVERIFY(!QFileInfo::exists(data + "/sources/darlinghq"));
         QVERIFY(release.calls().contains("attestation verify")); QVERIFY(!dialog->isBusy()); QCOMPARE(failed.count(), 1);
         QSettings settings("cristim", "darling-launcher"); QCOMPARE(settings.value("darling").toString(), runtime + "/bin/darling"); QCOMPARE(settings.value("runtimeRoot").toString(), runtime); QCOMPARE(settings.value("prefix").toString(), data + "/prefixes/default");
     }
@@ -668,9 +668,9 @@ private slots:
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings settings("cristim", "darling-launcher"); settings.clear(); qputenv("HOME", temporary.path().toUtf8());
         PrefixDialog builder({}, {}, nullptr);
         const QString script = QDir(temporary.path() + "/.darling-launcher/tools").entryInfoList({"all-vibedarling-pr-prefix-*.py"}).value(0).absoluteFilePath(); QVERIFY(script.startsWith(temporary.path() + "/.darling-launcher/tools/")); QFile file(script); QVERIFY(file.open(QIODevice::ReadOnly));
-        QCOMPARE(QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex()), QString("be593c04751aa26e3b650d84442b62e2db8eb0b5888f4bc3cd281d4a850ae880"));
+        QCOMPARE(QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex()), QString("8471853f23be8bf4141b1803cf51a2c2783bb432e0118aff344cf30716dfd42e"));
         QProcess process; process.start(QStandardPaths::findExecutable("python3"), {script, "--help"}); QVERIFY(process.waitForFinished(3000)); QCOMPARE(process.exitCode(), 0); QVERIFY(process.readAllStandardOutput().contains("resolve-nested"));
-        QCOMPARE(builder.findChild<QLabel *>("prefixBuilderSource")->text(), temporary.path() + "/.darling-launcher/sources/vibedarling");
+        QCOMPARE(builder.findChild<QLabel *>("prefixBuilderSource")->text(), temporary.path() + "/.darling-launcher/sources/darlinghq");
     }
 
     void cloneThenBuildAndDeploy() {
@@ -685,7 +685,7 @@ private slots:
         window.findChild<QLineEdit *>("volumeField")->clear();
         window.findChild<QPushButton *>("Create prefix")->click();
         auto *dialog = window.findChild<PrefixDialog *>(); QVERIFY(dialog);
-        QString source = QDir::homePath() + "/.darling-launcher/sources/vibedarling", workspace = dialog->findChild<QLabel *>("prefixBuilderWorkspace")->text();
+        QString source = QDir::homePath() + "/.darling-launcher/sources/darlinghq", workspace = dialog->findChild<QLabel *>("prefixBuilderWorkspace")->text();
         dialog->findChild<QPushButton *>("buildPrefix")->click();
         QTRY_COMPARE_WITH_TIMEOUT(window.findChild<QLineEdit *>("prefixField")->text(), workspace + "/prefix", 5000);
         QVERIFY(QFileInfo(source).isDir()); QCOMPARE(window.findChild<QLineEdit *>("runtimeRootField")->text(), workspace + "/image/usr/local");
@@ -697,8 +697,8 @@ private slots:
     void prefixBuilderRuntimeSelection() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
-        QString source = QDir::homePath() + "/.darling-launcher/sources/vibedarling"; QVERIFY(QDir().mkpath(source));
-        QFile git(temporary.path() + "/git"); QVERIFY(git.open(QIODevice::WriteOnly)); git.write("#!/bin/sh\nexit 0\n"); git.close(); QVERIFY(git.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        QString source = QDir::homePath() + "/.darling-launcher/sources/darlinghq"; QVERIFY(QDir().mkpath(source));
+        QFile git(temporary.path() + "/git"); QVERIFY(git.open(QIODevice::WriteOnly)); git.write("#!/bin/sh\ncase \"$*\" in *get-url*) echo https://github.com/darlinghq/darling.git;; esac\nexit 0\n"); git.close(); QVERIFY(git.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         const QByteArray originalPath = qgetenv("PATH"); auto restore = qScopeGuard([originalPath] { qputenv("PATH", originalPath); }); qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath);
         Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py"); window.show();
         window.findChild<QLineEdit *>("volumeField")->clear();

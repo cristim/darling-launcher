@@ -26,8 +26,8 @@ bool loadJson(const QString &path, QJsonObject *object) {
 }
 namespace LauncherPrefix {
 bool selectInputs(const QJsonObject &discovery, QJsonObject *selected, QString *message) {
-    if (discovery.value("schema").toInt() != 1 || discovery.value("owner").toString() != "VibeDarling" || !discovery.value("complete").toBool())
-        return error(message, "The builder did not produce a complete VibeDarling schema-1 lock");
+    if (discovery.value("schema").toInt() != 1 || discovery.value("owner").toString() != "darlinghq" || !discovery.value("complete").toBool())
+        return error(message, "The builder did not produce a complete darlinghq/darling schema-1 lock");
     QJsonArray repos = discovery.value("repos").toArray();
     if (repos.isEmpty() || repos.first().toObject().value("repo").toString() != "darling")
         return error(message, "The lock has no Darling superproject");
@@ -46,18 +46,18 @@ bool selectInputs(const QJsonObject &discovery, QJsonObject *selected, QString *
     return true;
 }
 bool selectNestedInputs(const QJsonObject &discovery, QJsonObject *selected, QString *message) {
-    if (discovery.value("schema").toInt() != 1 || discovery.value("owner").toString() != "VibeDarling" ||
-        discovery.value("top_lock_sha256").toString().isEmpty() || !discovery.value("vibedarling").isArray() || !discovery.value("external_pinned").isArray())
+    if (discovery.value("schema").toInt() != 1 || discovery.value("owner").toString() != "darlinghq" ||
+        discovery.value("top_lock_sha256").toString().isEmpty() || !discovery.value("nested").isArray() || !discovery.value("external_pinned").isArray())
         return error(message, "Invalid nested-submodule discovery lock");
     auto result = discovery; QJsonArray repos;
-    for (const auto &value : discovery.value("vibedarling").toArray()) {
+    for (const auto &value : discovery.value("nested").toArray()) {
         auto item = value.toObject();
         if (!item.value("prs").isArray() || item.value("base").toString().isEmpty() || item.value("branch").toString().isEmpty())
             return error(message, "Nested lock is missing repository inputs");
         item.insert("prs", QJsonArray{});
         repos.append(item);
     }
-    result.insert("vibedarling", repos);
+    result.insert("nested", repos);
     result.insert("launcher_input_selection", "default-branches-only");
     if (selected) *selected = result;
     return true;
@@ -65,7 +65,7 @@ bool selectNestedInputs(const QJsonObject &discovery, QJsonObject *selected, QSt
 bool validateRequest(const PrefixBuildRequest &request, QString *message) {
     if (!QDir::isAbsolutePath(request.python) || !QFileInfo(request.python).isExecutable()) return error(message, "Python 3 is unavailable");
     if (!QDir::isAbsolutePath(request.script) || !QFileInfo(request.script).isFile()) return error(message, "Select the prefix-builder script");
-    if (!QDir::isAbsolutePath(request.source) || !QFileInfo(request.source).isDir()) return error(message, "Select a clean VibeDarling source clone");
+    if (!QDir::isAbsolutePath(request.source) || !QFileInfo(request.source).isDir()) return error(message, "Select a clean darlinghq/darling source clone");
     if (!QDir::isAbsolutePath(request.workspace) || QFileInfo::exists(request.workspace) || QFileInfo(request.workspace).isSymLink()) return error(message, "Choose a new, nonexistent workspace path");
     QString parent = QFileInfo(request.workspace).absolutePath();
     if (!QFileInfo(parent).isDir()) return error(message, "The workspace parent directory must exist");

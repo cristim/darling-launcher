@@ -19,7 +19,7 @@ parser.add_argument("--cmake-arg", action="append", default=[])
 args = parser.parse_args()
 if args.command == "resolve":
     lock = {
-        "schema": 1, "owner": "VibeDarling", "complete": True,
+        "schema": 1, "owner": "darlinghq", "complete": True,
         "repos": [{"repo": "darling", "branch": "master", "base": "a" * 40,
                    "prs": [{"number": 7, "head": "b" * 40, "ref": "refs/pull/7/head"}]}],
         "fail_checkout": (Path(args.source) / "fail-checkout").exists(),
@@ -35,9 +35,9 @@ elif args.command == "checkout":
     (workspace / "integrated.json").write_text(json.dumps({"repositories": {"darling": "a" * 40}}))
 elif args.command == "resolve-nested":
     workspace = Path(args.workspace)
-    lock = {"schema": 1, "owner": "VibeDarling",
+    lock = {"schema": 1, "owner": "darlinghq",
             "top_lock_sha256": hashlib.sha256((workspace / "refs.lock.json").read_bytes()).hexdigest(),
-            "vibedarling": [{"repo": "nested", "branch": "main", "base": "c" * 40,
+            "nested": [{"repo": "nested", "branch": "main", "base": "c" * 40,
                             "prs": [{"number": 2, "head": "d" * 40}]}], "external_pinned": []}
     Path(args.output).write_text(json.dumps(lock))
 elif args.command == "checkout-nested":

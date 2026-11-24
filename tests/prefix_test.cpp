@@ -61,7 +61,7 @@ private slots:
         QVERIFY(!vetMembers({file + "a -> b"}).isEmpty());
         QVERIFY(!vetMembers({file + "a\\nb"}).isEmpty());
         auto script = [&](const QString &name, const QString &body) { QFile f(root + "/" + name); f.open(QIODevice::WriteOnly); f.write(("#!/bin/sh\n" + body + "\n").toUtf8()); f.close(); f.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner); return f.fileName(); };
-        const QString ghOk = script("gh-ok", "echo \"$@\" > '" + root + "/gh-args'"), ghBad = script("gh-bad", "echo untrusted >&2; exit 1"), repo = "VibeDarling/darling";
+        const QString ghOk = script("gh-ok", "echo \"$@\" > '" + root + "/gh-args'"), ghBad = script("gh-bad", "echo untrusted >&2; exit 1"), repo = LauncherReleases::repository;
         const QString tag = "v2026.10.09-3721b65", good = root + "/good.tar.zst", runtimes = root + "/runtimes";
         QVERIFY(QDir().mkpath(root + "/linked/usr/local/bin")); QVERIFY(QFile::link("/usr/local/bin/darling", root + "/linked/usr/local/bin/darling"));
         run({"tar", "--zstd", "-cf", "linked.tar.zst", "-C", "linked", "usr"});
@@ -76,7 +76,7 @@ private slots:
         for (const char *name : {"through", "escape"}) { const QString archive = root + "/" + name + ".tar.zst"; const QString error = installArchive(archive, digest(archive), runtimes, tag, ghOk, repo); QVERIFY2(!error.isEmpty() && (error.contains("symlink") || error.contains("escapes")), name); QVERIFY(!QFileInfo::exists(runtimes + "/" + tag)); }
         QCOMPARE(installArchive(good, digest(good), runtimes, tag, ghOk, repo), QString());
         QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/bin/darling").isFile());
-        QVERIFY(QFile(root + "/gh-args").open(QIODevice::ReadOnly)); { QFile args(root + "/gh-args"); args.open(QIODevice::ReadOnly); const QByteArray text = args.readAll(); QVERIFY(text.contains("--signer-workflow VibeDarling/darling/.github/workflows/release-binaries.yml")); QVERIFY(text.contains("--source-ref refs/heads/master")); QVERIFY(text.contains("--deny-self-hosted-runners")); }
+        QVERIFY(QFile(root + "/gh-args").open(QIODevice::ReadOnly)); { QFile args(root + "/gh-args"); args.open(QIODevice::ReadOnly); const QByteArray text = args.readAll(); QVERIFY(text.contains("--signer-workflow darlinghq/darling/.github/workflows/release-binaries.yml")); QVERIFY(text.contains("--source-ref refs/heads/master")); QVERIFY(text.contains("--deny-self-hosted-runners")); }
         QVERIFY(QFileInfo(runtimes + "/" + tag + "/usr/local/libz").isSymLink());
         QVERIFY(installArchive(good, digest(good), runtimes, tag, ghOk, repo).contains("already exists"));
     }
@@ -164,12 +164,22 @@ private slots:
         QString error; const QStringList real = hostSonames(hostArchitecture(), &error);
         QVERIFY2(error.isEmpty(), qPrintable(error)); QVERIFY(real.contains(QStringLiteral("libc.so.6")));
     }
+    void upstreamPublishesNoRuntime() {
+        using namespace LauncherReleases;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QString gh = temporary.path() + "/gh", runtimes = temporary.path() + "/runtimes";
+        QVERIFY(FakeRelease::write(temporary.path() + "/releases.json", R"([{"tag_name":"v0.1.20260608","created_at":"2026-06-09T04:41:09Z","assets":[{"name":"darling-source.tar.xz"},{"name":"debs_20260608.zip"}]}])"));
+        QVERIFY(FakeRelease::write(gh, "#!/bin/sh\ncat '" + temporary.path().toUtf8() + "/releases.json'\n", true));
+        QCOMPARE(QString(repository), QString("darlinghq/darling"));
+        QVERIFY2(installLatest(gh, repository, runtimes).contains("No prebuilt runtime release"), "darlinghq publishes source and deb assets only");
+        QVERIFY(!QFileInfo::exists(runtimes));
+    }
     void releaseTagsAndSelection() {
         using namespace LauncherReleases;
         for (const char *good : {"v2026.10.09-3721b65", "v2026.10.09-3721b65-r2"}) QVERIFY2(validTag(good), good);
         for (const char *bad : {"2026-10-09-14-32-3721b65", "v2026.10.09-3721b6", "v2026.10.09-3721b65.partial", "v2026.10.09-XYZ1234", "latest", "../v2026.10.09-3721b65"}) QVERIFY2(!validTag(bad), bad);
         QVERIFY(!hostArchitecture().isEmpty());
-        const QString tag = "v2026.10.09-3721b65", file = "darling-runtime-" + tag + "-linux-aarch64.tar.zst", url = "https://github.com/VibeDarling/darling/releases/download/" + tag + "/" + file;
+        const QString tag = "v2026.10.09-3721b65", file = "darling-runtime-" + tag + "-linux-aarch64.tar.zst", url = "https://github.com/darlinghq/darling/releases/download/" + tag + "/" + file;
         const QJsonObject entry{{"file", file}, {"url", url}, {"sha256", QString(64, 'a')}, {"size", 1}, {"unpacked_size", 2}, {"install_root", "usr/local"}, {"launcher", "usr/local/bin/darling"}, {"host_requires", QJsonObject{{"glibc", "2.39"}, {"wrapped_sonames", QJsonArray{"libX11.so.6", "libz.so.1"}}}}};
         const QJsonObject manifest{{"schema", 1}, {"version", tag}, {"artifacts", QJsonObject{{"aarch64", entry}}}};
         const QJsonObject release{{"tag_name", tag}, {"assets", QJsonArray{QJsonObject{{"name", file}, {"browser_download_url", url}, {"digest", "sha256:" + QString(64, 'a')}}}}};
@@ -240,7 +250,7 @@ private slots:
         QFile cmake(source + "/CMakeLists.txt"); QVERIFY(cmake.open(QIODevice::WriteOnly)); cmake.write("fixture"); cmake.close();
         QCOMPARE(QProcess::execute(git, {"-C", source, "add", "."}), 0);
         QCOMPARE(QProcess::execute(git, {"-C", source, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"}), 0);
-        QCOMPARE(QProcess::execute(git, {"-C", source, "remote", "add", "origin", "https://github.com/VibeDarling/darling.git"}), 0);
+        QCOMPARE(QProcess::execute(git, {"-C", source, "remote", "add", "origin", LauncherDiscovery::sourceUrl}), 0);
         QCOMPARE(LauncherDiscovery::cleanSource({root}), source);
         QVERIFY(cmake.open(QIODevice::Append)); cmake.write("dirty"); cmake.close();
         QVERIFY(LauncherDiscovery::cleanSource({root}).isEmpty());
@@ -253,20 +263,20 @@ private slots:
     void pathDiscovery() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
         QString root = temporary.path();
-        QVERIFY(QDir().mkpath(root + "/vibedarling/tools"));
-        QVERIFY(QDir().mkpath(root + "/vibedarling/.git"));
-        QVERIFY(QDir().mkpath(root + "/vibedarling/src/startup"));
-        QFile script(root + "/vibedarling/tools/all-vibedarling-pr-prefix.py"); QVERIFY(script.open(QIODevice::WriteOnly)); script.close();
-        QFile cmake(root + "/vibedarling/CMakeLists.txt"); QVERIFY(cmake.open(QIODevice::WriteOnly)); cmake.close();
+        QVERIFY(QDir().mkpath(root + "/darlinghq/tools"));
+        QVERIFY(QDir().mkpath(root + "/darlinghq/.git"));
+        QVERIFY(QDir().mkpath(root + "/darlinghq/src/startup"));
+        QFile script(root + "/darlinghq/tools/all-vibedarling-pr-prefix.py"); QVERIFY(script.open(QIODevice::WriteOnly)); script.close();
+        QFile cmake(root + "/darlinghq/CMakeLists.txt"); QVERIFY(cmake.open(QIODevice::WriteOnly)); cmake.close();
         QCOMPARE(LauncherDiscovery::scripts({root}), QStringList{script.fileName()});
-        QCOMPARE(LauncherDiscovery::sources({root}), QStringList{root + "/vibedarling"});
+        QCOMPARE(LauncherDiscovery::sources({root}), QStringList{root + "/darlinghq"});
         QCOMPARE(LauncherDiscovery::newWorkspace(root), root + "/darling-workspace");
         QVERIFY(QDir().mkpath(root + "/darling-workspace"));
         QCOMPARE(LauncherDiscovery::newWorkspace(root), root + "/darling-workspace-2");
         QVERIFY(LauncherDiscovery::sources({root + "/missing"}).isEmpty());
     }
     void preserveDiscoveryInputs() {
-        QJsonObject discovery{{"schema", 1}, {"owner", "VibeDarling"}, {"complete", true},
+        QJsonObject discovery{{"schema", 1}, {"owner", "darlinghq"}, {"complete", true},
             {"repos", QJsonArray{QJsonObject{{"repo", "darling"}, {"branch", "master"}, {"base", QString(40, 'a')}, {"prs", QJsonArray{QJsonObject{{"number", 7}}}}}}}};
         QJsonObject selected; QString error;
         QVERIFY(LauncherPrefix::selectInputs(discovery, &selected, &error));
@@ -300,8 +310,8 @@ private slots:
         QCOMPARE(provenance.value("script_sha256").toString().size(), 64);
         if (nested) {
             auto lock = readJson(workspace + "/nested.refs.lock.json"), original = readJson(workspace + "/nested.discovery.lock.json");
-            QCOMPARE(lock.value("vibedarling").toArray().first().toObject().value("prs").toArray().size(), 0);
-            QCOMPARE(original.value("vibedarling").toArray().first().toObject().value("prs").toArray().size(), 1);
+            QCOMPARE(lock.value("nested").toArray().first().toObject().value("prs").toArray().size(), 0);
+            QCOMPARE(original.value("nested").toArray().first().toObject().value("prs").toArray().size(), 1);
         }
         QCOMPARE(readJson(workspace + "/build-call.json").value("cmake_args").toArray(), QJsonArray{"-DENABLE_TESTS=ON"});
         QVERIFY(QDir(source).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty());

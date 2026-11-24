@@ -8,8 +8,10 @@ namespace LauncherReleases {
 // The CI release contract: tag vYYYY.MM.DD-<sha7>[-rN], manifest.json with artifacts keyed by `uname -m`.
 struct Artifact { QString file, url, sha256, installRoot, launcher, glibc; QStringList wrappedSonames; qint64 size = 0, unpackedSize = 0; };
 struct Selection { QString tag; Artifact artifact; QString error; bool valid() const { return error.isEmpty(); } };
-// The repository whose CI publishes the runtimes this launcher installs.
-constexpr const char *repository = "VibeDarling/darling";
+// The upstream Darling project. It publishes no manifest.json runtime yet (only source and amd64 .deb archives), so
+// the prebuilt download reports "no prebuilt runtime" and the launcher builds from its source. The contract below
+// is kept for when a darlinghq release carries one; its attestation signer is derived from this repository and is unverified for darlinghq (no release-binaries workflow there yet).
+constexpr const char *repository = "darlinghq/darling";
 constexpr const char *installRoot = "usr/local";
 constexpr const char *launcherPath = "usr/local/bin/darling";
 // Also guards runtime directory names: only tags pass.
@@ -27,7 +29,7 @@ QString preflight(const Artifact &artifact, const QString &hostGlibc, const QStr
 QStringList parseLdconfig(const QStringList &listing, const QString &arch);
 // Runs `ldconfig -p` for this host's sonames; sets *error if it cannot.
 QStringList hostSonames(const QString &arch, QString *error);
-// VibeDarling/darling releases are only built from this ref, on GitHub-hosted runners (CI refuses anything else). The pin is
+// Runtime releases of the contract are only built from this ref, on GitHub-hosted runners (CI refuses anything else). The pin is
 // fixed here, not read from manifest.json, so a tampered release cannot widen its own trust.
 constexpr const char *sourceRef = "refs/heads/master";
 // Runs `gh attestation verify`, pinned to repo's release-binaries.yml workflow, sourceRef and hosted runners

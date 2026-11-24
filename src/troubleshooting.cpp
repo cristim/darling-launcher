@@ -218,7 +218,7 @@ QString LauncherTroubleshooting::trustedWorktree(const QString &workspace, const
     if (!pointer.open(QIODevice::ReadOnly)) return {};
     const QString line = QString::fromUtf8(pointer.readLine(4096)).trimmed();
     if (!line.startsWith("gitdir: ")) return {};
-    const QString gitdir = QFileInfo(line.mid(8)).canonicalFilePath(), common = QFileInfo(LauncherDiscovery::dataRoot() + "/sources/vibedarling/.git/worktrees").canonicalFilePath();
+    const QString gitdir = QFileInfo(line.mid(8)).canonicalFilePath(), common = QFileInfo(LauncherDiscovery::dataRoot() + "/sources/darlinghq/.git/worktrees").canonicalFilePath();
     return !gitdir.isEmpty() && !common.isEmpty() && gitdir.startsWith(common + '/') ? source : QString();
 }
 QString LauncherTroubleshooting::verificationMac(const QString &workspace, const QString &commit, bool verified) {
@@ -247,9 +247,9 @@ PrProposal LauncherTroubleshooting::reviewProposal(const QString &file) {
     const QString workspace = QFileInfo(file).absolutePath();
     const QString source = LauncherTroubleshooting::trustedWorktree(workspace, fields.value("source").toString());
     if (source.isEmpty()) { result.error = "Source must be a worktree of the cloned Darling source inside this proposal's workspace."; return result; }
-    QRegularExpression repo("^VibeDarling/[A-Za-z0-9_.-]+$"), head("^([A-Za-z0-9_.-]+):([A-Za-z0-9][A-Za-z0-9_./-]*)$"), branch("^[A-Za-z0-9][A-Za-z0-9_./-]*$");
+    QRegularExpression repo("^darlinghq/[A-Za-z0-9_.-]+$"), head("^([A-Za-z0-9_.-]+):([A-Za-z0-9][A-Za-z0-9_./-]*)$"), branch("^[A-Za-z0-9][A-Za-z0-9_./-]*$");
     const auto selectedHead = head.match(fields.value("head").toString());
-    if (!repo.match(fields.value("repo").toString()).hasMatch() || !selectedHead.hasMatch() || !branch.match(fields.value("base").toString()).hasMatch()) { result.error = "Use a VibeDarling target repository, an explicit base branch and owner:branch head."; return result; }
+    if (!repo.match(fields.value("repo").toString()).hasMatch() || !selectedHead.hasMatch() || !branch.match(fields.value("base").toString()).hasMatch()) { result.error = "Use a darlinghq/darling target repository, an explicit base branch and owner:branch head."; return result; }
     QString git = QStandardPaths::findExecutable("git"); bool ok;
     auto run = [&](const QStringList &args) { return query(git, QStringList{"-C", source} + args, &ok); };
     const QString dirty = run({"status", "--porcelain"});
@@ -345,7 +345,7 @@ TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWi
     auto *choices = new QLabel("Local workaround: import the exact missing library into this private prefix and retry from the launcher.\nIssue draft: save reproduction steps and dependency provenance for your review; saving does not submit it.\nSource fix: start an installed agent in a separate workspace using the troubleshooting data shown below."); choices->setObjectName("contributionChoices"); choices->setWordWrap(true); layout->addWidget(choices);
     auto *saveIssue = new QPushButton("Save local issue draft…"); saveIssue->setObjectName("saveFailureIssue"); layout->addWidget(saveIssue);
     connect(saveIssue, &QPushButton::clicked, this, [this] {
-        const QString file = QFileDialog::getSaveFileName(this, "Save proposed issue", "proposed-vibedarling-issue.md", "Markdown (*.md)");
+        const QString file = QFileDialog::getSaveFileName(this, "Save proposed issue", "proposed-darling-issue.md", "Markdown (*.md)");
         if (file.isEmpty()) return;
         QSaveFile output(file);
         const AppEntry app{diagnostic.value("app").toString(), diagnostic.value("bundle").toString(), diagnostic.value("executable").toString(), diagnostic.value("sourceBundle").toString()};
@@ -385,16 +385,16 @@ TroubleshootingDialog::TroubleshootingDialog(const QJsonObject &initialData, QWi
         QSaveFile report(directory + "/TROUBLESHOOTING.json");
         if (!report.open(QIODevice::WriteOnly) || report.write(QJsonDocument(diagnostic).toJson()) < 0 || !report.commit()) { status->setText("Cannot save diagnostic report."); return; }
         const QString prefixPath = diagnostic.value("prefix").toString(), runtimePath = diagnostic.value("runtime").toString(), launcherPath = diagnostic.value("launcher").toString(), bundlePath = diagnostic.value("bundle").toString(), executableName = diagnostic.value("executable").toString();
-        const QString clone = LauncherDiscovery::dataRoot() + "/sources/vibedarling";
+        const QString clone = LauncherDiscovery::managedSource(LauncherDiscovery::dataRoot());
         const auto agentTools = LauncherTroubleshooting::prepareAgentTools(diagnostic, directory, clone);
         if (!agentTools.valid()) { status->setText(agentTools.error); return; }
         const QString instructions = "Use TROUBLESHOOTING.json (exit status, signal and loader output of the failed launch) to investigate and fix this Darling app failure. "
             "WORK IN THE IMPORTED PREFIX: the prefix is " + prefixPath + " and the failing app is /" + bundlePath + ". Reproduce the failure exactly as the launcher runs it with `" + agentTools.run + "` (it sets the prefix and runtime and applies a 60 second timeout). "
             "Fix it in place as far as you can WITHOUT IMPACTING OTHER APPS: prefer changes scoped to this app (app-local libraries, per-app environment); if a shared file in the prefix must change, first back up the original under " + prefixPath + "/.darling-launcher/backups/ keeping its relative path, and list every changed prefix path in " + directory + "/PREFIX-CHANGES.txt so it can be reverted. Never change /usr/local, the system runtime, other prefixes or other imported apps. "
-            "THE SOURCE IS ALREADY CLONED at " + clone + ". Do not clone it again and do not modify that checkout directly: create your own git worktree on it with `" + agentTools.git + " init-worktree` and make and commit your source changes there with `" + agentTools.git + " <status|diff|log|show|add|rm|mv|commit|branch|restore> ...` (it works inside " + directory + "/darling only). Read its AGENTS.md. Configure and build with `" + agentTools.build + " configure` and `" + agentTools.build + " build [target]` (it builds in " + directory + "/build under the shared heavy-build lock). The runtime the launcher runs is a prebuilt CI release that was downloaded, not built here, so never rebuild all of Darling: configure and build only the one component (module, framework or library) that contains the failing code, and deploy just its built files back into the prefix one at a time with `" + agentTools.deploy + " <file inside the workspace> <relative path inside the prefix>`, which backs up the original and records the change. These four scripts are the only commands you may run. "
+            "THE SOURCE IS ALREADY CLONED at " + clone + ". Do not clone it again and do not modify that checkout directly: create your own git worktree on it with `" + agentTools.git + " init-worktree` and make and commit your source changes there with `" + agentTools.git + " <status|diff|log|show|add|rm|mv|commit|branch|restore> ...` (it works inside " + directory + "/darling only). Read its AGENTS.md. Configure and build with `" + agentTools.build + " configure` and `" + agentTools.build + " build [target]` (it builds in " + directory + "/build under the shared heavy-build lock). The runtime the launcher runs is the one it installed for this prefix (built in its own workspace from the darlinghq source, or downloaded), so never rebuild all of Darling: configure and build only the one component (module, framework or library) that contains the failing code, and deploy just its built files back into the prefix one at a time with `" + agentTools.deploy + " <file inside the workspace> <relative path inside the prefix>`, which backs up the original and records the change. These four scripts are the only commands you may run. "
             "Work only from source, published APIs, headers, interface metadata, loader output and process exit status. Never disassemble, decompile, inspect machine code, dump Apple symbols or commit Apple apps/libraries; `coredumpctl info` module names are fine but do not open core dumps in a debugger. Do not inspect dyld cache implementation bytes. Do not unlock or change encrypted volumes. "
             "Add meaningful tests, prepare a completed local PR draft, and do not push or submit any issue or PR. If a fix cannot be specified without binary inspection, explain the blocker. "
-            "Write proposal.json beside this report with string fields source (absolute worktree path " + directory + "/darling), repo (VibeDarling/repo), base (explicit branch), head (fork-owner:branch), title, body, and commit the reviewed patch on that branch. The branch must be published separately with explicit user approval before PR submission can succeed. "
+            "Write proposal.json beside this report with string fields source (absolute worktree path " + directory + "/darling), repo (darlinghq/repo), base (explicit branch), head (fork-owner:branch), title, body, and commit the reviewed patch on that branch. The branch must be published separately with explicit user approval before PR submission can succeed. "
             "When done the launcher itself runs the app in the prefix for about 20 seconds; a PR is offered only if that run succeeds, so do not claim success you have not seen.";
         QSaveFile prompt(directory + "/FIX-INSTRUCTIONS.txt");
         if (!prompt.open(QIODevice::WriteOnly) || prompt.write(instructions.toUtf8()) < 0 || !prompt.commit()) { status->setText("Cannot save agent instructions."); return; }
@@ -500,7 +500,7 @@ void TroubleshootingDialog::reviewIssue() {
     auto *dialog = new IssueApprovalDialog(this); dialog->setObjectName("issueApprovalDialog"); dialog->setWindowTitle("Review completed issue draft"); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->resize(820, 650);
     auto *layout = new QVBoxLayout(dialog);
     auto *notice = new QLabel("Review the complete draft and redact local paths. Selecting Report prepares this draft; only approving this completed draft submits it."); notice->setWordWrap(true); layout->addWidget(notice);
-    auto *repo = new QLineEdit("VibeDarling/Darling"); repo->setObjectName("issueRepository"); repo->setReadOnly(true); layout->addWidget(repo);
+    auto *repo = new QLineEdit("darlinghq/darling"); repo->setObjectName("issueRepository"); repo->setReadOnly(true); layout->addWidget(repo);
     auto *title = new QLineEdit(diagnostic.value("app").toString() + " missing loader dependency"); title->setObjectName("issueTitle"); layout->addWidget(title);
     auto *body = new QTextEdit; body->setObjectName("issueBody"); body->setPlainText(issueBody()); layout->addWidget(body); dialog->setProperty("latestBody", issueBody());
     auto *result = new QLabel; result->setObjectName("issueSubmissionStatus"); result->setWordWrap(true); layout->addWidget(result);
@@ -512,12 +512,12 @@ void TroubleshootingDialog::reviewIssue() {
     if (!authenticated) result->setText("GitHub CLI is not authenticated. You can save the draft locally.");
     connect(approve, &QPushButton::clicked, dialog, [=] {
         if (!authenticated || dialog->property("draftStale").toBool()) return;
-        if (title->text().trimmed().isEmpty() || body->toPlainText().trimmed().isEmpty()) { result->setText("Complete the title and body for VibeDarling/Darling."); return; }
+        if (title->text().trimmed().isEmpty() || body->toPlainText().trimmed().isEmpty()) { result->setText("Complete the title and body for darlinghq/darling."); return; }
         auto *file = new QTemporaryFile(dialog); if (!file->open() || file->write(body->toPlainText().toUtf8()) < 0 || !file->flush()) { result->setText("Cannot prepare approved draft."); return; }
         auto *submit = new QProcess(dialog); dialog->setProperty("submitted", true); approve->setEnabled(false); result->setText("Submitting approved issue…");
         connect(submit, &QProcess::finished, dialog, [=](int code, QProcess::ExitStatus exit) { result->setText(code == 0 && exit == QProcess::NormalExit ? "Issue submitted: " + QString::fromUtf8(submit->readAllStandardOutput()).trimmed() : "Issue submission failed: " + QString::fromUtf8(submit->readAllStandardError()).trimmed()); submit->deleteLater(); file->deleteLater(); });
         connect(submit, &QProcess::errorOccurred, dialog, [=](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) { result->setText("Cannot start GitHub CLI. No issue submitted."); submit->deleteLater(); file->deleteLater(); } });
-        submit->start(gh, {"issue", "create", "--repo", "VibeDarling/Darling", "--title", title->text(), "--body-file", file->fileName()});
+        submit->start(gh, {"issue", "create", "--repo", "darlinghq/darling", "--title", title->text(), "--body-file", file->fileName()});
     });
     auto *close = new QPushButton("Close"); layout->addWidget(close); connect(close, &QPushButton::clicked, dialog, &QDialog::reject); dialog->show();
 }

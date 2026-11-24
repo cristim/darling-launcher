@@ -37,6 +37,7 @@ QString helperExecutable(const QStringList &roots, const QString &name) {
     return {};
 }
 QString managedPrefix(const QString &dataRoot) { return dataRoot + "/prefixes/default"; }
+QString managedSource(const QString &dataRoot) { return dataRoot + "/sources/darlinghq"; }
 QList<Runtime> runtimes(const QStringList &roots, const QString &installedLauncher) {
     QList<Runtime> result;
     auto add = [&](const QString &launcher, const QString &root) {
@@ -68,7 +69,7 @@ QString cleanSource(const QStringList &roots) {
             if (!process.waitForFinished(1500) || process.exitCode() != 0) return {};
             return QString::fromUtf8(process.readAllStandardOutput()).trimmed();
         };
-        if (query({"remote", "get-url", "origin"}) != "https://github.com/VibeDarling/darling.git") continue;
+        if (query({"remote", "get-url", "origin"}) != sourceUrl) continue;
         QString branch = query({"symbolic-ref", "--short", "HEAD"});
         if (branch != "main" && branch != "master") continue;
         QProcess status; status.start(git, {"-C", path, "status", "--porcelain"});

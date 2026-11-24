@@ -26,19 +26,19 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
     setObjectName("prefixBuildDialog");
     setWindowTitle("Set up Darling and a prefix"); resize(730, 560);
     const QString data = LauncherDiscovery::dataRoot();
-    const QString source = data + "/sources/vibedarling";
+    const QString source = LauncherDiscovery::managedSource(data);
     auto *layout = new QVBoxLayout(this);
-    auto *intro = new QLabel("Downloads the prebuilt VibeDarling runtime (checked against its CI build attestation) and initializes a new prefix, or builds a private runtime from source. Everything lives under " + data + "."); intro->setWordWrap(true); layout->addWidget(intro);
+    auto *intro = new QLabel("Downloads a prebuilt Darling runtime when the upstream publishes one (checked against its CI build attestation) and initializes a new prefix, or builds a private runtime from the darlinghq/darling source. Everything lives under " + data + "."); intro->setWordWrap(true); layout->addWidget(intro);
     auto *form = new QFormLayout;
     auto *sourceLabel = new QLabel(source); sourceLabel->setObjectName("prefixBuilderSource"); form->addRow("Source clone", sourceLabel);
     auto *workspaceLabel = new QLabel; workspaceLabel->setObjectName("prefixBuilderWorkspace"); form->addRow("New workspace", workspaceLabel);
     auto *jobs = new QSpinBox; jobs->setRange(1, 1024); jobs->setValue(1); form->addRow("Parallel jobs", jobs);
     auto *cmake = new QTextEdit; cmake->setPlaceholderText("Optional: one -DNAME=VALUE CMake setting per line"); cmake->setMaximumHeight(70); form->addRow("CMake settings", cmake);
     layout->addLayout(form);
-    auto *status = new QLabel("Download is the quick way. Building from source clones VibeDarling first and takes a long time; the settings above apply only to the build."); status->setObjectName("prefixBuilderStatus"); status->setWordWrap(true); layout->addWidget(status);
+    auto *status = new QLabel("Download is the quick way when available; darlinghq/darling publishes no prebuilt runtime yet. Building from source clones darlinghq/darling first and takes a long time; the settings above apply only to the build."); status->setObjectName("prefixBuilderStatus"); status->setWordWrap(true); layout->addWidget(status);
     auto *progress = new QProgressBar; progress->setRange(0, 1); progress->setValue(0); layout->addWidget(progress);
     auto *output = new QTextEdit; output->setReadOnly(true); layout->addWidget(output);
-    auto *download = new QPushButton("Download prebuilt runtime (recommended)"); download->setObjectName("downloadPrebuilt"); layout->addWidget(download);
+    auto *download = new QPushButton("Download prebuilt runtime"); download->setObjectName("downloadPrebuilt"); layout->addWidget(download);
     auto *build = new QPushButton("Build from source instead"); build->setObjectName("buildPrefix"); layout->addWidget(build);
     auto *background = new QPushButton("Continue in the background"); background->setObjectName("buildInBackground"); background->setEnabled(false); layout->addWidget(background);
     connect(background, &QPushButton::clicked, this, &QDialog::close);
@@ -97,15 +97,20 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
     connect(build, &QPushButton::clicked, this, [=] {
         if (script.isEmpty() || !QFileInfo(script).isFile()) { status->setText("The bundled prefix builder could not be written under " + data + "/tools."); return; }
         QString git = QStandardPaths::findExecutable("git");
-        if (git.isEmpty()) { status->setText("Install Git to clone VibeDarling."); return; }
+        if (git.isEmpty()) { status->setText("Install Git to clone darlinghq/darling."); return; }
         if (QFileInfo(source).isDir()) {
+            QProcess origin; origin.start(git, {"-C", source, "remote", "get-url", "origin"});
+            if (!origin.waitForFinished(5000) || origin.exitCode() != 0 || QString::fromUtf8(origin.readAllStandardOutput()).trimmed() != LauncherDiscovery::sourceUrl) {
+                const QString message = "The clone in " + source + " does not have " + QString(LauncherDiscovery::sourceUrl) + " as origin (or git could not read it); move it aside and build again.";
+                status->setText(message); background->setEnabled(false); reopen(false); emit failed(message); return;
+            }
             auto *update = new QProcess(this); update->setProcessChannelMode(QProcess::MergedChannels);
             setBusy(true); background->setEnabled(true); progress->setRange(0, 0);
-            status->setText("Updating the VibeDarling clone in " + source);
+            status->setText("Updating the darlinghq/darling clone in " + source);
             connect(update, &QProcess::readyReadStandardOutput, this, [=] { output->insertPlainText(QString::fromUtf8(update->readAllStandardOutput())); });
             auto updated = [=](bool success) {
                 setBusy(false); progress->setRange(0, 1); progress->setValue(success);
-                if (success) startBuild(); else { status->setText("The VibeDarling clone could not be fast-forwarded to the current master. See output; resolve it in " + source + " and build again."); reopen(false); emit failed("The VibeDarling clone could not be updated."); }
+                if (success) startBuild(); else { status->setText("The darlinghq/darling clone could not be fast-forwarded to the current master. See output; resolve it in " + source + " and build again."); reopen(false); emit failed("The darlinghq/darling clone could not be updated."); }
                 update->deleteLater();
             };
             connect(update, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) { updated(code == 0 && exit == QProcess::NormalExit); });
@@ -116,16 +121,16 @@ PrefixDialog::PrefixDialog(const QString &sourceVolume, const QString &scriptOve
         if (!QDir().mkpath(QFileInfo(source).absolutePath())) { status->setText("Cannot create " + QFileInfo(source).absolutePath()); return; }
         auto *process = new QProcess(this); process->setProcessChannelMode(QProcess::MergedChannels);
         setBusy(true); background->setEnabled(true); progress->setRange(0, 0);
-        status->setText("Cloning https://github.com/VibeDarling/darling.git into " + source);
+        status->setText("Cloning " + QString(LauncherDiscovery::sourceUrl) + " into " + source);
         connect(process, &QProcess::readyReadStandardOutput, this, [=] { output->insertPlainText(QString::fromUtf8(process->readAllStandardOutput())); });
         auto done = [=](bool success) {
             setBusy(false); progress->setRange(0, 1); progress->setValue(success);
-            if (success) startBuild(); else { status->setText("Clone failed. See output; any partial clone is retained for inspection."); reopen(false); emit failed("The VibeDarling clone failed."); }
+            if (success) startBuild(); else { status->setText("Clone failed. See output; any partial clone is retained for inspection."); reopen(false); emit failed("The darlinghq/darling clone failed."); }
             process->deleteLater();
         };
         connect(process, &QProcess::finished, this, [=](int code, QProcess::ExitStatus exit) { done(code == 0 && exit == QProcess::NormalExit); });
         connect(process, &QProcess::errorOccurred, this, [=](QProcess::ProcessError error) { if (error == QProcess::FailedToStart) done(false); });
-        process->start(git, LauncherDiscovery::cloneArguments("https://github.com/VibeDarling/darling.git", source));
+        process->start(git, LauncherDiscovery::cloneArguments(LauncherDiscovery::sourceUrl, source));
     });
 }
 

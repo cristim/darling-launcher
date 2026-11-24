@@ -75,10 +75,10 @@ private slots:
         QFile calls(temporary.path() + "/gh-calls"); QVERIFY(calls.open(QIODevice::ReadOnly)); QVERIFY(!calls.readAll().contains("issue create")); calls.close();
         auto *issue = popup->findChild<QDialog *>("issueApprovalDialog"); QVERIFY(issue); QVERIFY(issue->findChild<QTextEdit *>("issueBody")->toPlainText().contains("DPREFIX=")); issue->reject(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         popup->reviewIssue(); issue = popup->findChild<QDialog *>("issueApprovalDialog"); QVERIFY(issue);
-        QCOMPARE(issue->findChild<QLineEdit *>("issueRepository")->text(), QString("VibeDarling/Darling")); QVERIFY(issue->findChild<QLineEdit *>("issueRepository")->isReadOnly());
+        QCOMPARE(issue->findChild<QLineEdit *>("issueRepository")->text(), QString("darlinghq/darling")); QVERIFY(issue->findChild<QLineEdit *>("issueRepository")->isReadOnly());
         issue->findChild<QLineEdit *>("issueTitle")->clear(); issue->findChild<QPushButton *>("approveCompletedIssue")->click(); QVERIFY(issue->findChild<QLabel *>("issueSubmissionStatus")->text().contains("Complete the title")); issue->findChild<QLineEdit *>("issueTitle")->setText("Fixture missing dependency"); const QString approved = "Exact reviewed draft\nLiteral $(echo secret) and `literal` remain text.\n"; issue->findChild<QTextEdit *>("issueBody")->setPlainText(approved); issue->findChild<QPushButton *>("approveCompletedIssue")->click();
         QTRY_VERIFY(issue->findChild<QLabel *>("issueSubmissionStatus")->text().startsWith("Issue submitted:"));
-        QVERIFY(calls.open(QIODevice::ReadOnly)); QVERIFY(calls.readAll().contains("issue create --repo VibeDarling/Darling")); calls.close();
+        QVERIFY(calls.open(QIODevice::ReadOnly)); QVERIFY(calls.readAll().contains("issue create --repo darlinghq/darling")); calls.close();
         QFile body(temporary.path() + "/approved-body"); QVERIFY(body.open(QIODevice::ReadOnly)); QCOMPARE(QString::fromUtf8(body.readAll()), approved);
         QPointer<TroubleshootingDialog> remaining(popup); popup->reject(); QTRY_VERIFY(remaining.isNull()); QVERIFY(job->isRunning()); QTRY_VERIFY(!job->isRunning());
         QFile log(temporary.path() + "/work/AGENT.log"); QVERIFY(log.open(QIODevice::ReadOnly)); QVERIFY(log.readAll().contains("finished"));
@@ -159,9 +159,9 @@ private slots:
     void worktreeTrustFollowsTheLauncherClone() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid()); qputenv("HOME", temporary.path().toUtf8());
         const QString data = temporary.path() + "/.darling-launcher", workspace = temporary.path() + "/ws";
-        QVERIFY(QDir().mkpath(data + "/sources/vibedarling/.git/worktrees/fix")); QVERIFY(QDir().mkpath(workspace + "/darling")); QVERIFY(QDir().mkpath(workspace + "/other")); QVERIFY(QDir().mkpath(temporary.path() + "/foreign/.git/worktrees/x"));
+        QVERIFY(QDir().mkpath(data + "/sources/darlinghq/.git/worktrees/fix")); QVERIFY(QDir().mkpath(workspace + "/darling")); QVERIFY(QDir().mkpath(workspace + "/other")); QVERIFY(QDir().mkpath(temporary.path() + "/foreign/.git/worktrees/x"));
         auto point = [](const QString &file, const QString &target) { QFile f(file); return f.open(QIODevice::WriteOnly) && f.write(("gitdir: " + target + "\n").toUtf8()) > 0; };
-        QVERIFY(point(workspace + "/darling/.git", data + "/sources/vibedarling/.git/worktrees/fix")); QVERIFY(point(workspace + "/other/.git", temporary.path() + "/foreign/.git/worktrees/x"));
+        QVERIFY(point(workspace + "/darling/.git", data + "/sources/darlinghq/.git/worktrees/fix")); QVERIFY(point(workspace + "/other/.git", temporary.path() + "/foreign/.git/worktrees/x"));
         QCOMPARE(LauncherTroubleshooting::trustedWorktree(workspace, workspace + "/darling"), QFileInfo(workspace + "/darling").canonicalFilePath());
         QVERIFY(LauncherTroubleshooting::trustedWorktree(workspace, workspace + "/other").isEmpty()); QVERIFY(LauncherTroubleshooting::trustedWorktree(workspace, temporary.path() + "/foreign").isEmpty());
         QVERIFY(LauncherTroubleshooting::trustedWorktree(workspace, workspace + "/missing").isEmpty());
@@ -190,7 +190,7 @@ private slots:
         dialog.findChild<QLineEdit *>("agentWorkspace")->setText(workspace); start->click(); QTRY_VERIFY(QFileInfo::exists(temporary.path() + "/agent-calls"));
         QFile report(workspace + "/TROUBLESHOOTING.json"); QVERIFY(report.open(QIODevice::ReadOnly)); QCOMPARE(QJsonDocument::fromJson(report.readAll()).object(), data);
         QVERIFY(QDir().mkpath(workspace + "/clone/.git"));
-        const QJsonObject proposal{{"source", workspace + "/clone"}, {"repo", "VibeDarling/fixture"}, {"base", "main"}, {"head", "test:fix-fixture"}, {"title", "fixture: repair missing behavior"}, {"body", "Completed synthetic proposal"}};
+        const QJsonObject proposal{{"source", workspace + "/clone"}, {"repo", "darlinghq/fixture"}, {"base", "main"}, {"head", "test:fix-fixture"}, {"title", "fixture: repair missing behavior"}, {"body", "Completed synthetic proposal"}};
         QFile proposalFile(workspace + "/proposal.json"); QVERIFY(proposalFile.open(QIODevice::WriteOnly)); proposalFile.write(QJsonDocument(proposal).toJson()); proposalFile.close();
         QVERIFY(LauncherTroubleshooting::reviewProposal(proposalFile.fileName()).error.contains("until the fix is verified"));
         QFile forged(workspace + "/LAUNCHER-VERIFICATION.json"); QVERIFY(forged.open(QIODevice::WriteOnly)); forged.write(QJsonDocument(QJsonObject{{"verified", true}, {"proposalCommit", "reviewed-sha"}}).toJson()); forged.close();
@@ -205,7 +205,7 @@ private slots:
         timer->start(); dialog.loadProposal(proposalFile.fileName()); QTRY_VERIFY(!timer->isActive());
         QFile calls(temporary.path() + "/gh-calls"); QVERIFY(calls.open(QIODevice::ReadOnly)); QVERIFY(!calls.readAll().contains("pr create")); calls.close();
         approved = true; timer->start(); dialog.loadProposal(proposalFile.fileName()); QTRY_VERIFY(dialog.findChild<QLabel *>("troubleshootingStatus")->text().startsWith("PR submitted:"));
-        QVERIFY(calls.open(QIODevice::ReadOnly)); const auto submitted = calls.readAll(); QVERIFY(submitted.contains("pr create --repo VibeDarling/fixture")); QVERIFY(submitted.contains("--body-file"));
+        QVERIFY(calls.open(QIODevice::ReadOnly)); const auto submitted = calls.readAll(); QVERIFY(submitted.contains("pr create --repo darlinghq/fixture")); QVERIFY(submitted.contains("--body-file"));
         calls.close();
         QVERIFY(write("gh", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + temporary.path().toUtf8() + "/gh-calls'\ncase \"$1\" in auth) exit 0;; api) echo different-sha;; pr) echo unexpected;; esac\n"));
         timer->start(); dialog.loadProposal(proposalFile.fileName()); QTRY_VERIFY(dialog.findChild<QLabel *>("troubleshootingStatus")->text().contains("No PR submitted"));

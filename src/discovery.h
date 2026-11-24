@@ -7,6 +7,8 @@ struct Runtime { QString launcher; QString installRoot; };
 QList<Runtime> runtimes(const QStringList &roots, const QString &installedLauncher);
 QString dataRoot();
 QString managedPrefix(const QString &dataRoot);
+QString managedSource(const QString &dataRoot);
+constexpr const char *sourceUrl = "https://github.com/darlinghq/darling.git";
 QString cleanSource(const QStringList &roots);
 QString helperExecutable(const QStringList &roots, const QString &name);
 

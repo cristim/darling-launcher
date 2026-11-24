@@ -303,7 +303,7 @@ bool stageBrewfile(const QString &prefix, const QString &source, QString *guestP
 }
 QString issueDraft(const AppEntry &app, const QJsonArray &chain, const QString &output,
                    const QString &volume, const QString &prefix, const QString &darling, const QString &runtime) {
-    QString text = "# Proposed VibeDarling issue: " + app.name + " launch dependency\n\n";
+    QString text = "# Proposed darlinghq/darling issue: " + app.name + " launch dependency\n\n";
     text += "## Local provenance (review before sharing)\n- Source volume: `" + volume + "`\n- Source bundle: `" + volume + "/" + app.sourceRelative + "`\n- Prefix: `" + prefix + "`\n- Host launcher: `" + darling + "`\n\n";
     if (!runtime.isEmpty()) text += "- Runtime install root: `" + runtime + "`\n";
     QFile provenance(prefix + "/.darling-launcher/build-provenance.json");

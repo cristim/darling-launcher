@@ -13,7 +13,7 @@
 // <root>/fake. The archive's launcher is a fake `darling` that passes LauncherCore::checkPrefix unless
 // <prefix dir>/fail-init, fail-uname or fail-ls exists (each makes the matching step fail). Every gh call is appended to <root>/fake/calls.
 struct FakeRelease {
-    QString gh, fake, file, sha, tag = "v2026.10.09-3721b65", repo = "VibeDarling/darling", arch = LauncherReleases::hostArchitecture();
+    QString gh, fake, file, sha, tag = "v2026.10.09-3721b65", repo = LauncherReleases::repository, arch = LauncherReleases::hostArchitecture();
 
     static bool write(const QString &path, const QByteArray &data, bool executable = false) {
         QFile output(path);

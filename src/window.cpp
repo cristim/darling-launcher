@@ -689,7 +689,7 @@ void Window::runCommand(const QString &label, const QStringList &args, const QSt
                 apps->setStatus(key, success ? "Exited successfully" : "Exited " + QString::number(code));
                 if (!success) failedApps.insert(key);
                 if (success && !chains.value(key).isEmpty())
-                    setBusy(activeProcesses > 0, label + " succeeded after importing macOS libraries. Review the dependency popup to help VibeDarling.");
+                    setBusy(activeProcesses > 0, label + " succeeded after importing macOS libraries. Review the dependency popup to help Darling upstream.");
             }
         }
         updateContribution(); updateRecovery(key, apps->status(key));
