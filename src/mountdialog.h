@@ -31,6 +31,11 @@ private:
     QSpinBox *volumeIndex;
     QPushButton *mountButton = nullptr;
     QPushButton *unmountButton;
+    QPushButton *cryptexButton = nullptr;
+    QPushButton *cryptexUnmountButton = nullptr;
+    QPushButton *prebootUnmountButton = nullptr;
+    QString cryptexRoot;         // root of the cryptex mount that was verified; Unmount targets this
+    QString pendingCryptexRoot;  // root of the attempt in progress
     QTextEdit *output = nullptr;
     bool mountBusy = false;
     bool requestedBatch = false;
@@ -42,5 +47,11 @@ private:
     void updateExistingSources();
     void discover();
     void mountSelected();
+    void mountCryptex(const QString &root, const QString &apfsFuse);
+    void runCryptexCommand(const MountCommand &command, const QString &waiting);
+    bool cryptexCommandReady(QString *python);
+    void unmountPreboot();
+    void handleCryptexEvent(const QByteArray &line);
+    void unmountCryptex();
     void execute(const MountCommand &command, bool unmount, const QString &device = {});
 };
