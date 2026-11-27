@@ -678,7 +678,7 @@ private slots:
         qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8()); QSettings("cristim", "darling-launcher").clear(); QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
         QString fakeGit = temporary.path() + "/git";
         QFile git(fakeGit); QVERIFY(git.open(QIODevice::WriteOnly));
-        git.write("#!/bin/sh\nif [ \"$1\" = clone ]; then mkdir -p \"$5\"; echo cloned fixture; exit 0; fi\nif [ \"$3\" = pull ]; then echo updated >> \"$HOME/pulls\"; exit 0; fi\nexit 1\n"); git.close();
+        git.write("#!/bin/sh\nif [ \"$1\" = clone ]; then mkdir -p \"$5\"; echo cloned fixture; exit 0; fi\ncase \"$*\" in *get-url*) echo https://github.com/darlinghq/darling.git; exit 0;; esac\nif [ \"$3\" = pull ]; then echo updated >> \"$HOME/pulls\"; exit 0; fi\nexit 1\n"); git.close();
         QVERIFY(git.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
         QByteArray originalPath = qgetenv("PATH"); auto restore = qScopeGuard([originalPath] { qputenv("PATH", originalPath); }); qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath);
         Window window(QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py"); window.show();
@@ -718,6 +718,21 @@ private slots:
             return true;
         }(), 5000);
     }
+    void buildRefusesCloneWithForeignOrigin() {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        qputenv("HOME", temporary.path().toUtf8());
+        QString source = temporary.path() + "/.darling-launcher/sources/darlinghq"; QVERIFY(QDir().mkpath(source));
+        QFile git(temporary.path() + "/git"); QVERIFY(git.open(QIODevice::WriteOnly)); git.write("#!/bin/sh\ncase \"$*\" in *get-url*) echo https://example.invalid/fork.git; exit 0;; esac\necho \"$*\" >> \"$HOME/git-calls\"\nexit 0\n"); git.close(); QVERIFY(git.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        const QByteArray originalPath = qgetenv("PATH"); auto restore = qScopeGuard([originalPath] { qputenv("PATH", originalPath); }); qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath);
+        PrefixDialog dialog({}, QString(TEST_SOURCE_DIR) + "/tests/fixtures/prefix_builder.py", nullptr);
+        QSignalSpy failed(&dialog, &PrefixDialog::failed);
+        dialog.findChild<QPushButton *>("buildPrefix")->click();
+        QCOMPARE(failed.count(), 1);
+        QVERIFY(!dialog.isBusy());
+        QVERIFY(dialog.findChild<QLabel *>("prefixBuilderStatus")->text().contains("does not have"));
+        QVERIFY2(QDir(temporary.path() + "/.darling-launcher/workspaces").entryList(QDir::Dirs | QDir::NoDotAndDotDot).isEmpty(), "a clone with a foreign origin must not be built");
+        QVERIFY2(!QFileInfo::exists(temporary.path() + "/git-calls"), "a clone with a foreign origin must not be pulled");
+    }
     void prefixMaintenanceButtons_data() { QTest::addColumn<bool>("repair"); QTest::addColumn<bool>("healthy"); QTest::newRow("verify-healthy") << false << true; QTest::newRow("verify-broken") << false << false; QTest::newRow("repair-healthy") << true << true; }
     void prefixMaintenanceButtons() {
         QFETCH(bool, repair); QFETCH(bool, healthy);
@@ -739,12 +754,17 @@ private slots:
     }
     void closeDuringLaunch() {
         QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        qputenv("XDG_CONFIG_HOME", (temporary.path() + "/config").toUtf8());
+        QSettings("cristim", "darling-launcher").clear();
+        QSettings("cristim", "darling-launcher").setValue("recovery/remember", true);
+        QFile lsblk(temporary.path() + "/lsblk"); QVERIFY(lsblk.open(QIODevice::WriteOnly)); lsblk.write("#!/bin/sh\necho '{\"blockdevices\":[]}'\n"); lsblk.close(); QVERIFY(lsblk.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        const QByteArray originalPath = qgetenv("PATH"); auto restore = qScopeGuard([originalPath] { qputenv("PATH", originalPath); }); qputenv("PATH", temporary.path().toUtf8() + ':' + originalPath);
         QString prefix = temporary.path() + "/prefix"; QVERIFY(QDir().mkpath(prefix));
         QString fakePath = temporary.path() + "/fake-darling";
         QFile fake(fakePath); QVERIFY(fake.open(QIODevice::WriteOnly)); fake.write("#!/bin/sh\nexec /usr/bin/sleep 5\n"); fake.close();
         QVERIFY(QFile::setPermissions(fakePath, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         QString error; QVERIFY(LauncherCore::saveCatalog(prefix, {{"apps", QJsonArray{QJsonObject{{"name", "Test"}, {"bundle", "Applications/Test.app"}, {"executable", "Test"}}}}}, &error));
-        auto *window = new Window; window->show();
+        auto *window = new Window({}, false, [] { return QList<SourceMount>{}; }); window->show();
         window->findChild<QLineEdit *>("volumeField")->setText(temporary.path());
         window->findChild<QLineEdit *>("prefixField")->setText(prefix);
         window->findChild<QLineEdit *>("darlingField")->setText(fakePath);
@@ -752,7 +772,14 @@ private slots:
         window->findChild<QPushButton *>("Scan volume")->click();
         window->findChild<ImportedBrowser *>("importedApps")->setCurrentRow(0);
         launchSelected(window);
-        QTRY_VERIFY_WITH_TIMEOUT(!window->findChildren<QProcess *>().isEmpty() && window->findChildren<QProcess *>().first()->state() == QProcess::Running, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(([window] {
+            bool running = false;
+            for (auto *process : window->findChildren<QProcess *>()) {
+                if (process->program().endsWith("/fake-darling")) running = process->state() == QProcess::Running;
+                else if (process->state() != QProcess::NotRunning) return false;
+            }
+            return running;
+        }()), 5000);
         QTest::ignoreMessage(QtWarningMsg, QRegularExpression("QProcess: Destroyed while process .* is still running\\."));
         delete window;
     }
